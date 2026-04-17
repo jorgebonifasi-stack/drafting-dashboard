@@ -1311,11 +1311,11 @@
             <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} domain={[0,Math.ceil(maxBacklog*1.15)]} label={{value:"Backlog",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
             <Tooltip content={<DarkTooltip/>}/>
             <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
-            <Bar yAxisId="left" dataKey="entered" name="Entered DI" fill="rgba(52,152,219,0.5)" stroke="#3498db" strokeWidth={0.5} barSize={22} radius={[4,4,0,0]}>
-              <LabelList dataKey="entered" position="top" fill={C.text} fontSize={10} fontWeight={600}/>
+            <Bar yAxisId="left" dataKey="entered" name={"\u2191 Entered DI"} fill="rgba(231,76,60,0.35)" stroke="#e74c3c" strokeWidth={1} barSize={22} radius={[4,4,0,0]}>
+              <LabelList dataKey="entered" position="top" fill="rgba(231,76,60,0.9)" fontSize={10} fontWeight={600}/>
             </Bar>
-            <Bar yAxisId="left" dataKey="exited" name="Exited DI" fill="rgba(46,204,113,0.5)" stroke="#2ecc71" strokeWidth={0.5} barSize={22} radius={[4,4,0,0]}>
-              <LabelList dataKey="exited" position="top" fill={C.text} fontSize={10} fontWeight={600}/>
+            <Bar yAxisId="left" dataKey="exited" name={"\u2193 Exited DI"} fill="rgba(46,204,113,0.45)" stroke="#2ecc71" strokeWidth={1} barSize={22} radius={[4,4,0,0]}>
+              <LabelList dataKey="exited" position="top" fill="rgba(46,204,113,0.9)" fontSize={10} fontWeight={600}/>
             </Bar>
             <Line yAxisId="right" type="monotone" dataKey="backlog" name="Backlog" stroke={C.amber} strokeWidth={2.5} dot={{fill:C.amber,r:4}} activeDot={{r:6}}>
               <LabelList dataKey="backlog" position="top" fill={C.amber} fontSize={10} fontWeight={600} offset={10}/>
