@@ -748,6 +748,7 @@
     // ─── Chart 5b: Proofreading Backlog per Proofreader ─────────
     function Chart5b({deals,gran,bucket}){
       const data=useMemo(()=>{
+        if(!bucket)return[];
         const endOfPeriod=bucketEndDate(bucket,gran);
         const counts={};
         deals.forEach(d=>{
