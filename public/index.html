@@ -340,7 +340,7 @@
       chart5:'Drafts proofread (completed) and backlog per proofreader for the selected period. Completed: deals that exited "Required \u2014 Proof Reading" in the period. Backlog: deals that entered but have not yet exited by end of the period. Grouped by Proof Reading Owner.',
       chart6:'Bars: total standard drafts completed per period. Line: average turnaround in calendar days (first entry into "Drafting Instructions (Estate Planning)" \u2192 completion). Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". SLA: 10d internal, 28d customer.',
       chart7:'Query rate per drafter per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period per drafter. Numerator: those with a Drafting Query. Green \u22645%, amber \u226410%, red >10%.',
-      chart12:'Drafting pipeline flow over time. Blue bars: deals entering "Drafting Instructions" per period. Green bars: deals exiting the stage. Amber line: backlog snapshot \u2014 current period uses live HubSpot stage data (dealstage); historical periods use entry/exit dates. Includes all deals (standard + urgent).',
+      chart12:'Drafting pipeline flow over time. Entered: uses original (workflow-stamped) entry date for stability. Exited & Backlog: uses native HubSpot dates (latest entry/exit) for accuracy. Current period backlog uses live dealstage count. Includes all deals (standard + urgent).',
       chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day.',
       chart9:'Average turnaround in business days (Mon\u2013Fri) for urgent drafts completed in the selected period, grouped by Drafting Owner. From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day. Green = met, red = breached.',
       chart10:'Amendments completed per period. Stacked bars show amendment source breakdown. Line shows average turnaround in calendar days (entered \u2192 exited "Amendment Requested"). Grouped by exit date.',
@@ -1262,18 +1262,18 @@
         const seen=new Set();
         const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
 
-        // Use original (workflow-stamped) dates for stable historical data;
-        // fall back to native HubSpot dates if original not available
+        // Hybrid: original dates for entered (stable), native dates for exited & backlog
         const entered={};const exited={};
         deals.forEach(d=>{
+          // Entered: use original (workflow-stamped) date, fall back to native
           const ent=d.origEnteredDrafting||d.enteredDrafting;
           if(ent){
             const b=dateToBucket(ent,gran);
             entered[b]=(entered[b]||0)+1;
           }
-          const ext=d.origExitedDrafting||d.nativeExitedDrafting;
-          if(ext){
-            const b=dateToBucket(ext,gran);
+          // Exited: use native (latest exit reflects current reality)
+          if(d.nativeExitedDrafting){
+            const b=dateToBucket(d.nativeExitedDrafting,gran);
             exited[b]=(exited[b]||0)+1;
           }
         });
@@ -1288,13 +1288,10 @@
               if(d.dealstage==="1223620771")backlog++;
             });
           }else{
-            // Historical: use original dates (stable, not overwritten on re-entry)
-            // Fall back to native dates if original not available
+            // Historical backlog: native dates (latest entry/exit reflects current state better)
             deals.forEach(d=>{
-              const ent=d.origEnteredDrafting||d.enteredDrafting;
-              if(!ent||ent>endOfPeriod)return;
-              const ext=d.origExitedDrafting||d.nativeExitedDrafting;
-              if(ext&&ext<=endOfPeriod)return;
+              if(!d.enteredDrafting||d.enteredDrafting>endOfPeriod)return;
+              if(d.nativeExitedDrafting&&d.nativeExitedDrafting<=endOfPeriod&&d.nativeExitedDrafting>=d.enteredDrafting)return;
               backlog++;
             });
           }
@@ -1663,12 +1660,12 @@
         const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        // Hybrid: original for entered, native for exited & backlog
         const enteredByB={};const exitedByB={};
         deals.forEach(d=>{
           const ent=d.origEnteredDrafting||d.enteredDrafting;
           if(ent){const b=dateToBucket(ent,gran);(enteredByB[b]=enteredByB[b]||[]).push(d);}
-          const ext=d.origExitedDrafting||d.nativeExitedDrafting;
-          if(ext){const b=dateToBucket(ext,gran);(exitedByB[b]=exitedByB[b]||[]).push(d);}
+          if(d.nativeExitedDrafting){const b=dateToBucket(d.nativeExitedDrafting,gran);(exitedByB[b]=exitedByB[b]||[]).push(d);}
         });
         const lastBucket=uniq[uniq.length-1];
         const rows=uniq.map(bucket=>{
@@ -1678,10 +1675,8 @@
             deals.forEach(d=>{if(d.dealstage==="1223620771")backlog++;});
           }else{
             deals.forEach(d=>{
-              const ent=d.origEnteredDrafting||d.enteredDrafting;
-              if(!ent||ent>endOfPeriod)return;
-              const ext=d.origExitedDrafting||d.nativeExitedDrafting;
-              if(ext&&ext<=endOfPeriod)return;
+              if(!d.enteredDrafting||d.enteredDrafting>endOfPeriod)return;
+              if(d.nativeExitedDrafting&&d.nativeExitedDrafting<=endOfPeriod&&d.nativeExitedDrafting>=d.enteredDrafting)return;
               backlog++;
             });
           }
@@ -1689,8 +1684,8 @@
           return{_key:bucket,label:bucketLabel(bucket,gran),entered:entCount,exited:extCount,net:(entCount-extCount>0?"+":"")+(entCount-extCount),backlog};
         });
         const detailMap={};uniq.forEach(b=>{
-          const ent=(enteredByB[b]||[]).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.origEnteredDrafting||d.enteredDrafting),exited:fmtDate(d.origExitedDrafting||d.nativeExitedDrafting)}));
-          const ext=(exitedByB[b]||[]).filter(d=>!enteredByB[b]||!enteredByB[b].includes(d)).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.origEnteredDrafting||d.enteredDrafting),exited:fmtDate(d.origExitedDrafting||d.nativeExitedDrafting)}));
+          const ent=(enteredByB[b]||[]).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.origEnteredDrafting||d.enteredDrafting),exited:fmtDate(d.nativeExitedDrafting)}));
+          const ext=(exitedByB[b]||[]).filter(d=>!enteredByB[b]||!enteredByB[b].includes(d)).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.origEnteredDrafting||d.enteredDrafting),exited:fmtDate(d.nativeExitedDrafting)}));
           detailMap[b]=[...ent,...ext];
         });
         return{rows,detailMap};
