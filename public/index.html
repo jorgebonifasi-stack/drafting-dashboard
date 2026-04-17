@@ -1,0 +1,1567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Estate Planning — Drafting &amp; Proofreading Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { background: #1a1a1a; color: #ccc; font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    @media (max-width: 900px) { .dash-row { grid-template-columns: 1fr !important; } }
+    .recharts-tooltip-wrapper { z-index: 100 !important; }
+  </style>
+
+  <!-- React 18 -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+
+  <!-- PropTypes (Recharts dependency) -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+
+  <!-- Recharts UMD -->
+  <script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+
+  <!-- html2canvas (chart capture) -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+  <!-- Standalone dashboard — hosted on Railway -->
+
+  <!-- Babel standalone -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.4/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo } = React;
+    const {
+      BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+      ComposedChart, Line, ReferenceLine, ReferenceArea, Legend, Cell,
+      CartesianGrid, LabelList, Label
+    } = Recharts;
+
+    // ─── colour tokens ──────────────────────────────────────────
+    const C = {
+      bg:"#1a1a1a", bgDarker:"#111", surface:"#242424",
+      text:"#CCCCCC", white:"#FFFFFF", grid:"#444444",
+      green:"#27AE60", red:"#E74C3C", amber:"#F39C12",
+      blue:"#5DADE2", blueFaded:"rgba(93,173,226,0.22)",
+      accent:"#3498DB", border:"#333",
+    };
+
+    // ─── ISO-week helpers ───────────────────────────────────────
+    function isoWeek(d){
+      const date=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+      date.setUTCDate(date.getUTCDate()+4-(date.getUTCDay()||7));
+      const yearStart=new Date(Date.UTC(date.getUTCFullYear(),0,1));
+      return Math.ceil(((date-yearStart)/86400000+1)/7);
+    }
+    function isoWeekYear(d){
+      const date=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+      date.setUTCDate(date.getUTCDate()+4-(date.getUTCDay()||7));
+      return date.getUTCFullYear();
+    }
+    function mondayOfISOWeek(year,week){
+      const jan4=new Date(Date.UTC(year,0,4));
+      const dow=jan4.getUTCDay()||7;
+      const mon=new Date(jan4);
+      mon.setUTCDate(jan4.getUTCDate()-dow+1+(week-1)*7);
+      return mon;
+    }
+
+    // ─── date bucket helpers ────────────────────────────────────
+    function dateToBucket(d,gran){
+      if(!d)return null;
+      if(gran==="DoD") return d.toISOString().slice(0,10);
+      if(gran==="WoW"){const w=isoWeek(d),y=isoWeekYear(d);return`${y}-W${String(w).padStart(2,"0")}`;}
+      return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    }
+    function bucketLabel(bucket,gran){
+      if(gran==="DoD"){
+        const d=new Date(bucket+"T00:00:00");
+        const days=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+        return`${days[d.getDay()]} ${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
+      }
+      if(gran==="WoW"){
+        const[y,wStr]=bucket.split("-W");
+        const mon=mondayOfISOWeek(parseInt(y),parseInt(wStr));
+        return`W${wStr} (${String(mon.getUTCMonth()+1).padStart(2,"0")}/${String(mon.getUTCDate()).padStart(2,"0")})`;
+      }
+      const[y,m]=bucket.split("-");
+      const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      return`${months[parseInt(m)-1]} ${y}`;
+    }
+    function bucketEndDate(bucket,gran){
+      if(gran==="DoD")return new Date(bucket+"T23:59:59.999");
+      if(gran==="WoW"){
+        const[y,wStr]=bucket.split("-W");
+        const mon=mondayOfISOWeek(parseInt(y),parseInt(wStr));
+        const sun=new Date(mon);sun.setUTCDate(sun.getUTCDate()+6);sun.setUTCHours(23,59,59,999);return sun;
+      }
+      const[y,m]=bucket.split("-");
+      return new Date(parseInt(y),parseInt(m),0,23,59,59,999);
+    }
+
+    // ─── parse HubSpot timestamp ────────────────────────────────
+    function parseHSDate(v){
+      if(!v)return null;
+      // Try ISO string first
+      const asDate=new Date(v);
+      if(!isNaN(asDate.getTime()))return asDate;
+      // Try epoch
+      const n=parseInt(v,10);
+      if(isNaN(n))return null;
+      if(n>1e12)return new Date(n);
+      if(n>1e9)return new Date(n*1000);
+      return null;
+    }
+
+    // ─── defaults ───────────────────────────────────────────────
+    const DEFAULT_STANDARD_TARGET=80;
+    const DEFAULT_OVERRIDES={"Komal Singh":60,"Liam Tuapola":60,"Gurleen Sagoo":30,"Erin James":48};
+    const DEFAULT_PROOF_TARGET=425;
+    const DEFAULT_PROOF_OVERRIDES={"Neelam Ranchhod":425};
+
+    // ─── business days calculator (Mon-Fri, excludes weekends) ───
+    function calcBusinessDays(start,end){
+      if(!start||!end||end<=start)return null;
+      let count=0;
+      const cur=new Date(start);
+      cur.setHours(0,0,0,0);
+      const endDay=new Date(end);
+      endDay.setHours(0,0,0,0);
+      while(cur<endDay){
+        cur.setDate(cur.getDate()+1);
+        const dow=cur.getDay();
+        if(dow!==0&&dow!==6)count++;
+      }
+      return count;
+    }
+
+    // ─── process raw deals from server ──────────────────────────
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions){
+      return rawDeals.map(d=>{
+        const p=d.properties||{};
+        const enteredDrafting=parseHSDate(p.hs_v2_date_entered_1223620771);
+        const nativeExitedDrafting=parseHSDate(p.hs_v2_date_exited_1223620771);
+        const origDraftsWithCustomer=parseHSDate(p.original_date_entered_drafts_with_customer);
+        const origReadyForPrinting=parseHSDate(p.original_date_entered_ready_for_printing);
+        const CUTOVER=new Date("2026-04-12T00:00:00");
+        // Anchor: when did the deal first enter Drafting Instructions?
+        const anchorEntered=parseHSDate(p.original_date_entered_drafting_instructions)||enteredDrafting;
+        // Legacy deals (entered DI before cutover): always use exited Drafting Instructions
+        // Post-cutover deals (entered DI from cutover): only original_* DWC/RFP completion dates
+        // No anchor = migration deal (never entered DI): skip
+        let exitedDrafting;
+        if(!anchorEntered){exitedDrafting=null;}
+        else if(anchorEntered<CUTOVER){
+          // Legacy deal: entered DI before cutover
+          const legacyExit=nativeExitedDrafting||null;
+          if(legacyExit&&legacyExit<CUTOVER){
+            // Completed before cutover — use exit DI date
+            exitedDrafting=legacyExit;
+          }else{
+            // Still in-flight after cutover — workflows are active, use DWC/RFP
+            const validDates=[origDraftsWithCustomer,origReadyForPrinting].filter(dt=>dt&&dt>=anchorEntered);
+            exitedDrafting=validDates.length?new Date(Math.min(...validDates)):null;
+          }
+        }
+        else{const validDates=[origDraftsWithCustomer,origReadyForPrinting].filter(dt=>dt&&dt>=anchorEntered);const newLogic=validDates.length?new Date(Math.min(...validDates)):null;exitedDrafting=newLogic&&newLogic>=CUTOVER?newLogic:null;}
+        const enteredProofreading=parseHSDate(p.hs_v2_date_entered_1223620773);
+        const exitedProofreading=parseHSDate(p.hs_v2_date_exited_1223620773);
+        const enteredDraftingQuery=parseHSDate(p.hs_v2_date_entered_1223620772);
+        const origEnteredDrafting=parseHSDate(p.original_date_entered_drafting_instructions);
+        const draftingStart=origEnteredDrafting||enteredDrafting;
+        const rawDraftOwner=p.drafting_owner||"";
+        const rawProofOwner=p.proof_reading__owner||"";
+        const drafterName=draftingOwnerOptions[rawDraftOwner]||ownerMap[rawDraftOwner]||rawDraftOwner||"Unknown";
+        const prooferName=proofOwnerOptions[rawProofOwner]||ownerMap[rawProofOwner]||rawProofOwner||"Unknown";
+        // Parse multi-select query reasons (semicolon-separated in HubSpot)
+        const rawReasons=p.drafting_query_reason||"";
+        const queryReasons=rawReasons?rawReasons.split(";").map(r=>queryReasonOptions[r.trim()]||r.trim()).filter(Boolean):[];
+        // Priority and urgent reason
+        const priority=(p.hs_priority||"").toLowerCase();
+        const rawUrgentReason=p.urgent_request_reason||"";
+        const urgentReason=rawUrgentReason?rawUrgentReason.split(";").map(r=>(urgentReasonOptions||{})[r.trim()]||r.trim()).filter(Boolean):[];
+        const isUrgent=priority==="high";
+        // Amendment fields
+        const enteredAmendment=parseHSDate(p.hs_v2_date_entered_1338772492);
+        const exitedAmendment=parseHSDate(p.hs_v2_date_exited_1338772492);
+        const rawAmendSource=p.amendment_source||"";
+        const amendmentSource=rawAmendSource?(amendmentSourceOptions||{})[rawAmendSource.trim()]||rawAmendSource.trim():"";
+        return{
+          id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,
+          enteredDrafting,exitedDrafting,draftingStart,
+          enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
+          priority,isUrgent,urgentReason,
+          enteredAmendment,exitedAmendment,amendmentSource,
+          amendmentTurnaroundDays:enteredAmendment&&exitedAmendment?(exitedAmendment-enteredAmendment)/86400000:null,
+          draftingTurnaroundDays:draftingStart&&exitedDrafting?(exitedDrafting-draftingStart)/86400000:null,
+          draftingTurnaroundBizDays:calcBusinessDays(draftingStart,exitedDrafting),
+          proofreadingTurnaroundDays:enteredProofreading&&exitedProofreading?(exitedProofreading-enteredProofreading)/86400000:null,
+        };
+      });
+    }
+
+    // ─── API helpers ─────────────────────────────────────────────
+    async function fetchDealsFromAPI(force) {
+      const url = force ? "/api/deals/refresh" : "/api/deals";
+      const options = force ? { method: "POST" } : {};
+      const res = await fetch(url, options);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || "Server error");
+      }
+      return res.json();
+    }
+
+    // ─── SLA-colored smooth line renderer ──────────────────────────
+    // Draws smooth color-coded curve segments (no dots) between data points.
+    // Uses quadratic Bézier curves for smooth transitions.
+    function makeSLALine(thresholds){
+      function getColor(val){
+        if(val==null)return C.grid;
+        for(const t of thresholds){if(val<=t.max)return t.color;}
+        return thresholds[thresholds.length-1].color;
+      }
+      let allPts=[];
+      let drawn=false;
+      return function SLALineDot(props){
+        const{cx,cy,payload,dataKey,index}=props;
+        const val=payload?.[dataKey];
+        // Reset on first point
+        if(index===0){allPts=[];drawn=false;}
+        if(val!=null&&cx!=null&&cy!=null)allPts.push({cx,cy,val,index});
+        // Draw segment from previous valid point to this one
+        if(allPts.length<2)return<g key={`sla-e-${index}`}/>;
+        const prev=allPts[allPts.length-2],curr=allPts[allPts.length-1];
+        if(curr.index!==index)return<g key={`sla-s-${index}`}/>; // this point was null, skip
+        const segCol=getColor(Math.max(prev.val,curr.val));
+        // Cubic Bézier control points for smooth curve
+        const tension=0.3;
+        const prevPrev=allPts.length>=3?allPts[allPts.length-3]:prev;
+        const dx=curr.cx-prevPrev.cx;
+        const dy=curr.cy-prevPrev.cy;
+        const cp1x=prev.cx+dx*tension;
+        const cp1y=prev.cy+dy*tension;
+        const cp2x=curr.cx-(curr.cx-prev.cx)*tension;
+        const cp2y=curr.cy-(curr.cy-prev.cy)*tension;
+        return<path key={`sla-${index}`} d={`M${prev.cx},${prev.cy} C${cp1x},${cp1y} ${cp2x},${cp2y} ${curr.cx},${curr.cy}`} stroke={segCol} strokeWidth={3} fill="none" strokeLinecap="round"/>;
+      };
+    }
+
+    // ─── styles ─────────────────────────────────────────────────
+    const S={
+      page:{background:C.bg,color:C.text,minHeight:"100vh",fontFamily:"'Inter','Segoe UI',system-ui,sans-serif",padding:0,margin:0},
+      topBar:{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12,padding:"16px 24px",background:C.bgDarker,borderBottom:`1px solid ${C.border}`},
+      title:{color:C.white,fontSize:18,fontWeight:700,letterSpacing:0.3,margin:0,whiteSpace:"nowrap"},
+      controls:{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"},
+      toggle:a=>({padding:"6px 14px",borderRadius:6,border:`1px solid ${a?C.accent:C.border}`,background:a?C.accent:"transparent",color:a?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600,transition:"all .15s"}),
+      select:{background:C.surface,color:C.text,border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:13},
+      btn:{background:C.surface,color:C.text,border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 14px",cursor:"pointer",fontSize:13,fontWeight:500,display:"flex",alignItems:"center",gap:6},
+      btnPrimary:{background:C.accent,color:C.white,border:"none",borderRadius:6,padding:"8px 20px",cursor:"pointer",fontSize:14,fontWeight:600},
+      badge:{fontSize:11,color:C.text,opacity:0.6},
+      chartBox:{background:C.surface,borderRadius:12,padding:"20px 16px",border:`1px solid ${C.border}`,minHeight:340},
+      row:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,padding:"16px 24px"},
+      modal:{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000},
+      modalBox:{background:C.surface,borderRadius:16,padding:32,width:420,maxWidth:"90vw",border:`1px solid ${C.border}`},
+      input:{width:"100%",padding:"10px 14px",borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.white,fontSize:14,boxSizing:"border-box"},
+      sidePanel:{position:"fixed",top:0,right:0,width:380,maxWidth:"90vw",height:"100vh",background:C.surface,borderLeft:`1px solid ${C.border}`,zIndex:999,overflowY:"auto",padding:24,boxSizing:"border-box"},
+      footer:{textAlign:"center",padding:"12px 24px",fontSize:11,color:C.text,opacity:0.5},
+    };
+
+    // ─── DarkTooltip ────────────────────────────────────────────
+    function DarkTooltip({active,payload,label}){
+      if(!active||!payload?.length)return null;
+      return(
+        <div style={{background:"#222",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",fontSize:12,color:C.text}}>
+          <div style={{fontWeight:600,color:C.white,marginBottom:4}}>{label}</div>
+          {payload.map((p,i)=>(
+            <div key={i} style={{color:p.color||C.text}}>{p.name}: {typeof p.value==="number"?(Number.isInteger(p.value)?p.value:p.value.toFixed(0)):p.value}</div>
+          ))}
+        </div>
+      );
+    }
+    // Tooltip for stacked charts — shows only the hovered segment + line values
+    function StackedTooltip({active,payload,label}){
+      if(!active||!payload?.length)return null;
+      // Show only non-zero bar segments + line values
+      const items=payload.filter(p=>p.value!=null&&(p.value>0||p.type==="none"||p.dataKey==="rate"||p.dataKey==="avgBizDays"||p.dataKey==="avgDays"));
+      return(
+        <div style={{background:"#222",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",fontSize:12,color:C.text}}>
+          <div style={{fontWeight:600,color:C.white,marginBottom:4}}>{label}</div>
+          {items.map((p,i)=>(
+            <div key={i} style={{color:p.color||p.stroke||C.text}}>{p.name}: {typeof p.value==="number"?(Number.isInteger(p.value)?p.value:p.value.toFixed(1)):p.value}</div>
+          ))}
+        </div>
+      );
+    }
+
+    // ─── Info Icon with hover tooltip ─────────────────────────────
+    function InfoIcon({text}){
+      const[show,setShow]=useState(false);
+      return(
+        <span style={{position:"relative",display:"inline-flex",alignItems:"center",marginLeft:8,cursor:"help"}}
+          onMouseEnter={()=>setShow(true)} onMouseLeave={()=>setShow(false)}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{opacity:0.5}}>
+            <circle cx="8" cy="8" r="7" stroke={C.text} strokeWidth="1.5"/>
+            <text x="8" y="12" textAnchor="middle" fill={C.text} fontSize="11" fontWeight="700" fontFamily="sans-serif">i</text>
+          </svg>
+          {show&&(
+            <div style={{position:"absolute",left:"50%",top:"calc(100% + 8px)",transform:"translateX(-50%)",
+              background:"#222",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",
+              fontSize:12,color:C.text,lineHeight:"1.5",width:280,zIndex:100,
+              boxShadow:"0 4px 16px rgba(0,0,0,0.5)",whiteSpace:"normal",pointerEvents:"none"}}>
+              {text}
+            </div>
+          )}
+        </span>
+      );
+    }
+
+    // ─── metric descriptions ────────────────────────────────────
+    const INFO={
+      chart1:'Drafts completed in the selected period. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Grouped by Drafting Owner.',
+      chart2:'Average calendar days from first entering "Drafting Instructions (Estate Planning)" to completion. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Includes Drafting Query time. Grouped by Drafting Owner.',
+      chart3:'Line: average calendar days from entering to exiting "Required \u2014 Proof Reading" for deals completed that period. Stacked bars: deals still in proofreading at period end (backlog), broken down by Proofreading Owner. SLA: 2 days.',
+      chart4:'Query rate per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period. Numerator: those in the cohort that also have a Drafting Query. SLA: green \u22645%, amber \u226410%, red >10%.',
+      chart5:'Drafts proofread in the selected period. A deal counts as completed when it exits "Required \u2014 Proof Reading" (hs_v2_date_exited_1223620773). Grouped by Proof Reading Owner.',
+      chart6:'Bars: total standard drafts completed per period. Line: average turnaround in calendar days (first entry into "Drafting Instructions (Estate Planning)" \u2192 completion). Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". SLA: 10d internal, 28d customer.',
+      chart7:'Query rate per drafter per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period per drafter. Numerator: those with a Drafting Query. Green \u22645%, amber \u226410%, red >10%.',
+      chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). SLA: 1 business day.',
+      chart9:'Average turnaround in business days (Mon\u2013Fri) for urgent drafts completed in the selected period, grouped by Drafting Owner. SLA: 1 business day. Green = met, red = breached.',
+      chart10:'Amendments completed per period. Stacked bars show amendment source breakdown. Line shows average turnaround in calendar days (entered \u2192 exited "Amendment Requested"). Grouped by exit date.',
+      chart11:'Average turnaround in calendar days for amendments completed in the selected period, grouped by Drafting Owner. Turnaround = date entered \u2192 date exited "Amendment Requested".',
+    };
+
+    // ─── HubSpot link + CSV helpers ───────────────────────────
+    const HS_BASE="https://app.hubspot.com/contacts/4385478/record/0-3/";
+    function fmtDate(d){if(!d)return"—";return d.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"});}
+    function toCSV(rows){return rows.map(r=>r.map(c=>`"${String(c??"").replace(/"/g,'""')}"`).join(",")).join("\n");}
+    function downloadCSV(name,content){
+      try{const b=new Blob(["\uFEFF"+content],{type:"text/csv;charset=utf-8"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=name;a.style.display="none";document.body.appendChild(a);a.click();setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(u);},100);}
+      catch(e){const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent("\uFEFF"+content);a.download=name;a.click();}
+    }
+
+    // ─── table column configs ───────────────────────────────────
+    const T_COLS={
+      c1:[{key:"name",label:"Drafter"},{key:"count",label:"Completed"},{key:"target",label:"Target"},{key:"status",label:"Status"}],
+      c2:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Days"},{key:"count",label:"Deals"}],
+      c3:[{key:"label",label:"Period"},{key:"avgTurnaround",label:"Avg Days"},{key:"backlog",label:"Backlog"},{key:"completed",label:"Completed"}],
+      c4:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
+      c5:[{key:"name",label:"Proofreader"},{key:"count",label:"Completed"},{key:"target",label:"Target"},{key:"status",label:"Status"}],
+      c6:[{key:"label",label:"Period"},{key:"drafted",label:"Drafted"},{key:"avgTurnaround",label:"Avg Days"}],
+      c7:[{key:"label",label:"Period"}],
+      c8:[{key:"label",label:"Period"},{key:"drafted",label:"Urgents"},{key:"avgBizDays",label:"Avg Biz Days"}],
+      c9:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Biz Days"},{key:"count",label:"Deals"}],
+      c10:[{key:"label",label:"Period"},{key:"amendments",label:"Amendments"},{key:"avgDays",label:"Avg Days"}],
+      c11:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Days"},{key:"count",label:"Deals"}],
+    };
+    const T_DCOLS={
+      c1:[{key:"date",label:"Completed"}],
+      c2:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"days",label:"Days"}],
+      c3:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"}],
+      c4:[{key:"reasons",label:"Reasons"}],
+      c5:[{key:"date",label:"Completed"}],
+      c6:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"days",label:"Days"}],
+      c7:[{key:"drafter",label:"Drafter"},{key:"queried",label:"Queried"},{key:"reasons",label:"Query Reasons"}],
+      c8:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"},{key:"reason",label:"Reason"}],
+      c9:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"}],
+      c10:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"},{key:"source",label:"Source"}],
+      c11:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"},{key:"source",label:"Source"}],
+    };
+
+    // ─── ChartCard: wraps each chart with data table + CSV ──────
+    function ChartCard({title,infoText,children,columns,rows,detailMap,detailCols,csvName,csvBuilder,chartId}){
+      const[showTable,setShowTable]=useState(false);
+      const[expanded,setExpanded]=useState({});
+      const toggle=k=>setExpanded(p=>({...p,[k]:!p[k]}));
+      const hasDetails=!!detailMap;
+
+      const doCSV=()=>{
+        if(csvBuilder){downloadCSV(csvName||"data.csv",csvBuilder());return;}
+        const hdr=columns.map(c=>c.label).concat(hasDetails?["Deal Name","HubSpot Link"].concat((detailCols||[]).map(c=>c.label)):[]);
+        const lines=[hdr];
+        (rows||[]).forEach(r=>{
+          if(hasDetails&&detailMap[r._key]){
+            detailMap[r._key].forEach(deal=>{
+              lines.push(columns.map(c=>r[c.key]).concat([deal.dealname||deal.id,HS_BASE+deal.id]).concat((detailCols||[]).map(c=>deal[c.key])));
+            });
+          }else{lines.push(columns.map(c=>r[c.key]));}
+        });
+        downloadCSV(csvName||"data.csv",toCSV(lines));
+      };
+
+      const th={padding:"8px 10px",textAlign:"left",borderBottom:`1px solid ${C.border}`,color:C.white,fontWeight:600,fontSize:11,position:"sticky",top:0,background:C.surface};
+      const td={padding:"6px 10px",borderBottom:`1px solid ${C.border}`,color:C.text,fontSize:12};
+
+      return(
+        <div style={S.chartBox}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:8}}>
+            <h3 style={{color:C.white,fontSize:14,margin:0,fontWeight:600,display:"flex",alignItems:"center"}}>{title}<InfoIcon text={infoText}/></h3>
+            <div style={{display:"flex",gap:6}}>
+              <button style={{...S.btn,padding:"4px 10px",fontSize:11}} onClick={()=>setShowTable(!showTable)}>{showTable?"Hide":"View"} Data</button>
+              <button style={{...S.btn,padding:"4px 10px",fontSize:11}} onClick={doCSV}>{"\u2B07"} CSV</button>
+            </div>
+          </div>
+          <div id={chartId||undefined}>{children}</div>
+          {showTable&&(rows||[]).length>0&&(
+            <div style={{marginTop:16,maxHeight:400,overflowY:"auto",overflowX:"auto",border:`1px solid ${C.border}`,borderRadius:8}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead><tr>{hasDetails&&<th style={{...th,width:44}}></th>}{columns.map(c=><th key={c.key} style={th}>{c.label}</th>)}</tr></thead>
+                <tbody>
+                  {rows.map((r,i)=>(
+                    <React.Fragment key={r._key||i}>
+                      <tr style={{cursor:hasDetails?"pointer":"default",background:i%2===0?"transparent":"rgba(255,255,255,0.02)"}} onClick={()=>hasDetails&&toggle(r._key)}>
+                        {hasDetails&&<td style={td}>{expanded[r._key]?"\u25BC":"\u25B6"}<span style={{fontSize:10,opacity:0.5,marginLeft:4}}>{(detailMap[r._key]||[]).length}</span></td>}
+                        {columns.map(c=><td key={c.key} style={td}>{r[c.key]}</td>)}
+                      </tr>
+                      {expanded[r._key]&&(detailMap[r._key]||[]).map(deal=>(
+                        <tr key={deal.id} style={{background:"rgba(0,0,0,0.25)"}}>
+                          {hasDetails&&<td style={td}></td>}
+                          <td style={{...td,paddingLeft:20}} colSpan={columns.length}>
+                            <a href={HS_BASE+deal.id} target="_blank" rel="noopener" style={{color:C.accent,textDecoration:"none",fontWeight:500}}>{deal.dealname||deal.id}</a>
+                            {(detailCols||[]).map(c=><span key={c.key} style={{marginLeft:16,fontSize:11,opacity:0.6}}>{c.label}: {deal[c.key]??"—"}</span>)}
+                          </td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {showTable&&!(rows||[]).length&&<div style={{marginTop:12,fontSize:12,color:C.text,opacity:0.5,textAlign:"center"}}>No data for this period</div>}
+        </div>
+      );
+    }
+
+    // ─── Chart 1: Total Drafts Completed ────────────────────────
+    function Chart1({deals,gran,bucket,standardTarget,overrides}){
+      const data=useMemo(()=>{
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
+        const counts={};
+        deals.forEach(d=>{
+          if(!d.exitedDrafting)return;
+          if(dateToBucket(d.exitedDrafting,gran)!==bucket)return;
+          counts[d.drafterName]=(counts[d.drafterName]||0)+1;
+        });
+        return Object.entries(counts)
+          .filter(([n,c])=>c>=1&&!/^\d+$/.test(n)&&n!=="Unknown")
+          .map(([name,count])=>{
+            const wt=overrides[name]??standardTarget;
+            const target=Math.round(wt*mult);
+            return{name,count,target,met:count>=target,isCustom:name in overrides};
+          }).sort((a,b)=>b.count-a.count);
+      },[deals,gran,bucket,standardTarget,overrides]);
+
+      const globalTarget=Math.round(standardTarget*(gran==="DoD"?1/5:gran==="MoM"?4.33:1));
+      const maxVal=Math.max(...data.map(d=>Math.max(d.count,d.target)),globalTarget,10);
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No completed drafts in this period</div>;
+
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:30,right:60,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}}/>
+            <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
+            <Bar dataKey="count" radius={[0,6,6,0]} barSize={22}>
+              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
+              {data.map((entry,i)=>(<Cell key={i} fill={entry.met?C.green:C.red}/>))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 2: Avg Turnaround Days ───────────────────────────
+    function Chart2({deals,gran,bucket}){
+      const data=useMemo(()=>{
+        const groups={};
+        deals.forEach(d=>{
+          if(!d.exitedDrafting||d.draftingTurnaroundDays==null)return;
+          if(dateToBucket(d.exitedDrafting,gran)!==bucket)return;
+          if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+          if(!groups[d.drafterName])groups[d.drafterName]=[];
+          groups[d.drafterName].push(d.draftingTurnaroundDays);
+        });
+        return Object.entries(groups).map(([name,days])=>{
+          const avg=days.reduce((s,v)=>s+v,0)/days.length;
+          return{name,avg:parseFloat(avg.toFixed(0)),count:days.length};
+        }).filter(d=>d.count>=1).sort((a,b)=>b.avg-a.avg);
+      },[deals,gran,bucket]);
+
+      const maxVal=Math.max(...data.map(d=>d.avg),30);
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No turnaround data for this period</div>;
+
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:30,right:60,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}}/>
+            <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <ReferenceArea x1={0} x2={10} fill={C.green} fillOpacity={0.07}/>
+            <ReferenceLine x={10} stroke={C.green} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"10d Internal SLA",position:"top",fill:C.green,fontSize:14,fontWeight:700,offset:10}}/>
+            <ReferenceLine x={28} stroke={C.amber} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"28d Customer SLA",position:"top",fill:C.amber,fontSize:14,fontWeight:700,offset:10}}/>
+            <Bar dataKey="avg" radius={[0,6,6,0]} barSize={22}>
+              <LabelList dataKey="avg" position="right" fill={C.white} fontSize={12} fontWeight={600} formatter={v=>`${v}d`}/>
+              {data.map((entry,i)=>(<Cell key={i} fill={entry.avg<=10?C.green:entry.avg<=28?C.amber:C.red}/>))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 3: Proofreading Turnaround & Backlog ─────────────
+    const BACKLOG_COLORS=["rgba(137,196,225,0.30)","rgba(244,166,160,0.30)","rgba(197,163,217,0.30)","rgba(142,207,176,0.30)","rgba(246,200,138,0.30)","rgba(160,191,224,0.30)","rgba(232,180,200,0.30)","rgba(126,202,193,0.30)","rgba(212,184,150,0.30)","rgba(176,196,239,0.30)"];
+    const BACKLOG_STROKES=["#89c4e1","#f4a6a0","#c5a3d9","#8ecfb0","#f6c88a","#a0bfe0","#e8b4c8","#7ecac1","#d4b896","#b0c4ef"];
+
+    function Chart3({deals,gran}){
+      const{data,owners}=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        const completed={};
+        deals.forEach(d=>{
+          if(!d.enteredProofreading||!d.exitedProofreading||d.proofreadingTurnaroundDays==null)return;
+          const b=dateToBucket(d.exitedProofreading,gran);
+          if(!completed[b])completed[b]=[];
+          completed[b].push(d.proofreadingTurnaroundDays);
+        });
+
+        // Collect backlog by proofreading owner
+        const ownerSet=new Set();
+        const backlogByOwner={};
+        const data=uniq.map(bucket=>{
+          const days=completed[bucket]||[];
+          const avgTurnaround=days.length?parseFloat((days.reduce((s,v)=>s+v,0)/days.length).toFixed(0)):null;
+          const endOfPeriod=bucketEndDate(bucket,gran);
+          const blDeals=deals.filter(d=>{
+            if(!d.enteredProofreading)return false;
+            if(d.enteredProofreading>endOfPeriod)return false;
+            if(d.exitedProofreading&&d.exitedProofreading<=endOfPeriod)return false;
+            return true;
+          });
+          const byOwner={};
+          blDeals.forEach(d=>{
+            const name=d.prooferName&&d.prooferName!=="Unknown"&&!/^\d+$/.test(d.prooferName)?d.prooferName:"Unassigned";
+            ownerSet.add(name);
+            byOwner[name]=(byOwner[name]||0)+1;
+          });
+          backlogByOwner[bucket]=byOwner;
+          const row={bucket,label:bucketLabel(bucket,gran),avgTurnaround};
+          Object.entries(byOwner).forEach(([n,c])=>{row[n]=c;});
+          return row;
+        });
+
+        // Sort owners by total backlog descending
+        const ownerTotals={};
+        [...ownerSet].forEach(o=>{ownerTotals[o]=0;Object.values(backlogByOwner).forEach(bk=>{ownerTotals[o]+=(bk[o]||0);});});
+        const owners=[...ownerSet].sort((a,b)=>ownerTotals[b]-ownerTotals[a]);
+
+        // Ensure every row has every owner key (default 0)
+        data.forEach(row=>{owners.forEach(o=>{if(row[o]==null)row[o]=0;});});
+
+        return{data,owners};
+      },[deals,gran]);
+
+      return(
+        <ResponsiveContainer width="100%" height={340}>
+          <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} label={{value:"Avg Days",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Backlog",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<StackedTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
+            <ReferenceArea yAxisId="left" y1={0} y2={2} fill={C.green} fillOpacity={0.12}/>
+            <ReferenceLine yAxisId="left" y={2} stroke={C.green} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"2d SLA",position:"insideBottomRight",fill:C.green,fontSize:14,fontWeight:700}}/>
+            {owners.map((o,i)=>(
+              <Bar key={o} yAxisId="right" dataKey={o} name={o} stackId="backlog" fill={BACKLOG_COLORS[i%BACKLOG_COLORS.length]} stroke={BACKLOG_STROKES[i%BACKLOG_STROKES.length]} strokeWidth={0.5} barSize={28} radius={i===owners.length-1?[4,4,0,0]:[0,0,0,0]}/>
+            ))}
+            <Line yAxisId="left" type="linear" dataKey="avgTurnaround" name="Avg Turnaround" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:2,color:C.green},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
+              <LabelList dataKey="avgTurnaround" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}d`:""} offset={12}/>
+            </Line>
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 4: Drafting Query Rate ───────────────────────────
+    const REASON_COLORS_C4=["rgba(244,166,160,0.30)","rgba(137,196,225,0.30)","rgba(197,163,217,0.30)","rgba(142,207,176,0.30)","rgba(246,200,138,0.30)","rgba(160,191,224,0.30)","rgba(232,180,200,0.30)","rgba(126,202,193,0.30)","rgba(212,184,150,0.30)","rgba(176,196,239,0.30)","rgba(201,228,154,0.30)","rgba(224,168,168,0.30)"];
+    const REASON_STROKES_C4=["#f4a6a0","#89c4e1","#c5a3d9","#8ecfb0","#f6c88a","#a0bfe0","#e8b4c8","#7ecac1","#d4b896","#b0c4ef","#c9e49a","#e0a8a8"];
+
+    function Chart4({deals,gran}){
+      const{data,allReasons}=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        // Cohort: deals that entered Required — Proof Reading per period
+        // Numerator: those in the cohort that also have a drafting query
+        const periodData={};
+        const reasonSet=new Set();
+        const reasonData={};
+        deals.forEach(d=>{
+          if(!d.enteredProofreading)return;
+          const b=dateToBucket(d.enteredProofreading,gran);
+          if(!periodData[b])periodData[b]={total:0,queried:0};
+          periodData[b].total++;
+          if(d.enteredDraftingQuery){
+            periodData[b].queried++;
+            if(d.queryReasons.length){
+              if(!reasonData[b])reasonData[b]={};
+              d.queryReasons.forEach(r=>{reasonSet.add(r);reasonData[b][r]=(reasonData[b][r]||0)+1;});
+            }
+          }
+        });
+
+        // Sort reasons by total count descending
+        const totals={};
+        [...reasonSet].forEach(r=>{totals[r]=0;Object.values(reasonData).forEach(w=>{totals[r]+=(w[r]||0);});});
+        const allReasons=[...reasonSet].sort((a,b)=>totals[b]-totals[a]);
+
+        const data=uniq.map(bucket=>{
+          const wd=periodData[bucket]||{total:0,queried:0};
+          const rate=wd.total>0?parseFloat(Math.min((wd.queried/wd.total)*100,100).toFixed(0)):null;
+          const row={bucket,label:bucketLabel(bucket,gran),rate,total:wd.total,queried:wd.queried};
+          allReasons.forEach(r=>{row[r]=reasonData[bucket]?.[r]||0;});
+          return row;
+        });
+        return{data,allReasons};
+      },[deals,gran]);
+
+      return(
+        <ResponsiveContainer width="100%" height={380}>
+          <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis yAxisId="left" domain={[0,max=>Math.min(Math.max(max*1.2,15),100)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} tickFormatter={v=>`${v}%`} label={{value:"Query Rate %",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Reason Count",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<StackedTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:10,color:C.text,paddingBottom:4}}/>
+            <ReferenceArea yAxisId="left" y1={0} y2={5} fill={C.green} fillOpacity={0.08}/>
+            <ReferenceLine yAxisId="left" y={5} stroke={C.green} strokeDasharray="8 4" strokeWidth={2} label={{value:"5%",position:"insideBottomRight",fill:C.green,fontSize:12,fontWeight:700}}/>
+            <ReferenceLine yAxisId="left" y={10} stroke={C.amber} strokeDasharray="8 4" strokeWidth={2} label={{value:"10%",position:"insideBottomRight",fill:C.amber,fontSize:12,fontWeight:700}}/>
+            {allReasons.map((reason,i)=>(
+              <Bar key={reason} yAxisId="right" dataKey={reason} stackId="reasons" fill={REASON_COLORS_C4[i%REASON_COLORS_C4.length]} stroke={REASON_STROKES_C4[i%REASON_STROKES_C4.length]} strokeWidth={0.5} barSize={28} radius={i===0?[4,4,0,0]:[0,0,0,0]}/>
+            ))}
+            <Line yAxisId="left" type="linear" dataKey="rate" name="Query Rate %" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:5,color:C.green},{max:10,color:C.amber},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
+              <LabelList dataKey="rate" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}%`:""} offset={14}/>
+            </Line>
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 5: Total Drafts Proofread per Proofreader ──────
+    function Chart5({deals,gran,bucket,proofTarget,proofOverrides}){
+      const data=useMemo(()=>{
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
+        const counts={};
+        deals.forEach(d=>{
+          if(!d.exitedProofreading)return;
+          if(dateToBucket(d.exitedProofreading,gran)!==bucket)return;
+          if(!d.prooferName||d.prooferName==="Unknown")return;
+          if(/^\d+$/.test(d.prooferName))return;
+          counts[d.prooferName]=(counts[d.prooferName]||0)+1;
+        });
+        return Object.entries(counts)
+          .filter(([,c])=>c>=1)
+          .map(([name,count])=>{
+            const wt=proofOverrides[name]??proofTarget;
+            const target=Math.round(wt*mult);
+            return{name,count,target,met:count>=target,isCustom:name in proofOverrides};
+          })
+          .sort((a,b)=>b.count-a.count);
+      },[deals,gran,bucket,proofTarget,proofOverrides]);
+
+      const globalTarget=Math.round(proofTarget*(gran==="DoD"?1/5:gran==="MoM"?4.33:1));
+      const maxVal=Math.max(...data.map(d=>Math.max(d.count,d.target)),globalTarget,5);
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No proofread drafts in this period</div>;
+
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:30,right:60,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
+            <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
+            <Bar dataKey="count" radius={[0,6,6,0]} barSize={22}>
+              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
+              {data.map((entry,i)=>(<Cell key={i} fill={entry.met?C.green:C.red}/>))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Settings Panel ─────────────────────────────────────────
+    // ─── Chart 6: Drafting Productivity & Avg Turnaround ──────
+    function Chart6({deals,gran}){
+      const data=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        const completed={};
+        deals.forEach(d=>{
+          if(!d.exitedDrafting)return;
+          const b=dateToBucket(d.exitedDrafting,gran);
+          if(!completed[b])completed[b]={count:0,days:[]};
+          completed[b].count++;
+          if(d.draftingTurnaroundDays!=null)completed[b].days.push(d.draftingTurnaroundDays);
+        });
+
+        return uniq.map(bucket=>{
+          const c=completed[bucket]||{count:0,days:[]};
+          const avgTurnaround=c.days.length?parseFloat((c.days.reduce((s,v)=>s+v,0)/c.days.length).toFixed(0)):null;
+          return{bucket,label:bucketLabel(bucket,gran),drafted:c.count,avgTurnaround};
+        });
+      },[deals,gran]);
+
+      return(
+        <ResponsiveContainer width="100%" height={340}>
+          <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} label={{value:"Avg Days",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Drafted",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
+            <ReferenceArea yAxisId="left" y1={0} y2={10} fill={C.green} fillOpacity={0.08}/>
+            <ReferenceLine yAxisId="left" y={10} stroke={C.green} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"10d Internal SLA",position:"insideBottomRight",fill:C.green,fontSize:12,fontWeight:700}}/>
+            <ReferenceLine yAxisId="left" y={28} stroke={C.amber} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"28d Customer SLA",position:"insideBottomRight",fill:C.amber,fontSize:12,fontWeight:700}}/>
+            <Bar yAxisId="right" dataKey="drafted" name="Total Drafted" fill={C.blueFaded} stroke={C.blue} strokeWidth={0.5} barSize={28} radius={[4,4,0,0]}>
+              <LabelList dataKey="drafted" position="top" fill={C.blue} fontSize={10} fontWeight={600}/>
+            </Bar>
+            <Line yAxisId="left" type="linear" dataKey="avgTurnaround" name="Avg Turnaround" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:10,color:C.green},{max:28,color:C.amber},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
+              <LabelList dataKey="avgTurnaround" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}d`:""} offset={12}/>
+            </Line>
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 7: Query Rate per Drafter (heatmap + drill-down) ─
+    function Chart7({deals,gran}){
+      const[expanded,setExpanded]=useState(null); // "name|bucket" or null
+      const{periods,drafters,grid,dealMap}=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?14:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const periods=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        const byPD={};const dTotals={};const dealMap={};
+        // Cohort: deals entering Required — Proof Reading per drafter per period
+        // Numerator: those in the cohort that also have a drafting query
+        deals.forEach(d=>{
+          if(!d.enteredProofreading||!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+          const b=dateToBucket(d.enteredProofreading,gran);
+          const key=`${b}|${d.drafterName}`;
+          if(!byPD[key])byPD[key]={total:0,queried:0};
+          byPD[key].total++;
+          dTotals[d.drafterName]=(dTotals[d.drafterName]||0)+1;
+          if(!dealMap[key])dealMap[key]=[];
+          dealMap[key].push(d);
+          if(d.enteredDraftingQuery){
+            byPD[key].queried++;
+          }
+        });
+
+        const drafters=Object.entries(dTotals).filter(([,c])=>c>=10).map(([n])=>n).sort();
+
+        const grid={};
+        drafters.forEach(name=>{
+          grid[name]={};
+          periods.forEach(bucket=>{
+            const pd=byPD[`${bucket}|${name}`];
+            if(pd&&pd.total>=1){
+              const rate=parseFloat(Math.min((pd.queried/pd.total)*100,100).toFixed(0));
+              grid[name][bucket]={rate,total:pd.total,queried:pd.queried};
+            }else{grid[name][bucket]=null;}
+          });
+        });
+        return{periods,drafters,grid,dealMap};
+      },[deals,gran]);
+
+      // Reset expanded when granularity changes
+      useEffect(()=>{setExpanded(null);},[gran]);
+
+      if(!drafters.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No query rate data available</div>;
+
+      function cellBg(rate){
+        if(rate==null)return"transparent";
+        if(rate<=5)return"rgba(39,174,96,0.25)";
+        if(rate<=10)return"rgba(243,156,18,0.25)";
+        if(rate<=20)return"rgba(243,156,18,0.4)";
+        return"rgba(231,76,60,0.35)";
+      }
+      function cellColor(rate){
+        if(rate==null)return C.text;
+        if(rate<=5)return C.green;
+        if(rate<=10)return C.amber;
+        return C.red;
+      }
+
+      const toggleCell=(name,bucket)=>{
+        const key=`${bucket}|${name}`;
+        setExpanded(prev=>prev===key?null:key);
+      };
+
+      const hdrStyle={padding:"6px 8px",fontSize:10,fontWeight:600,color:C.white,borderBottom:`1px solid ${C.border}`,textAlign:"center",position:"sticky",top:0,background:C.surface,whiteSpace:"nowrap"};
+      const nameStyle={padding:"6px 10px",fontSize:12,fontWeight:500,color:C.white,borderBottom:`1px solid ${C.border}`,position:"sticky",left:0,background:C.surface,whiteSpace:"nowrap",zIndex:2};
+      const cellStyleFn=(rate,isExpanded)=>({padding:"6px 8px",fontSize:11,fontWeight:600,textAlign:"center",borderBottom:`1px solid ${C.border}`,background:cellBg(rate),color:cellColor(rate),minWidth:52,cursor:rate!=null?"pointer":"default",outline:isExpanded?`2px solid ${C.white}`:"none",borderRadius:isExpanded?4:0});
+
+      const expandedDeals=expanded?dealMap[expanded]||[]:[];
+      const expandedParts=expanded?expanded.split("|"):[];
+      const expandedBucket=expandedParts[0]||"";
+      const expandedName=expandedParts[1]||"";
+
+      return(
+        <div>
+          <div style={{overflowX:"auto",overflowY:"auto",maxHeight:Math.max(300,drafters.length*36+50),borderRadius:8,border:`1px solid ${C.border}`}}>
+            <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed"}}>
+              <thead>
+                <tr>
+                  <th style={{...hdrStyle,textAlign:"left",position:"sticky",left:0,zIndex:3,background:C.surface,minWidth:120}}>Drafter</th>
+                  {periods.map(p=><th key={p} style={hdrStyle}>{bucketLabel(p,gran)}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {drafters.map(name=>(
+                  <tr key={name}>
+                    <td style={nameStyle}>{name}</td>
+                    {periods.map(p=>{
+                      const cell=grid[name][p];
+                      const rate=cell?cell.rate:null;
+                      const key=`${p}|${name}`;
+                      const isExp=expanded===key;
+                      return(
+                        <td key={p} style={cellStyleFn(rate,isExp)} title={cell?`${cell.queried}/${cell.total} queried — click to expand`:""} onClick={()=>cell&&cell.total>0&&toggleCell(name,p)}>
+                          {rate!=null?`${rate}%`:"—"}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {expanded&&expandedDeals.length>0&&(()=>{
+            const queriedCount=expandedDeals.filter(d=>d.enteredDraftingQuery).length;
+            const sortedDeals=[...expandedDeals].sort((a,b)=>a.enteredDraftingQuery&&!b.enteredDraftingQuery?-1:!a.enteredDraftingQuery&&b.enteredDraftingQuery?1:0);
+            return(
+            <div style={{marginTop:12,padding:16,background:"rgba(0,0,0,0.25)",borderRadius:8,border:`1px solid ${C.border}`}}>
+              <div style={{fontSize:12,color:C.white,fontWeight:600,marginBottom:10}}>
+                {expandedName} — {bucketLabel(expandedBucket,gran)} — {queriedCount} queried / {expandedDeals.length} total
+                <button style={{...S.btn,padding:"2px 8px",fontSize:10,marginLeft:12,verticalAlign:"middle"}} onClick={()=>setExpanded(null)}>{"\u2715"} Close</button>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:200,overflowY:"auto"}}>
+                {sortedDeals.map(d=>(
+                  <div key={d.id} style={{fontSize:12,display:"flex",alignItems:"center",gap:12}}>
+                    <a href={HS_BASE+d.id} target="_blank" rel="noopener" style={{color:d.enteredDraftingQuery?C.red:C.accent,textDecoration:"none",fontWeight:500}}>{d.dealname||d.id}</a>
+                    {d.enteredDraftingQuery?<span style={{fontSize:11,color:C.text,opacity:0.6}}>{d.queryReasons.join(", ")}</span>:<span style={{fontSize:11,color:C.text,opacity:0.4}}>No query</span>}
+                  </div>
+                ))}
+              </div>
+            </div>);
+          })()}
+        </div>
+      );
+    }
+
+    function SettingsPanel({open,onClose,standardTarget,setStandardTarget,overrides,setOverrides,drafterNames,proofTarget,setProofTarget,proofOverrides,setProofOverrides,prooferNames}){
+      const[newName,setNewName]=useState("");
+      const[newProofName,setNewProofName]=useState("");
+      if(!open)return null;
+      const allNames=[...new Set([...drafterNames,...Object.keys(overrides)])].filter(n=>!/^\d+$/.test(n)).sort();
+      const allProofNames=[...new Set([...prooferNames,...Object.keys(proofOverrides)])].filter(n=>!/^\d+$/.test(n)).sort();
+      return(
+        <React.Fragment>
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:998}} onClick={onClose}/>
+          <div style={S.sidePanel}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
+              <h2 style={{color:C.white,fontSize:16,margin:0}}>Target Settings</h2>
+              <button onClick={onClose} style={{...S.btn,padding:"4px 10px"}}>&#10005;</button>
+            </div>
+
+            {/* ── Drafting Section ── */}
+            <h3 style={{color:C.accent,fontSize:13,textTransform:"uppercase",letterSpacing:1,marginBottom:10,borderBottom:`1px solid ${C.border}`,paddingBottom:6}}>Drafting</h3>
+            <label style={{fontSize:12,color:C.text,display:"block",marginBottom:6}}>Standard Weekly Target</label>
+            <input type="number" value={standardTarget} onChange={e=>setStandardTarget(parseInt(e.target.value)||0)} style={{...S.input,width:100,marginBottom:16}}/>
+            <h4 style={{color:C.white,fontSize:13,marginBottom:8}}>Per-Drafter Overrides</h4>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {allNames.map(name=>{
+                const isOvr=name in overrides;const val=overrides[name]??standardTarget;
+                return(
+                  <div key={name} style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{flex:1,fontSize:13,color:isOvr?C.amber:C.text}}>{name} {isOvr?"\u2605":""}</span>
+                    <input type="number" value={val} onChange={e=>setOverrides(prev=>({...prev,[name]:parseInt(e.target.value)||0}))} style={{...S.input,width:70,padding:"4px 8px",fontSize:13}}/>
+                    {isOvr&&<button onClick={()=>setOverrides(prev=>{const n={...prev};delete n[name];return n;})} style={{...S.btn,padding:"3px 8px",fontSize:11}}>Reset</button>}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{marginTop:12,display:"flex",gap:8}}>
+              <input placeholder="New drafter name..." value={newName} onChange={e=>setNewName(e.target.value)} style={{...S.input,flex:1,padding:"6px 10px",fontSize:13}}/>
+              <button onClick={()=>{if(newName.trim()){setOverrides(prev=>({...prev,[newName.trim()]:standardTarget}));setNewName("");}}} style={{...S.btn,fontSize:12}}>Add</button>
+            </div>
+
+            {/* ── Proofreading Section ── */}
+            <h3 style={{color:C.accent,fontSize:13,textTransform:"uppercase",letterSpacing:1,marginTop:28,marginBottom:10,borderBottom:`1px solid ${C.border}`,paddingBottom:6}}>Proofreading</h3>
+            <label style={{fontSize:12,color:C.text,display:"block",marginBottom:6}}>Standard Weekly Target</label>
+            <input type="number" value={proofTarget} onChange={e=>setProofTarget(parseInt(e.target.value)||0)} style={{...S.input,width:100,marginBottom:16}}/>
+            <h4 style={{color:C.white,fontSize:13,marginBottom:8}}>Per-Proofreader Overrides</h4>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {allProofNames.map(name=>{
+                const isOvr=name in proofOverrides;const val=proofOverrides[name]??proofTarget;
+                return(
+                  <div key={name} style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{flex:1,fontSize:13,color:isOvr?C.amber:C.text}}>{name} {isOvr?"\u2605":""}</span>
+                    <input type="number" value={val} onChange={e=>setProofOverrides(prev=>({...prev,[name]:parseInt(e.target.value)||0}))} style={{...S.input,width:70,padding:"4px 8px",fontSize:13}}/>
+                    {isOvr&&<button onClick={()=>setProofOverrides(prev=>{const n={...prev};delete n[name];return n;})} style={{...S.btn,padding:"3px 8px",fontSize:11}}>Reset</button>}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{marginTop:12,display:"flex",gap:8}}>
+              <input placeholder="New proofreader name..." value={newProofName} onChange={e=>setNewProofName(e.target.value)} style={{...S.input,flex:1,padding:"6px 10px",fontSize:13}}/>
+              <button onClick={()=>{if(newProofName.trim()){setProofOverrides(prev=>({...prev,[newProofName.trim()]:proofTarget}));setNewProofName("");}}} style={{...S.btn,fontSize:12}}>Add</button>
+            </div>
+
+            <p style={{fontSize:11,color:C.text,opacity:0.5,marginTop:20}}>{"\u2605"} = custom override. Changes apply when you close this panel.</p>
+          </div>
+        </React.Fragment>
+      );
+    }
+
+    // ─── Chart 8: Urgent Productivity & Avg Turnaround (stacked by reason) ──
+    const URGENT_COLORS=["rgba(244,166,160,0.30)","rgba(137,196,225,0.30)","rgba(197,163,217,0.30)","rgba(142,207,176,0.30)","rgba(246,200,138,0.30)","rgba(160,191,224,0.30)","rgba(232,180,200,0.30)","rgba(126,202,193,0.30)"];
+    const URGENT_STROKES=["#f4a6a0","#89c4e1","#c5a3d9","#8ecfb0","#f6c88a","#a0bfe0","#e8b4c8","#7ecac1"];
+    function Chart8({deals,gran}){
+      const{data,reasons}=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        // Collect all urgent reasons and bucket data
+        const reasonSet=new Set();
+        const completed={};
+        deals.forEach(d=>{
+          if(!d.exitedDrafting)return;
+          const b=dateToBucket(d.exitedDrafting,gran);
+          if(!completed[b])completed[b]={total:0,bizDays:[],byReason:{}};
+          completed[b].total++;
+          if(d.draftingTurnaroundBizDays!=null)completed[b].bizDays.push(d.draftingTurnaroundBizDays);
+          const rs=d.urgentReason&&d.urgentReason.length?d.urgentReason:["Not specified"];
+          rs.forEach(r=>{reasonSet.add(r);completed[b].byReason[r]=(completed[b].byReason[r]||0)+1;});
+        });
+
+        // Sort reasons by total count descending
+        const totals={};
+        [...reasonSet].forEach(r=>{totals[r]=0;Object.values(completed).forEach(w=>{totals[r]+=(w.byReason[r]||0);});});
+        const reasons=[...reasonSet].sort((a,b)=>totals[b]-totals[a]);
+        const data=uniq.map(bucket=>{
+          const c=completed[bucket]||{total:0,bizDays:[],byReason:{}};
+          const avgBizDays=c.bizDays.length?parseFloat((c.bizDays.reduce((s,v)=>s+v,0)/c.bizDays.length).toFixed(1)):null;
+          const row={bucket,label:bucketLabel(bucket,gran),avgBizDays};
+          reasons.forEach(r=>{row[r]=c.byReason[r]||0;});
+          return row;
+        });
+        return{data,reasons};
+      },[deals,gran]);
+
+      return(
+        <ResponsiveContainer width="100%" height={340}>
+          <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} label={{value:"Avg Biz Days",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Urgents",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<StackedTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
+            <ReferenceArea yAxisId="left" y1={0} y2={1} fill={C.green} fillOpacity={0.08}/>
+            <ReferenceLine yAxisId="left" y={1} stroke={C.red} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"1 Biz Day SLA",position:"insideBottomRight",fill:C.red,fontSize:12,fontWeight:700}}/>
+            {reasons.map((r,i)=>(
+              <Bar key={r} yAxisId="right" dataKey={r} name={r} stackId="reasons" fill={URGENT_COLORS[i%URGENT_COLORS.length]} stroke={URGENT_STROKES[i%URGENT_STROKES.length]} strokeWidth={0.5} barSize={28} radius={i===reasons.length-1?[4,4,0,0]:[0,0,0,0]}/>
+            ))}
+            <Line yAxisId="left" type="linear" dataKey="avgBizDays" name="Avg Turnaround" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:1,color:C.green},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
+              <LabelList dataKey="avgBizDays" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}d`:""} offset={12}/>
+            </Line>
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 9: Urgent Avg Turnaround per Drafter (horizontal bar) ──
+    function Chart9({deals,gran,bucket}){
+      const data=useMemo(()=>{
+        const groups={};
+        deals.forEach(d=>{
+          if(!d.exitedDrafting||d.draftingTurnaroundBizDays==null)return;
+          if(dateToBucket(d.exitedDrafting,gran)!==bucket)return;
+          if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+          (groups[d.drafterName]=groups[d.drafterName]||[]).push(d);
+        });
+        return Object.entries(groups).map(([name,arr])=>{
+          const avg=parseFloat((arr.reduce((s,d)=>s+d.draftingTurnaroundBizDays,0)/arr.length).toFixed(1));
+          return{name,avg,count:arr.length};
+        }).sort((a,b)=>b.avg-a.avg);
+      },[deals,gran,bucket]);
+
+      if(!data.length)return<div style={{padding:40,textAlign:"center",color:C.muted,fontSize:14}}>No urgent drafts completed in this period</div>;
+
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(data.length*44+60,180)}>
+          <BarChart data={data} layout="vertical" margin={{top:10,right:60,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" horizontal={false}/>
+            <XAxis type="number" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}}>
+              <Label value="Business Days" position="insideBottom" offset={-5} fill={C.text} fontSize={11}/>
+            </XAxis>
+            <YAxis dataKey="name" type="category" tick={{fill:C.text,fontSize:11}} width={130}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <ReferenceArea x1={0} x2={1} fill={C.green} fillOpacity={0.08}/>
+            <ReferenceLine x={1} stroke={C.red} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"1d SLA",position:"top",fill:C.red,fontSize:14,fontWeight:700,offset:10}}/>
+            <Bar dataKey="avg" name="Avg Biz Days" barSize={20} radius={[0,4,4,0]}>
+              {data.map((entry,i)=><Cell key={i} fill={entry.avg<=1?C.green:C.red}/>)}
+              <LabelList dataKey="avg" position="right" fill={C.white} fontSize={12} fontWeight={600} formatter={v=>`${v}d`}/>
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 10: Amendments — Productivity & Avg Turnaround (stacked by source) ──
+    const AMEND_COLORS=["rgba(244,166,160,0.30)","rgba(137,196,225,0.30)","rgba(197,163,217,0.30)","rgba(142,207,176,0.30)","rgba(246,200,138,0.30)","rgba(160,191,224,0.30)"];
+    const AMEND_STROKES=["#f4a6a0","#89c4e1","#c5a3d9","#8ecfb0","#f6c88a","#a0bfe0"];
+    function Chart10({deals,gran}){
+      const{data,sources}=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        const sourceSet=new Set();
+        const completed={};
+        deals.forEach(d=>{
+          if(!d.exitedAmendment)return;
+          const b=dateToBucket(d.exitedAmendment,gran);
+          if(!completed[b])completed[b]={total:0,days:[],bySource:{}};
+          completed[b].total++;
+          if(d.amendmentTurnaroundDays!=null)completed[b].days.push(d.amendmentTurnaroundDays);
+          const src=d.amendmentSource||"Not specified";
+          sourceSet.add(src);
+          completed[b].bySource[src]=(completed[b].bySource[src]||0)+1;
+        });
+
+        const totals={};
+        [...sourceSet].forEach(r=>{totals[r]=0;Object.values(completed).forEach(w=>{totals[r]+=(w.bySource[r]||0);});});
+        const sources=[...sourceSet].sort((a,b)=>totals[b]-totals[a]);
+        const data=uniq.map(bucket=>{
+          const c=completed[bucket]||{total:0,days:[],bySource:{}};
+          const avgDays=c.days.length?parseFloat((c.days.reduce((s,v)=>s+v,0)/c.days.length).toFixed(1)):null;
+          const row={bucket,label:bucketLabel(bucket,gran),avgDays};
+          sources.forEach(r=>{row[r]=c.bySource[r]||0;});
+          return row;
+        });
+        return{data,sources};
+      },[deals,gran]);
+
+      return(
+        <ResponsiveContainer width="100%" height={340}>
+          <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} label={{value:"Avg Days",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Amendments",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<StackedTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
+            {sources.map((r,i)=>(
+              <Bar key={r} yAxisId="right" dataKey={r} name={r} stackId="sources" fill={AMEND_COLORS[i%AMEND_COLORS.length]} stroke={AMEND_STROKES[i%AMEND_STROKES.length]} strokeWidth={0.5} barSize={28} radius={i===sources.length-1?[4,4,0,0]:[0,0,0,0]}/>
+            ))}
+            <Line yAxisId="left" type="linear" dataKey="avgDays" name="Avg Turnaround" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:5,color:C.green},{max:10,color:C.amber},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
+              <LabelList dataKey="avgDays" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}d`:""} offset={12}/>
+            </Line>
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 11: Avg Turnaround per Drafter (Amendments) ──
+    function Chart11({deals,gran,bucket}){
+      const data=useMemo(()=>{
+        const groups={};
+        deals.forEach(d=>{
+          if(!d.exitedAmendment||d.amendmentTurnaroundDays==null)return;
+          if(dateToBucket(d.exitedAmendment,gran)!==bucket)return;
+          if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+          (groups[d.drafterName]=groups[d.drafterName]||[]).push(d);
+        });
+        return Object.entries(groups).map(([name,arr])=>{
+          const avg=parseFloat((arr.reduce((s,d)=>s+d.amendmentTurnaroundDays,0)/arr.length).toFixed(1));
+          return{name,avg,count:arr.length};
+        }).filter(d=>d.count>=1).sort((a,b)=>b.avg-a.avg);
+      },[deals,gran,bucket]);
+
+      if(!data.length)return<div style={{padding:40,textAlign:"center",color:C.muted,fontSize:14}}>No amendments completed in this period</div>;
+
+      const maxVal=Math.max(...data.map(d=>d.avg),10);
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(data.length*44+60,180)}>
+          <BarChart data={data} layout="vertical" margin={{top:30,right:60,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" horizontal={false}/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}}/>
+            <YAxis dataKey="name" type="category" tick={{fill:C.text,fontSize:12}} width={130} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <ReferenceArea x1={0} x2={5} fill={C.green} fillOpacity={0.07}/>
+            <ReferenceLine x={5} stroke={C.green} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"5d SLA",position:"top",fill:C.green,fontSize:14,fontWeight:700,offset:10}}/>
+            <ReferenceLine x={10} stroke={C.amber} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"10d SLA",position:"top",fill:C.amber,fontSize:14,fontWeight:700,offset:10}}/>
+            <Bar dataKey="avg" name="Avg Days" barSize={20} radius={[0,4,4,0]}>
+              {data.map((entry,i)=><Cell key={i} fill={entry.avg<=5?C.green:entry.avg<=10?C.amber:C.red}/>)}
+              <LabelList dataKey="avg" position="right" fill={C.white} fontSize={12} fontWeight={600} formatter={v=>`${v}d`}/>
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Skeleton ───────────────────────────────────────────────
+    function SkeletonUI(){
+      const shimmer={background:`linear-gradient(90deg,${C.surface} 25%,#2a2a2a 50%,${C.surface} 75%)`,backgroundSize:"200% 100%",animation:"shimmer 1.5s infinite",borderRadius:8};
+      return(
+        <div style={S.page}>
+          <div style={S.topBar}><div style={{...shimmer,width:300,height:24}}/><div style={{...shimmer,width:200,height:32}}/></div>
+          <div style={S.row}><div style={S.chartBox}><div style={{...shimmer,height:280}}/></div><div style={S.chartBox}><div style={{...shimmer,height:280}}/></div></div>
+          <div style={S.row}><div style={S.chartBox}><div style={{...shimmer,height:280}}/></div><div style={S.chartBox}><div style={{...shimmer,height:280}}/></div></div>
+        </div>
+      );
+    }
+
+    // ─── Slide Generation ─────────────────────────────────────────
+    async function captureChart(elementId, scale=4) {
+      const el = document.getElementById(elementId);
+      if (!el) return null;
+      const canvas = await html2canvas(el, {
+        backgroundColor: "#242424",
+        scale: scale,
+        useCORS: true,
+        logging: false,
+        imageTimeout: 0,
+        removeContainer: true,
+      });
+      return canvas.toDataURL("image/png");
+    }
+
+    async function generateSlides(gran, selectedBucket) {
+      alert("Google Slides generation is not available in the Railway-hosted version. Use the CSV export buttons to get your data.");
+    }
+
+    // ─── Main Dashboard ─────────────────────────────────────────
+    function Dashboard(){
+      const[loading,setLoading]=useState(true);
+      const[error,setError]=useState(null);
+      const[deals,setDeals]=useState([]);
+      const[lastRefresh,setLastRefresh]=useState(null);
+      const[totalRaw,setTotalRaw]=useState(0);
+      const[gran,setGran]=useState("WoW");
+      const[selectedBucket,setSelectedBucket]=useState(null);
+      const[settingsOpen,setSettingsOpen]=useState(false);
+      const[standardTarget,setStandardTarget]=useState(DEFAULT_STANDARD_TARGET);
+      const[overrides,setOverrides]=useState({...DEFAULT_OVERRIDES});
+      const[proofTarget,setProofTarget]=useState(DEFAULT_PROOF_TARGET);
+      const[proofOverrides,setProofOverrides]=useState({...DEFAULT_PROOF_OVERRIDES});
+      const[generating,setGenerating]=useState(false);
+
+      // ── load data via server (serves from cache, or fetches fresh) ──
+      const loadData=useCallback(async(force)=>{
+        setLoading(true);setError(null);
+        try{
+          const result=await fetchDealsFromAPI(force);
+          const rawDeals=result.deals||[];
+          const ownerMap=result.ownerMap||{};
+          const draftingOpts=result.draftingOwnerOptions||{};
+          const proofOpts=result.proofOwnerOptions||{};
+          const queryReasonOpts=result.queryReasonOptions||{};
+          const urgentReasonOpts=result.urgentReasonOptions||{};
+          const amendmentSourceOpts=result.amendmentSourceOptions||{};
+          setTotalRaw(rawDeals.length);
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts));
+          const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
+          setLastRefresh(cachedAt);
+        }catch(err){
+          setError(err.message||String(err));
+        }finally{setLoading(false);}
+      },[]);
+
+      // ── auto-load on mount + refresh every hour ────────────────
+      useEffect(()=>{
+        loadData();
+        const interval=setInterval(()=>{loadData();},3600000);
+        return()=>clearInterval(interval);
+      },[loadData]);
+
+      const availableBuckets=useMemo(()=>{
+        const set=new Set();
+        deals.forEach(d=>{
+          if(d.exitedDrafting)set.add(dateToBucket(d.exitedDrafting,gran));
+          if(d.exitedProofreading)set.add(dateToBucket(d.exitedProofreading,gran));
+        });
+        return[...set].sort().reverse();
+      },[deals,gran]);
+
+      useEffect(()=>{
+        if(availableBuckets.length&&(!selectedBucket||!availableBuckets.includes(selectedBucket)))
+          setSelectedBucket(availableBuckets[0]);
+      },[availableBuckets,selectedBucket]);
+
+      // ── split deals by priority ──────────────────────────────────
+      const standardDeals=useMemo(()=>deals.filter(d=>!d.isUrgent),[deals]);
+      const urgentDeals=useMemo(()=>deals.filter(d=>d.isUrgent),[deals]);
+
+      const drafterNames=useMemo(()=>{
+        // Count deals per drafter, then filter out numeric IDs and low-volume names
+        const counts={};
+        deals.forEach(d=>{
+          if(!d.drafterName||d.drafterName==="Unknown")return;
+          // Skip purely numeric names (unresolved owner IDs)
+          if(/^\d+$/.test(d.drafterName))return;
+          counts[d.drafterName]=(counts[d.drafterName]||0)+1;
+        });
+        // Only include drafters with 5+ deals (filters test/inactive)
+        return Object.entries(counts).filter(([,c])=>c>=5).map(([n])=>n).sort();
+      },[deals]);
+
+      const prooferNames=useMemo(()=>{
+        const counts={};
+        deals.forEach(d=>{
+          if(!d.prooferName||d.prooferName==="Unknown")return;
+          if(/^\d+$/.test(d.prooferName))return;
+          counts[d.prooferName]=(counts[d.prooferName]||0)+1;
+        });
+        return Object.entries(counts).filter(([,c])=>c>=3).map(([n])=>n).sort();
+      },[deals]);
+
+      const dateRange=useMemo(()=>{
+        let min=Infinity,max=-Infinity;
+        deals.forEach(d=>{
+          [d.enteredDrafting,d.exitedDrafting,d.enteredProofreading,d.exitedProofreading].forEach(dt=>{
+            if(dt){if(dt.getTime()<min)min=dt.getTime();if(dt.getTime()>max)max=dt.getTime();}
+          });
+        });
+        if(min===Infinity)return"No data";
+        return`${new Date(min).toLocaleDateString()} \u2014 ${new Date(max).toLocaleDateString()}`;
+      },[deals]);
+
+      // ── table data for standard charts (c1–c7) ─────────────────
+      const c1Table=useMemo(()=>{
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;const groups={};
+        standardDeals.forEach(d=>{if(!d.exitedDrafting||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
+        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((overrides[name]??standardTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:arr.length>=t?"\u2713 Met":"\u2717 Below"};}).sort((a,b)=>b.count-a.count);
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedDrafting)}));});
+        return{rows,detailMap};
+      },[standardDeals,gran,selectedBucket,standardTarget,overrides]);
+
+      const c2Table=useMemo(()=>{
+        const groups={};
+        standardDeals.forEach(d=>{if(!d.exitedDrafting||d.draftingTurnaroundDays==null||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
+        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const avg=parseFloat((arr.reduce((s,d)=>s+d.draftingTurnaroundDays,0)/arr.length).toFixed(0));return{_key:name,name,avg:avg+"d",count:arr.length};}).sort((a,b)=>parseFloat(b.avg)-parseFloat(a.avg));
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,start:fmtDate(d.draftingStart),exit:fmtDate(d.exitedDrafting),days:d.draftingTurnaroundDays!=null?d.draftingTurnaroundDays.toFixed(0)+"d":"—"}));});
+        return{rows,detailMap};
+      },[standardDeals,gran,selectedBucket]);
+
+      const c3Table=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const comp={};standardDeals.forEach(d=>{if(!d.enteredProofreading||!d.exitedProofreading||d.proofreadingTurnaroundDays==null)return;const b=dateToBucket(d.exitedProofreading,gran);(comp[b]=comp[b]||[]).push(d);});
+        const rows=uniq.map(bucket=>{const arr=comp[bucket]||[];const avg=arr.length?parseFloat((arr.reduce((s,d)=>s+d.proofreadingTurnaroundDays,0)/arr.length).toFixed(0)):null;
+          const endP=bucketEndDate(bucket,gran);const bl=standardDeals.filter(d=>{if(!d.enteredProofreading)return false;if(d.enteredProofreading>endP)return false;if(d.exitedProofreading&&d.exitedProofreading<=endP)return false;return true;}).length;
+          return{_key:bucket,label:bucketLabel(bucket,gran),avgTurnaround:avg!=null?avg+"d":"—",backlog:bl,completed:arr.length};});
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(comp[b]||[]).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredProofreading),exited:fmtDate(d.exitedProofreading),days:d.proofreadingTurnaroundDays!=null?d.proofreadingTurnaroundDays.toFixed(0)+"d":"—"}));});
+        return{rows,detailMap};
+      },[standardDeals,gran]);
+
+      const c4Table=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const totals={};const qd={};
+        deals.forEach(d=>{if(!d.enteredProofreading)return;const b=dateToBucket(d.enteredProofreading,gran);totals[b]=(totals[b]||0)+1;if(d.enteredDraftingQuery){(qd[b]=qd[b]||[]).push(d);}});
+        const rows=uniq.map(bucket=>{const total=totals[bucket]||0;const queriedArr=qd[bucket]||[];const queried=queriedArr.length;const rate=total>0?parseFloat(Math.min((queried/total)*100,100).toFixed(0)):null;
+          return{_key:bucket,label:bucketLabel(bucket,gran),rate:rate!=null?rate+"%":"—",total,queried};});
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(qd[b]||[]).map(d=>({id:d.id,dealname:d.dealname,reasons:d.queryReasons.join(", ")||"—"}));});
+        return{rows,detailMap};
+      },[deals,gran]);
+
+      const c5Table=useMemo(()=>{
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;const groups={};
+        standardDeals.forEach(d=>{if(!d.exitedProofreading||dateToBucket(d.exitedProofreading,gran)!==selectedBucket)return;if(!d.prooferName||d.prooferName==="Unknown"||/^\d+$/.test(d.prooferName))return;(groups[d.prooferName]=groups[d.prooferName]||[]).push(d);});
+        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((proofOverrides[name]??proofTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:arr.length>=t?"\u2713 Met":"\u2717 Below"};}).sort((a,b)=>b.count-a.count);
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedProofreading)}));});
+        return{rows,detailMap};
+      },[standardDeals,gran,selectedBucket,proofTarget,proofOverrides]);
+
+      const c6Table=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const comp={};standardDeals.forEach(d=>{if(!d.exitedDrafting)return;const b=dateToBucket(d.exitedDrafting,gran);(comp[b]=comp[b]||[]).push(d);});
+        const rows=uniq.map(bucket=>{const arr=comp[bucket]||[];const wd=arr.filter(d=>d.draftingTurnaroundDays!=null);const avg=wd.length?parseFloat((wd.reduce((s,d)=>s+d.draftingTurnaroundDays,0)/wd.length).toFixed(0)):null;
+          return{_key:bucket,label:bucketLabel(bucket,gran),drafted:arr.length,avgTurnaround:avg!=null?avg+"d":"—"};});
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(comp[b]||[]).map(d=>({id:d.id,dealname:d.dealname,start:fmtDate(d.draftingStart),exit:fmtDate(d.exitedDrafting),days:d.draftingTurnaroundDays!=null?d.draftingTurnaroundDays.toFixed(0)+"d":"—"}));});
+        return{rows,detailMap};
+      },[standardDeals,gran]);
+
+      const c7Table=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const byPD={};const dTotals={};
+        // Cohort: deals entering proofreading per drafter per period; numerator = those with a query
+        deals.forEach(d=>{
+          if(!d.enteredProofreading||!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+          const b=dateToBucket(d.enteredProofreading,gran);const key=`${b}|${d.drafterName}`;
+          if(!byPD[key])byPD[key]={total:0,queried:0,queriedDeals:[],allDeals:[]};
+          byPD[key].total++;dTotals[d.drafterName]=(dTotals[d.drafterName]||0)+1;
+          byPD[key].allDeals.push(d);
+          if(d.enteredDraftingQuery){byPD[key].queried++;byPD[key].queriedDeals.push(d);}
+        });
+        const activeDrafters=Object.entries(dTotals).filter(([,c])=>c>=10).map(([n])=>n).sort();
+        const cols=[{key:"label",label:"Period"}].concat(activeDrafters.map(n=>({key:n,label:n})));
+        const rows=uniq.map(bucket=>{
+          const row={_key:bucket,label:bucketLabel(bucket,gran)};
+          activeDrafters.forEach(name=>{const pd=byPD[`${bucket}|${name}`];row[name]=pd&&pd.total>=1?Math.min((pd.queried/pd.total)*100,100).toFixed(0)+"%":"—";});
+          return row;
+        });
+        const detailMap={};uniq.forEach(b=>{
+          const allDealsForPeriod=[];
+          activeDrafters.forEach(name=>{const pd=byPD[`${b}|${name}`];if(pd)pd.allDeals.forEach(d=>allDealsForPeriod.push({id:d.id,dealname:d.dealname,drafter:name,queried:d.enteredDraftingQuery?"Yes":"No",reasons:d.queryReasons.join(", ")||"—"}));});
+          // Sort: queried deals first, then by drafter name
+          allDealsForPeriod.sort((a,b)=>a.queried===b.queried?a.drafter.localeCompare(b.drafter):(a.queried==="Yes"?-1:1));
+          detailMap[b]=allDealsForPeriod;
+        });
+        return{rows,detailMap,cols,byPD,activeDrafters,uniq};
+      },[deals,gran]);
+
+      const c7CsvBuilder=useCallback(()=>{
+        const hdr=["Period","Drafter","Query Rate %","Total Deals","Queried Deals","Deal Name","HubSpot Link","Query Reasons"];
+        const lines=[hdr];
+        (c7Table.uniq||[]).forEach(bucket=>{
+          (c7Table.activeDrafters||[]).forEach(name=>{
+            const pd=c7Table.byPD[`${bucket}|${name}`];
+            if(!pd||pd.queried===0)return;
+            const rate=((pd.queried/pd.total)*100).toFixed(0)+"%";
+            pd.queriedDeals.forEach(d=>{
+              lines.push([bucketLabel(bucket,gran),name,rate,pd.total,pd.queried,d.dealname||d.id,HS_BASE+d.id,d.queryReasons.join(", ")||""]);
+            });
+          });
+        });
+        return toCSV(lines);
+      },[c7Table,gran]);
+
+      // ── table data for urgent charts (c8, c9) ────────────────
+      const c8Table=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const comp={};urgentDeals.forEach(d=>{if(!d.exitedDrafting)return;const b=dateToBucket(d.exitedDrafting,gran);(comp[b]=comp[b]||[]).push(d);});
+        const rows=uniq.map(bucket=>{const arr=comp[bucket]||[];const wd=arr.filter(d=>d.draftingTurnaroundBizDays!=null);const avg=wd.length?parseFloat((wd.reduce((s,d)=>s+d.draftingTurnaroundBizDays,0)/wd.length).toFixed(1)):null;
+          return{_key:bucket,label:bucketLabel(bucket,gran),drafted:arr.length,avgBizDays:avg!=null?avg+"d":"—"};});
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(comp[b]||[]).map(d=>({id:d.id,dealname:d.dealname,start:fmtDate(d.draftingStart),exit:fmtDate(d.exitedDrafting),bizDays:d.draftingTurnaroundBizDays!=null?d.draftingTurnaroundBizDays+"d":"—",reason:d.urgentReason.join(", ")||"—"}));});
+        return{rows,detailMap};
+      },[urgentDeals,gran]);
+
+      const c9Table=useMemo(()=>{
+        const groups={};
+        urgentDeals.forEach(d=>{if(!d.exitedDrafting||d.draftingTurnaroundBizDays==null||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
+        const rows=Object.entries(groups).map(([name,arr])=>{const avg=parseFloat((arr.reduce((s,d)=>s+d.draftingTurnaroundBizDays,0)/arr.length).toFixed(1));return{_key:name,name,avg:avg+"d",count:arr.length};}).sort((a,b)=>parseFloat(b.avg)-parseFloat(a.avg));
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,start:fmtDate(d.draftingStart),exit:fmtDate(d.exitedDrafting),bizDays:d.draftingTurnaroundBizDays!=null?d.draftingTurnaroundBizDays+"d":"—"}));});
+        return{rows,detailMap};
+      },[urgentDeals,gran,selectedBucket]);
+
+      const c10Table=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const comp={};deals.forEach(d=>{if(!d.exitedAmendment)return;const b=dateToBucket(d.exitedAmendment,gran);(comp[b]=comp[b]||[]).push(d);});
+        const rows=uniq.map(bucket=>{const arr=comp[bucket]||[];const wd=arr.filter(d=>d.amendmentTurnaroundDays!=null);const avg=wd.length?parseFloat((wd.reduce((s,d)=>s+d.amendmentTurnaroundDays,0)/wd.length).toFixed(1)):null;
+          return{_key:bucket,label:bucketLabel(bucket,gran),amendments:arr.length,avgDays:avg!=null?avg+"d":"—"};});
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(comp[b]||[]).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredAmendment),exited:fmtDate(d.exitedAmendment),days:d.amendmentTurnaroundDays!=null?d.amendmentTurnaroundDays.toFixed(1)+"d":"—",source:d.amendmentSource||"—"}));});
+        return{rows,detailMap};
+      },[deals,gran]);
+
+      const c11Table=useMemo(()=>{
+        const groups={};
+        deals.forEach(d=>{if(!d.exitedAmendment||d.amendmentTurnaroundDays==null||dateToBucket(d.exitedAmendment,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
+        const rows=Object.entries(groups).map(([name,arr])=>{const avg=parseFloat((arr.reduce((s,d)=>s+d.amendmentTurnaroundDays,0)/arr.length).toFixed(1));return{_key:name,name,avg:avg+"d",count:arr.length};}).sort((a,b)=>parseFloat(b.avg)-parseFloat(a.avg));
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredAmendment),exited:fmtDate(d.exitedAmendment),days:d.amendmentTurnaroundDays!=null?d.amendmentTurnaroundDays.toFixed(1)+"d":"—",source:d.amendmentSource||"—"}));});
+        return{rows,detailMap};
+      },[deals,gran,selectedBucket]);
+
+      if(loading&&!deals.length)return<SkeletonUI/>;
+
+      return(
+        <div style={S.page}>
+          {/* Top Bar */}
+          <div style={S.topBar}>
+            <h1 style={S.title}>Estate Planning &mdash; Drafting &amp; Proofreading</h1>
+            <div style={S.controls}>
+              {["DoD","WoW","MoM"].map(g=>(
+                <button key={g} style={S.toggle(gran===g)} onClick={()=>setGran(g)}>{g}</button>
+              ))}
+              <select style={S.select} value={selectedBucket||""} onChange={e=>setSelectedBucket(e.target.value)}>
+                {availableBuckets.map(b=>(<option key={b} value={b}>{bucketLabel(b,gran)}</option>))}
+              </select>
+              <button style={{...S.btn,background:"#7C3AED",color:"#fff",border:"1px solid #9333EA"}} disabled={generating||loading} onClick={async()=>{
+                setGenerating(true);
+                try{await generateSlides(gran,selectedBucket);}catch(err){alert("Slide generation failed: "+err.message);}finally{setGenerating(false);}
+              }} title="Generate PPTX Slides">
+                {generating?"\u23F3 Generating...":"\uD83D\uDCCA Generate Slides"}
+              </button>
+              <button style={S.btn} onClick={()=>setSettingsOpen(true)} title="Target Settings">&#9881;&#65039;</button>
+              <button style={S.btn} onClick={()=>loadData(true)} disabled={loading} title="Force refresh from HubSpot">
+                {loading?"\u23F3":"\uD83D\uDD04"} Refresh
+              </button>
+              {lastRefresh&&<span style={S.badge}>Data from {lastRefresh.toLocaleTimeString()}</span>}
+            </div>
+          </div>
+
+          {error&&(
+            <div style={{margin:"16px 24px",padding:"12px 16px",background:"rgba(231,76,60,0.15)",border:`1px solid ${C.red}`,borderRadius:8,color:C.red,fontSize:13}}>{error}</div>
+          )}
+
+          {/* Row 1: Drafting snapshot (selected period) */}
+          <div className="dash-row" style={S.row}>
+            <ChartCard chartId="chart-1" title="Total Drafts Completed per Drafter" infoText={INFO.chart1} columns={T_COLS.c1} rows={c1Table.rows} detailMap={c1Table.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_${gran}_${selectedBucket}.csv`}>
+              <Chart1 deals={standardDeals} gran={gran} bucket={selectedBucket} standardTarget={standardTarget} overrides={overrides}/>
+            </ChartCard>
+            <ChartCard chartId="chart-2" title="Average Turnaround Days per Drafter (Standard)" infoText={INFO.chart2} columns={T_COLS.c2} rows={c2Table.rows} detailMap={c2Table.detailMap} detailCols={T_DCOLS.c2} csvName={`turnaround_days_${gran}_${selectedBucket}.csv`}>
+              <Chart2 deals={standardDeals} gran={gran} bucket={selectedBucket}/>
+            </ChartCard>
+          </div>
+
+          {/* Row 2: Drafting trends (time series) */}
+          <div className="dash-row" style={S.row}>
+            <ChartCard chartId="chart-6" title={"Drafting \u2014 Productivity & Avg Turnaround (Standard)"} infoText={INFO.chart6} columns={T_COLS.c6} rows={c6Table.rows} detailMap={c6Table.detailMap} detailCols={T_DCOLS.c6} csvName={`drafting_productivity_${gran}.csv`}>
+              <Chart6 deals={standardDeals} gran={gran}/>
+            </ChartCard>
+            <ChartCard chartId="chart-4" title={"Drafting Query Rate \u2014 Trend"} infoText={INFO.chart4} columns={T_COLS.c4} rows={c4Table.rows} detailMap={c4Table.detailMap} detailCols={T_DCOLS.c4} csvName={`query_rate_${gran}.csv`}>
+              <Chart4 deals={deals} gran={gran}/>
+            </ChartCard>
+          </div>
+
+          {/* Row 3: Drafting query heatmap (full width) */}
+          <div style={{padding:"0 24px 16px"}}>
+            <ChartCard chartId="chart-7" title={"Drafting Query Rate per Drafter"} infoText={INFO.chart7} columns={c7Table.cols||T_COLS.c7} rows={c7Table.rows} detailMap={c7Table.detailMap} detailCols={T_DCOLS.c7} csvName={`query_rate_per_drafter_${gran}.csv`} csvBuilder={c7CsvBuilder}>
+              <Chart7 deals={standardDeals} gran={gran}/>
+            </ChartCard>
+          </div>
+
+          {/* ── URGENT DRAFTING ── */}
+
+          <div className="dash-row" style={S.row}>
+            <ChartCard chartId="chart-8" title={"Productivity & Avg Turnaround (Urgent)"} infoText={INFO.chart8} columns={T_COLS.c8} rows={c8Table.rows} detailMap={c8Table.detailMap} detailCols={T_DCOLS.c8} csvName={`urgent_productivity_${gran}.csv`}>
+              <Chart8 deals={urgentDeals} gran={gran}/>
+            </ChartCard>
+            <ChartCard chartId="chart-9" title="Avg Turnaround per Drafter (Urgent)" infoText={INFO.chart9} columns={T_COLS.c9} rows={c9Table.rows} detailMap={c9Table.detailMap} detailCols={T_DCOLS.c9} csvName={`urgent_turnaround_${gran}_${selectedBucket}.csv`}>
+              <Chart9 deals={urgentDeals} gran={gran} bucket={selectedBucket}/>
+            </ChartCard>
+          </div>
+
+          {/* ── AMENDMENTS ── */}
+          <div className="dash-row" style={S.row}>
+            <ChartCard chartId="chart-10" title={"Productivity & Avg Turnaround (Amendments)"} infoText={INFO.chart10} columns={T_COLS.c10} rows={c10Table.rows} detailMap={c10Table.detailMap} detailCols={T_DCOLS.c10} csvName={`amendments_productivity_${gran}.csv`}>
+              <Chart10 deals={deals} gran={gran}/>
+            </ChartCard>
+            <ChartCard chartId="chart-11" title="Avg Turnaround Days per Drafter (Amendments)" infoText={INFO.chart11} columns={T_COLS.c11} rows={c11Table.rows} detailMap={c11Table.detailMap} detailCols={T_DCOLS.c11} csvName={`amendment_turnaround_${gran}_${selectedBucket}.csv`}>
+              <Chart11 deals={deals} gran={gran} bucket={selectedBucket}/>
+            </ChartCard>
+          </div>
+
+          {/* ── PROOFREADING ── */}
+
+          {/* Row 5: Proofreading */}
+          <div className="dash-row" style={S.row}>
+            <ChartCard chartId="chart-5" title="Total Drafts Proofread per Proofreader" infoText={INFO.chart5} columns={T_COLS.c5} rows={c5Table.rows} detailMap={c5Table.detailMap} detailCols={T_DCOLS.c5} csvName={`proofread_completed_${gran}_${selectedBucket}.csv`}>
+              <Chart5 deals={standardDeals} gran={gran} bucket={selectedBucket} proofTarget={proofTarget} proofOverrides={proofOverrides}/>
+            </ChartCard>
+            <ChartCard chartId="chart-3" title={"Proofreading \u2014 Avg Turnaround & Backlog"} infoText={INFO.chart3} columns={T_COLS.c3} rows={c3Table.rows} detailMap={c3Table.detailMap} detailCols={T_DCOLS.c3} csvName={`proof_turnaround_backlog_${gran}.csv`}>
+              <Chart3 deals={standardDeals} gran={gran}/>
+            </ChartCard>
+          </div>
+
+          <div style={S.footer}>{totalRaw} deals loaded &middot; Data range: {dateRange}</div>
+
+          <SettingsPanel open={settingsOpen} onClose={()=>setSettingsOpen(false)}
+            standardTarget={standardTarget} setStandardTarget={setStandardTarget}
+            overrides={overrides} setOverrides={setOverrides} drafterNames={drafterNames}
+            proofTarget={proofTarget} setProofTarget={setProofTarget}
+            proofOverrides={proofOverrides} setProofOverrides={setProofOverrides} prooferNames={prooferNames}/>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<Dashboard/>);
+  </script>
+</body>
+</html>
