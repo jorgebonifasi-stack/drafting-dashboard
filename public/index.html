@@ -368,7 +368,7 @@
       c9:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Biz Days"},{key:"count",label:"Deals"}],
       c10:[{key:"label",label:"Period"},{key:"amendments",label:"Amendments"},{key:"avgDays",label:"Avg Days"}],
       c11:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Days"},{key:"count",label:"Deals"}],
-      c12:[{key:"label",label:"Period"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"backlog",label:"Backlog"}],
+      c12:[{key:"label",label:"Period"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"net",label:"Net"},{key:"backlog",label:"Backlog"}],
     };
     const T_DCOLS={
       c1:[{key:"date",label:"Completed"}],
@@ -1299,26 +1299,58 @@
         });
       },[deals,gran]);
 
-      const maxBar=Math.max(...data.map(d=>Math.max(d.entered,d.exited)),5);
       const maxBacklog=Math.max(...data.map(d=>d.backlog),5);
+      const maxNet=Math.max(...data.map(d=>Math.abs(d.entered-d.exited)),5);
+
+      // Add net flow + custom tooltip data
+      const chartData=data.map(d=>({...d,net:d.entered-d.exited}));
+
+      const PipelineTooltip=({active,payload,label})=>{
+        if(!active||!payload||!payload.length)return null;
+        const d=payload[0]?.payload;
+        if(!d)return null;
+        return(
+          <div style={{background:"rgba(30,30,30,0.95)",border:`1px solid ${C.grid}`,borderRadius:8,padding:"10px 14px",fontSize:12,color:C.text,minWidth:160}}>
+            <div style={{fontWeight:700,marginBottom:6,fontSize:13}}>{label}</div>
+            <div style={{display:"flex",justifyContent:"space-between",gap:16,marginBottom:3}}>
+              <span style={{color:"rgba(231,76,60,0.9)"}}>{"\u2191"} Entered</span><span style={{fontWeight:600}}>{d.entered}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",gap:16,marginBottom:3}}>
+              <span style={{color:"rgba(46,204,113,0.9)"}}>{"\u2193"} Exited</span><span style={{fontWeight:600}}>{d.exited}</span>
+            </div>
+            <div style={{borderTop:`1px solid ${C.grid}`,marginTop:4,paddingTop:4,display:"flex",justifyContent:"space-between",gap:16,marginBottom:3}}>
+              <span style={{fontWeight:700}}>Net</span><span style={{fontWeight:700,color:d.net>0?"#e74c3c":d.net<0?C.green:C.text}}>{d.net>0?"+":""}{d.net}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",gap:16}}>
+              <span style={{color:C.amber,fontWeight:600}}>Backlog</span><span style={{fontWeight:700,color:C.amber}}>{d.backlog}</span>
+            </div>
+          </div>
+        );
+      };
+
+      const NetLabel=({x,y,width,value})=>{
+        if(value==null)return null;
+        const col=value>0?"#e74c3c":value<0?C.green:C.text;
+        const yPos=value>=0?y-6:y+16;
+        return<text x={x+width/2} y={yPos} fill={col} fontSize={11} fontWeight={700} textAnchor="middle">{value>0?"+":""}{value}</text>;
+      };
 
       return(
-        <ResponsiveContainer width="100%" height={340}>
-          <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+        <ResponsiveContainer width="100%" height={380}>
+          <ComposedChart data={chartData} margin={{top:30,right:50,left:10,bottom:10}}>
             <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
             <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
-            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Deals",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Net Flow",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
             <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} domain={[0,Math.ceil(maxBacklog*1.15)]} label={{value:"Backlog",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
-            <Tooltip content={<DarkTooltip/>}/>
+            <Tooltip content={<PipelineTooltip/>}/>
             <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
-            <Bar yAxisId="left" dataKey="entered" name={"\u2191 Entered DI"} fill="rgba(231,76,60,0.35)" stroke="#e74c3c" strokeWidth={1} barSize={22} radius={[4,4,0,0]}>
-              <LabelList dataKey="entered" position="top" fill="rgba(231,76,60,0.9)" fontSize={10} fontWeight={600}/>
+            <ReferenceLine yAxisId="left" y={0} stroke={C.text} strokeWidth={1} strokeOpacity={0.3}/>
+            <Bar yAxisId="left" dataKey="net" name="Net Flow (Entered \u2212 Exited)" barSize={30} radius={[4,4,4,4]}>
+              <LabelList content={<NetLabel/>}/>
+              {chartData.map((entry,i)=>(<Cell key={i} fill={entry.net>0?"rgba(231,76,60,0.45)":entry.net<0?"rgba(46,204,113,0.45)":"rgba(150,150,150,0.3)"} stroke={entry.net>0?"#e74c3c":entry.net<0?"#2ecc71":"#999"} strokeWidth={1}/>))}
             </Bar>
-            <Bar yAxisId="left" dataKey="exited" name={"\u2193 Exited DI"} fill="rgba(46,204,113,0.45)" stroke="#2ecc71" strokeWidth={1} barSize={22} radius={[4,4,0,0]}>
-              <LabelList dataKey="exited" position="top" fill="rgba(46,204,113,0.9)" fontSize={10} fontWeight={600}/>
-            </Bar>
-            <Line yAxisId="right" type="monotone" dataKey="backlog" name="Backlog" stroke={C.amber} strokeWidth={2.5} dot={{fill:C.amber,r:4}} activeDot={{r:6}}>
-              <LabelList dataKey="backlog" position="top" fill={C.amber} fontSize={10} fontWeight={600} offset={10}/>
+            <Line yAxisId="right" type="monotone" dataKey="backlog" name="Backlog" stroke={C.amber} strokeWidth={3} dot={{fill:C.amber,r:5,stroke:"#fff",strokeWidth:1.5}} activeDot={{r:7}}>
+              <LabelList dataKey="backlog" position="top" fill={C.amber} fontSize={11} fontWeight={700} offset={12}/>
             </Line>
           </ComposedChart>
         </ResponsiveContainer>
@@ -1637,7 +1669,8 @@
           }else{
             deals.forEach(d=>{if(!d.enteredDrafting||d.enteredDrafting>endOfPeriod)return;if(d.nativeExitedDrafting&&d.nativeExitedDrafting<=endOfPeriod&&d.nativeExitedDrafting>=d.enteredDrafting)return;backlog++;});
           }
-          return{_key:bucket,label:bucketLabel(bucket,gran),entered:(enteredByB[bucket]||[]).length,exited:(exitedByB[bucket]||[]).length,backlog};
+          const ent=(enteredByB[bucket]||[]).length,ext=(exitedByB[bucket]||[]).length;
+          return{_key:bucket,label:bucketLabel(bucket,gran),entered:ent,exited:ext,net:(ent-ext>0?"+":"")+(ent-ext),backlog};
         });
         const detailMap={};uniq.forEach(b=>{
           const ent=(enteredByB[b]||[]).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredDrafting),exited:fmtDate(d.nativeExitedDrafting)}));
