@@ -175,6 +175,7 @@
         const exitedProofreading=parseHSDate(p.hs_v2_date_exited_1223620773);
         const enteredDraftingQuery=parseHSDate(p.hs_v2_date_entered_1223620772);
         const origEnteredDrafting=parseHSDate(p.original_date_entered_drafting_instructions);
+        const origExitedDrafting=parseHSDate(p.first_date_exited_drafting_instructions);
         const draftingStart=origEnteredDrafting||enteredDrafting;
         const rawDraftOwner=p.drafting_owner||"";
         const rawProofOwner=p.proof_reading__owner||"";
@@ -199,7 +200,7 @@
         const amendmentSource=rawAmendSource?(amendmentSourceOptions||{})[rawAmendSource.trim()]||rawAmendSource.trim():"";
         return{
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
-          enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,draftingStart,
+          enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
           enteredAmendment,exitedAmendment,amendmentSource,
@@ -1261,14 +1262,18 @@
         const seen=new Set();
         const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
 
+        // Use original (workflow-stamped) dates for stable historical data;
+        // fall back to native HubSpot dates if original not available
         const entered={};const exited={};
         deals.forEach(d=>{
-          if(d.enteredDrafting){
-            const b=dateToBucket(d.enteredDrafting,gran);
+          const ent=d.origEnteredDrafting||d.enteredDrafting;
+          if(ent){
+            const b=dateToBucket(ent,gran);
             entered[b]=(entered[b]||0)+1;
           }
-          if(d.nativeExitedDrafting){
-            const b=dateToBucket(d.nativeExitedDrafting,gran);
+          const ext=d.origExitedDrafting||d.nativeExitedDrafting;
+          if(ext){
+            const b=dateToBucket(ext,gran);
             exited[b]=(exited[b]||0)+1;
           }
         });
@@ -1283,10 +1288,13 @@
               if(d.dealstage==="1223620771")backlog++;
             });
           }else{
-            // Historical: entered DI before end of period AND (never exited OR exited after period OR re-entered after last exit)
+            // Historical: use original dates (stable, not overwritten on re-entry)
+            // Fall back to native dates if original not available
             deals.forEach(d=>{
-              if(!d.enteredDrafting||d.enteredDrafting>endOfPeriod)return;
-              if(d.nativeExitedDrafting&&d.nativeExitedDrafting<=endOfPeriod&&d.nativeExitedDrafting>=d.enteredDrafting)return;
+              const ent=d.origEnteredDrafting||d.enteredDrafting;
+              if(!ent||ent>endOfPeriod)return;
+              const ext=d.origExitedDrafting||d.nativeExitedDrafting;
+              if(ext&&ext<=endOfPeriod)return;
               backlog++;
             });
           }
@@ -1657,8 +1665,10 @@
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         const enteredByB={};const exitedByB={};
         deals.forEach(d=>{
-          if(d.enteredDrafting){const b=dateToBucket(d.enteredDrafting,gran);(enteredByB[b]=enteredByB[b]||[]).push(d);}
-          if(d.nativeExitedDrafting){const b=dateToBucket(d.nativeExitedDrafting,gran);(exitedByB[b]=exitedByB[b]||[]).push(d);}
+          const ent=d.origEnteredDrafting||d.enteredDrafting;
+          if(ent){const b=dateToBucket(ent,gran);(enteredByB[b]=enteredByB[b]||[]).push(d);}
+          const ext=d.origExitedDrafting||d.nativeExitedDrafting;
+          if(ext){const b=dateToBucket(ext,gran);(exitedByB[b]=exitedByB[b]||[]).push(d);}
         });
         const lastBucket=uniq[uniq.length-1];
         const rows=uniq.map(bucket=>{
@@ -1667,14 +1677,20 @@
           if(bucket===lastBucket){
             deals.forEach(d=>{if(d.dealstage==="1223620771")backlog++;});
           }else{
-            deals.forEach(d=>{if(!d.enteredDrafting||d.enteredDrafting>endOfPeriod)return;if(d.nativeExitedDrafting&&d.nativeExitedDrafting<=endOfPeriod&&d.nativeExitedDrafting>=d.enteredDrafting)return;backlog++;});
+            deals.forEach(d=>{
+              const ent=d.origEnteredDrafting||d.enteredDrafting;
+              if(!ent||ent>endOfPeriod)return;
+              const ext=d.origExitedDrafting||d.nativeExitedDrafting;
+              if(ext&&ext<=endOfPeriod)return;
+              backlog++;
+            });
           }
-          const ent=(enteredByB[bucket]||[]).length,ext=(exitedByB[bucket]||[]).length;
-          return{_key:bucket,label:bucketLabel(bucket,gran),entered:ent,exited:ext,net:(ent-ext>0?"+":"")+(ent-ext),backlog};
+          const entCount=(enteredByB[bucket]||[]).length,extCount=(exitedByB[bucket]||[]).length;
+          return{_key:bucket,label:bucketLabel(bucket,gran),entered:entCount,exited:extCount,net:(entCount-extCount>0?"+":"")+(entCount-extCount),backlog};
         });
         const detailMap={};uniq.forEach(b=>{
-          const ent=(enteredByB[b]||[]).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredDrafting),exited:fmtDate(d.nativeExitedDrafting)}));
-          const ext=(exitedByB[b]||[]).filter(d=>!enteredByB[b]||!enteredByB[b].includes(d)).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredDrafting),exited:fmtDate(d.nativeExitedDrafting)}));
+          const ent=(enteredByB[b]||[]).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.origEnteredDrafting||d.enteredDrafting),exited:fmtDate(d.origExitedDrafting||d.nativeExitedDrafting)}));
+          const ext=(exitedByB[b]||[]).filter(d=>!enteredByB[b]||!enteredByB[b].includes(d)).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.origEnteredDrafting||d.enteredDrafting),exited:fmtDate(d.origExitedDrafting||d.nativeExitedDrafting)}));
           detailMap[b]=[...ent,...ext];
         });
         return{rows,detailMap};
