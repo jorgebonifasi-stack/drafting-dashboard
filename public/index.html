@@ -169,6 +169,8 @@
           }
         }
         else{const validDates=[origDraftsWithCustomer,origReadyForPrinting].filter(dt=>dt&&dt>=anchorEntered);const newLogic=validDates.length?new Date(Math.min(...validDates)):null;exitedDrafting=newLogic&&newLogic>=CUTOVER?newLogic:null;}
+        // Old metric: purely based on Date exited "Drafting Instructions" (for comparison chart)
+        const exitedDraftingOld=anchorEntered?nativeExitedDrafting:null;
         const enteredProofreading=parseHSDate(p.hs_v2_date_entered_1223620773);
         const exitedProofreading=parseHSDate(p.hs_v2_date_exited_1223620773);
         const enteredDraftingQuery=parseHSDate(p.hs_v2_date_entered_1223620772);
@@ -193,7 +195,7 @@
         const amendmentSource=rawAmendSource?(amendmentSourceOptions||{})[rawAmendSource.trim()]||rawAmendSource.trim():"";
         return{
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,
-          enteredDrafting,exitedDrafting,draftingStart,
+          enteredDrafting,exitedDrafting,exitedDraftingOld,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
           priority,isUrgent,urgentReason,
           enteredAmendment,exitedAmendment,amendmentSource,
@@ -323,7 +325,8 @@
 
     // ─── metric descriptions ────────────────────────────────────
     const INFO={
-      chart1:'Drafts completed in the selected period. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Grouped by Drafting Owner.',
+      chart1:'NEW METRIC — Drafts completed in the selected period. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Grouped by Drafting Owner.',
+      chart1b:'OLD METRIC — Drafts completed based on Date exited "Drafting Instructions (Estate Planning)" for all deals. This counts a deal as complete when it leaves Drafting Instructions, regardless of whether it has reached Drafts With Customer or Ready For Printing. Grouped by Drafting Owner.',
       chart2:'Average calendar days from first entering "Drafting Instructions (Estate Planning)" to completion. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Includes Drafting Query time. Grouped by Drafting Owner.',
       chart3:'Line: average calendar days from entering to exiting "Required \u2014 Proof Reading" for deals completed that period. Stacked bars: deals still in proofreading at period end (backlog), broken down by Proofreading Owner. SLA: 2 days.',
       chart4:'Query rate per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period. Numerator: those in the cohort that also have a Drafting Query. SLA: green \u22645%, amber \u226410%, red >10%.',
@@ -446,6 +449,46 @@
         deals.forEach(d=>{
           if(!d.exitedDrafting)return;
           if(dateToBucket(d.exitedDrafting,gran)!==bucket)return;
+          counts[d.drafterName]=(counts[d.drafterName]||0)+1;
+        });
+        return Object.entries(counts)
+          .filter(([n,c])=>c>=1&&!/^\d+$/.test(n)&&n!=="Unknown")
+          .map(([name,count])=>{
+            const wt=overrides[name]??standardTarget;
+            const target=Math.round(wt*mult);
+            return{name,count,target,met:count>=target,isCustom:name in overrides};
+          }).sort((a,b)=>b.count-a.count);
+      },[deals,gran,bucket,standardTarget,overrides]);
+
+      const globalTarget=Math.round(standardTarget*(gran==="DoD"?1/5:gran==="MoM"?4.33:1));
+      const maxVal=Math.max(...data.map(d=>Math.max(d.count,d.target)),globalTarget,10);
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No completed drafts in this period</div>;
+
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:30,right:60,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}}/>
+            <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
+            <Bar dataKey="count" radius={[0,6,6,0]} barSize={22}>
+              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
+              {data.map((entry,i)=>(<Cell key={i} fill={entry.met?C.green:C.red}/>))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 1b: Old metric — Total Drafts Completed (Exit DI) ──
+    function Chart1b({deals,gran,bucket,standardTarget,overrides}){
+      const data=useMemo(()=>{
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
+        const counts={};
+        deals.forEach(d=>{
+          if(!d.exitedDraftingOld)return;
+          if(dateToBucket(d.exitedDraftingOld,gran)!==bucket)return;
           counts[d.drafterName]=(counts[d.drafterName]||0)+1;
         });
         return Object.entries(counts)
@@ -1321,6 +1364,15 @@
         return{rows,detailMap};
       },[standardDeals,gran,selectedBucket,standardTarget,overrides]);
 
+      // ── c1b: Old metric — Total Drafts Completed per Drafter (Exit DI) ──
+      const c1bTable=useMemo(()=>{
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;const groups={};
+        standardDeals.forEach(d=>{if(!d.exitedDraftingOld||dateToBucket(d.exitedDraftingOld,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
+        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((overrides[name]??standardTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:arr.length>=t?"\u2713 Met":"\u2717 Below"};}).sort((a,b)=>b.count-a.count);
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedDraftingOld)}));});
+        return{rows,detailMap};
+      },[standardDeals,gran,selectedBucket,standardTarget,overrides]);
+
       const c2Table=useMemo(()=>{
         const groups={};
         standardDeals.forEach(d=>{if(!d.exitedDrafting||d.draftingTurnaroundDays==null||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
@@ -1490,11 +1542,18 @@
             <div style={{margin:"16px 24px",padding:"12px 16px",background:"rgba(231,76,60,0.15)",border:`1px solid ${C.red}`,borderRadius:8,color:C.red,fontSize:13}}>{error}</div>
           )}
 
-          {/* Row 1: Drafting snapshot (selected period) */}
+          {/* Row 1a: Drafts Completed — New vs Old metric */}
           <div className="dash-row" style={S.row}>
-            <ChartCard chartId="chart-1" title="Total Drafts Completed per Drafter" infoText={INFO.chart1} columns={T_COLS.c1} rows={c1Table.rows} detailMap={c1Table.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_${gran}_${selectedBucket}.csv`}>
+            <ChartCard chartId="chart-1" title="Total Drafts Completed per Drafter (New Metric)" infoText={INFO.chart1} columns={T_COLS.c1} rows={c1Table.rows} detailMap={c1Table.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_new_${gran}_${selectedBucket}.csv`}>
               <Chart1 deals={standardDeals} gran={gran} bucket={selectedBucket} standardTarget={standardTarget} overrides={overrides}/>
             </ChartCard>
+            <ChartCard chartId="chart-1b" title="Total Drafts Completed per Drafter (Old Metric)" infoText={INFO.chart1b} columns={T_COLS.c1} rows={c1bTable.rows} detailMap={c1bTable.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_old_${gran}_${selectedBucket}.csv`}>
+              <Chart1b deals={standardDeals} gran={gran} bucket={selectedBucket} standardTarget={standardTarget} overrides={overrides}/>
+            </ChartCard>
+          </div>
+
+          {/* Row 1b: Avg Turnaround */}
+          <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-2" title="Average Turnaround Days per Drafter (Standard)" infoText={INFO.chart2} columns={T_COLS.c2} rows={c2Table.rows} detailMap={c2Table.detailMap} detailCols={T_DCOLS.c2} csvName={`turnaround_days_${gran}_${selectedBucket}.csv`}>
               <Chart2 deals={standardDeals} gran={gran} bucket={selectedBucket}/>
             </ChartCard>
