@@ -188,6 +188,10 @@
         const rawUrgentReason=p.urgent_request_reason||"";
         const urgentReason=rawUrgentReason?rawUrgentReason.split(";").map(r=>(urgentReasonOptions||{})[r.trim()]||r.trim()).filter(Boolean):[];
         const isUrgent=priority==="high";
+        // Urgent SLA: date_marked_urgent (post-18 Apr) or draftingStart (pre-18 Apr fallback)
+        const URGENT_CUTOVER=new Date("2026-04-18T00:00:00");
+        const dateMarkedUrgent=parseHSDate(p.date_marked_urgent);
+        const urgentStart=dateMarkedUrgent&&dateMarkedUrgent>=URGENT_CUTOVER?dateMarkedUrgent:draftingStart;
         // Amendment fields
         const enteredAmendment=parseHSDate(p.hs_v2_date_entered_1338772492);
         const exitedAmendment=parseHSDate(p.hs_v2_date_exited_1338772492);
@@ -197,11 +201,12 @@
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,
           enteredDrafting,exitedDrafting,exitedDraftingOld,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
-          priority,isUrgent,urgentReason,
+          priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
           enteredAmendment,exitedAmendment,amendmentSource,
           amendmentTurnaroundDays:enteredAmendment&&exitedAmendment?(exitedAmendment-enteredAmendment)/86400000:null,
           draftingTurnaroundDays:draftingStart&&exitedDrafting?(exitedDrafting-draftingStart)/86400000:null,
           draftingTurnaroundBizDays:calcBusinessDays(draftingStart,exitedDrafting),
+          urgentTurnaroundBizDays:isUrgent?calcBusinessDays(urgentStart,exitedDrafting):null,
           proofreadingTurnaroundDays:enteredProofreading&&exitedProofreading?(exitedProofreading-enteredProofreading)/86400000:null,
         };
       });
@@ -334,8 +339,9 @@
       chart5:'Drafts proofread (completed) and backlog per proofreader for the selected period. Completed: deals that exited "Required \u2014 Proof Reading" in the period. Backlog: deals that entered but have not yet exited by end of the period. Grouped by Proof Reading Owner.',
       chart6:'Bars: total standard drafts completed per period. Line: average turnaround in calendar days (first entry into "Drafting Instructions (Estate Planning)" \u2192 completion). Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". SLA: 10d internal, 28d customer.',
       chart7:'Query rate per drafter per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period per drafter. Numerator: those with a Drafting Query. Green \u22645%, amber \u226410%, red >10%.',
-      chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). SLA: 1 business day.',
-      chart9:'Average turnaround in business days (Mon\u2013Fri) for urgent drafts completed in the selected period, grouped by Drafting Owner. SLA: 1 business day. Green = met, red = breached.',
+      chart12:'Drafting pipeline flow over time. Blue bars: deals entering "Drafting Instructions" per period (using original entry date). Green bars: deals exiting (completed drafts). Amber line: backlog snapshot at end of each period (entered but not yet exited).',
+      chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day.',
+      chart9:'Average turnaround in business days (Mon\u2013Fri) for urgent drafts completed in the selected period, grouped by Drafting Owner. From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day. Green = met, red = breached.',
       chart10:'Amendments completed per period. Stacked bars show amendment source breakdown. Line shows average turnaround in calendar days (entered \u2192 exited "Amendment Requested"). Grouped by exit date.',
       chart11:'Average turnaround in calendar days for amendments completed in the selected period, grouped by Drafting Owner. Turnaround = date entered \u2192 date exited "Amendment Requested".',
     };
@@ -362,6 +368,7 @@
       c9:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Biz Days"},{key:"count",label:"Deals"}],
       c10:[{key:"label",label:"Period"},{key:"amendments",label:"Amendments"},{key:"avgDays",label:"Avg Days"}],
       c11:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Days"},{key:"count",label:"Deals"}],
+      c12:[{key:"label",label:"Period"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"backlog",label:"Backlog"}],
     };
     const T_DCOLS={
       c1:[{key:"date",label:"Completed"}],
@@ -371,10 +378,11 @@
       c5:[{key:"date",label:"Completed"}],
       c6:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"days",label:"Days"}],
       c7:[{key:"drafter",label:"Drafter"},{key:"queried",label:"Queried"},{key:"reasons",label:"Query Reasons"}],
-      c8:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"},{key:"reason",label:"Reason"}],
-      c9:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"}],
+      c8:[{key:"start",label:"Urgent From"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"},{key:"reason",label:"Reason"}],
+      c9:[{key:"start",label:"Urgent From"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"}],
       c10:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"},{key:"source",label:"Source"}],
       c11:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"},{key:"source",label:"Source"}],
+      c12:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered DI"},{key:"exited",label:"Exited DI"}],
     };
 
     // ─── ChartCard: wraps each chart with data table + CSV ──────
@@ -1056,7 +1064,7 @@
           const b=dateToBucket(d.exitedDrafting,gran);
           if(!completed[b])completed[b]={total:0,bizDays:[],byReason:{}};
           completed[b].total++;
-          if(d.draftingTurnaroundBizDays!=null)completed[b].bizDays.push(d.draftingTurnaroundBizDays);
+          if(d.urgentTurnaroundBizDays!=null)completed[b].bizDays.push(d.urgentTurnaroundBizDays);
           const rs=d.urgentReason&&d.urgentReason.length?d.urgentReason:["Not specified"];
           rs.forEach(r=>{reasonSet.add(r);completed[b].byReason[r]=(completed[b].byReason[r]||0)+1;});
         });
@@ -1102,13 +1110,13 @@
       const data=useMemo(()=>{
         const groups={};
         deals.forEach(d=>{
-          if(!d.exitedDrafting||d.draftingTurnaroundBizDays==null)return;
+          if(!d.exitedDrafting||d.urgentTurnaroundBizDays==null)return;
           if(dateToBucket(d.exitedDrafting,gran)!==bucket)return;
           if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
           (groups[d.drafterName]=groups[d.drafterName]||[]).push(d);
         });
         return Object.entries(groups).map(([name,arr])=>{
-          const avg=parseFloat((arr.reduce((s,d)=>s+d.draftingTurnaroundBizDays,0)/arr.length).toFixed(1));
+          const avg=parseFloat((arr.reduce((s,d)=>s+d.urgentTurnaroundBizDays,0)/arr.length).toFixed(1));
           return{name,avg,count:arr.length};
         }).sort((a,b)=>b.avg-a.avg);
       },[deals,gran,bucket]);
@@ -1233,6 +1241,77 @@
               <LabelList dataKey="avg" position="right" fill={C.white} fontSize={12} fontWeight={600} formatter={v=>`${v}d`}/>
             </Bar>
           </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 12: Drafting Pipeline Flow (entered, exited, backlog) ──
+    function Chart12({deals,gran}){
+      const data=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        const entered={};const exited={};
+        deals.forEach(d=>{
+          if(d.draftingStart){
+            const b=dateToBucket(d.draftingStart,gran);
+            entered[b]=(entered[b]||0)+1;
+          }
+          if(d.exitedDrafting){
+            const b=dateToBucket(d.exitedDrafting,gran);
+            exited[b]=(exited[b]||0)+1;
+          }
+        });
+
+        return uniq.map(bucket=>{
+          const endOfPeriod=bucketEndDate(bucket,gran);
+          let backlog=0;
+          deals.forEach(d=>{
+            if(!d.draftingStart||d.draftingStart>endOfPeriod)return;
+            if(d.exitedDrafting&&d.exitedDrafting<=endOfPeriod)return;
+            backlog++;
+          });
+          return{
+            bucket,label:bucketLabel(bucket,gran),
+            entered:entered[bucket]||0,
+            exited:exited[bucket]||0,
+            backlog
+          };
+        });
+      },[deals,gran]);
+
+      const maxBar=Math.max(...data.map(d=>Math.max(d.entered,d.exited)),5);
+      const maxBacklog=Math.max(...data.map(d=>d.backlog),5);
+
+      return(
+        <ResponsiveContainer width="100%" height={340}>
+          <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Deals",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} domain={[0,Math.ceil(maxBacklog*1.15)]} label={{value:"Backlog",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
+            <Bar yAxisId="left" dataKey="entered" name="Entered DI" fill="rgba(52,152,219,0.5)" stroke="#3498db" strokeWidth={0.5} barSize={22} radius={[4,4,0,0]}>
+              <LabelList dataKey="entered" position="top" fill={C.text} fontSize={10} fontWeight={600}/>
+            </Bar>
+            <Bar yAxisId="left" dataKey="exited" name="Exited DI" fill="rgba(46,204,113,0.5)" stroke="#2ecc71" strokeWidth={0.5} barSize={22} radius={[4,4,0,0]}>
+              <LabelList dataKey="exited" position="top" fill={C.text} fontSize={10} fontWeight={600}/>
+            </Bar>
+            <Line yAxisId="right" type="monotone" dataKey="backlog" name="Backlog" stroke={C.amber} strokeWidth={2.5} dot={{fill:C.amber,r:4}} activeDot={{r:6}}>
+              <LabelList dataKey="backlog" position="top" fill={C.amber} fontSize={10} fontWeight={600} offset={10}/>
+            </Line>
+          </ComposedChart>
         </ResponsiveContainer>
       );
     }
@@ -1498,17 +1577,17 @@
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         const comp={};urgentDeals.forEach(d=>{if(!d.exitedDrafting)return;const b=dateToBucket(d.exitedDrafting,gran);(comp[b]=comp[b]||[]).push(d);});
-        const rows=uniq.map(bucket=>{const arr=comp[bucket]||[];const wd=arr.filter(d=>d.draftingTurnaroundBizDays!=null);const avg=wd.length?parseFloat((wd.reduce((s,d)=>s+d.draftingTurnaroundBizDays,0)/wd.length).toFixed(1)):null;
+        const rows=uniq.map(bucket=>{const arr=comp[bucket]||[];const wd=arr.filter(d=>d.urgentTurnaroundBizDays!=null);const avg=wd.length?parseFloat((wd.reduce((s,d)=>s+d.urgentTurnaroundBizDays,0)/wd.length).toFixed(1)):null;
           return{_key:bucket,label:bucketLabel(bucket,gran),drafted:arr.length,avgBizDays:avg!=null?avg+"d":"—"};});
-        const detailMap={};uniq.forEach(b=>{detailMap[b]=(comp[b]||[]).map(d=>({id:d.id,dealname:d.dealname,start:fmtDate(d.draftingStart),exit:fmtDate(d.exitedDrafting),bizDays:d.draftingTurnaroundBizDays!=null?d.draftingTurnaroundBizDays+"d":"—",reason:d.urgentReason.join(", ")||"—"}));});
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(comp[b]||[]).map(d=>({id:d.id,dealname:d.dealname,start:fmtDate(d.urgentStart),exit:fmtDate(d.exitedDrafting),bizDays:d.urgentTurnaroundBizDays!=null?d.urgentTurnaroundBizDays+"d":"—",reason:d.urgentReason.join(", ")||"—"}));});
         return{rows,detailMap};
       },[urgentDeals,gran]);
 
       const c9Table=useMemo(()=>{
         const groups={};
-        urgentDeals.forEach(d=>{if(!d.exitedDrafting||d.draftingTurnaroundBizDays==null||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
-        const rows=Object.entries(groups).map(([name,arr])=>{const avg=parseFloat((arr.reduce((s,d)=>s+d.draftingTurnaroundBizDays,0)/arr.length).toFixed(1));return{_key:name,name,avg:avg+"d",count:arr.length};}).sort((a,b)=>parseFloat(b.avg)-parseFloat(a.avg));
-        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,start:fmtDate(d.draftingStart),exit:fmtDate(d.exitedDrafting),bizDays:d.draftingTurnaroundBizDays!=null?d.draftingTurnaroundBizDays+"d":"—"}));});
+        urgentDeals.forEach(d=>{if(!d.exitedDrafting||d.urgentTurnaroundBizDays==null||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
+        const rows=Object.entries(groups).map(([name,arr])=>{const avg=parseFloat((arr.reduce((s,d)=>s+d.urgentTurnaroundBizDays,0)/arr.length).toFixed(1));return{_key:name,name,avg:avg+"d",count:arr.length};}).sort((a,b)=>parseFloat(b.avg)-parseFloat(a.avg));
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,start:fmtDate(d.urgentStart),exit:fmtDate(d.exitedDrafting),bizDays:d.urgentTurnaroundBizDays!=null?d.urgentTurnaroundBizDays+"d":"—"}));});
         return{rows,detailMap};
       },[urgentDeals,gran,selectedBucket]);
 
@@ -1530,6 +1609,29 @@
         const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredAmendment),exited:fmtDate(d.exitedAmendment),days:d.amendmentTurnaroundDays!=null?d.amendmentTurnaroundDays.toFixed(1)+"d":"—",source:d.amendmentSource||"—"}));});
         return{rows,detailMap};
       },[deals,gran,selectedBucket]);
+
+      const c12Table=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const enteredByB={};const exitedByB={};
+        standardDeals.forEach(d=>{
+          if(d.draftingStart){const b=dateToBucket(d.draftingStart,gran);(enteredByB[b]=enteredByB[b]||[]).push(d);}
+          if(d.exitedDrafting){const b=dateToBucket(d.exitedDrafting,gran);(exitedByB[b]=exitedByB[b]||[]).push(d);}
+        });
+        const rows=uniq.map(bucket=>{
+          const endOfPeriod=bucketEndDate(bucket,gran);
+          let backlog=0;
+          standardDeals.forEach(d=>{if(!d.draftingStart||d.draftingStart>endOfPeriod)return;if(d.exitedDrafting&&d.exitedDrafting<=endOfPeriod)return;backlog++;});
+          return{_key:bucket,label:bucketLabel(bucket,gran),entered:(enteredByB[bucket]||[]).length,exited:(exitedByB[bucket]||[]).length,backlog};
+        });
+        const detailMap={};uniq.forEach(b=>{
+          const ent=(enteredByB[b]||[]).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.draftingStart),exited:fmtDate(d.exitedDrafting)}));
+          const ext=(exitedByB[b]||[]).filter(d=>!enteredByB[b]||!enteredByB[b].includes(d)).map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.draftingStart),exited:fmtDate(d.exitedDrafting)}));
+          detailMap[b]=[...ent,...ext];
+        });
+        return{rows,detailMap};
+      },[standardDeals,gran]);
 
       if(loading&&!deals.length)return<SkeletonUI/>;
 
@@ -1587,6 +1689,13 @@
             </ChartCard>
             <ChartCard chartId="chart-4" title={"Drafting Query Rate \u2014 Trend"} infoText={INFO.chart4} columns={T_COLS.c4} rows={c4Table.rows} detailMap={c4Table.detailMap} detailCols={T_DCOLS.c4} csvName={`query_rate_${gran}.csv`}>
               <Chart4 deals={deals} gran={gran}/>
+            </ChartCard>
+          </div>
+
+          {/* Row 2b: Drafting Pipeline Flow */}
+          <div className="dash-row" style={S.row}>
+            <ChartCard chartId="chart-12" title={"Drafting \u2014 Pipeline Flow (Entered / Exited / Backlog)"} infoText={INFO.chart12} columns={T_COLS.c12} rows={c12Table.rows} detailMap={c12Table.detailMap} detailCols={T_DCOLS.c12} csvName={`drafting_pipeline_flow_${gran}.csv`}>
+              <Chart12 deals={standardDeals} gran={gran}/>
             </ChartCard>
           </div>
 
