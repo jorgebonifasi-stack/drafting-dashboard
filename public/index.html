@@ -329,9 +329,9 @@
       chart1b:'OLD METRIC — Drafts completed based on Date exited "Drafting Instructions (Estate Planning)" for all deals. This counts a deal as complete when it leaves Drafting Instructions, regardless of whether it has reached Drafts With Customer or Ready For Printing. Grouped by Drafting Owner.',
       chart2:'Average calendar days from first entering "Drafting Instructions (Estate Planning)" to completion. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Includes Drafting Query time. Grouped by Drafting Owner.',
       chart3:'Line: average calendar days from entering to exiting "Required \u2014 Proof Reading" for deals completed that period. Bars: deals that entered "Required \u2014 Proof Reading" (Date entered "Required - Proof Reading (Estate Planning)") in that period. SLA: 2 days.',
-      chart5b:'Proofreading backlog for the selected period. Shows deals that have entered "Required \u2014 Proof Reading" but not yet exited, grouped by Proofreading Owner.',
+      chart5b:'Deprecated — merged into Chart 5.',
       chart4:'Query rate per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period. Numerator: those in the cohort that also have a Drafting Query. SLA: green \u22645%, amber \u226410%, red >10%.',
-      chart5:'Drafts proofread in the selected period. A deal counts as completed when it exits "Required \u2014 Proof Reading" (hs_v2_date_exited_1223620773). Grouped by Proof Reading Owner.',
+      chart5:'Drafts proofread (completed) and backlog per proofreader for the selected period. Completed: deals that exited "Required \u2014 Proof Reading" in the period. Backlog: deals that entered but have not yet exited by end of the period. Grouped by Proof Reading Owner.',
       chart6:'Bars: total standard drafts completed per period. Line: average turnaround in calendar days (first entry into "Drafting Instructions (Estate Planning)" \u2192 completion). Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". SLA: 10d internal, 28d customer.',
       chart7:'Query rate per drafter per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period per drafter. Numerator: those with a Drafting Query. Green \u22645%, amber \u226410%, red >10%.',
       chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). SLA: 1 business day.',
@@ -355,7 +355,7 @@
       c2:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Days"},{key:"count",label:"Deals"}],
       c3:[{key:"label",label:"Period"},{key:"avgTurnaround",label:"Avg Days"},{key:"entered",label:"Entered"},{key:"completed",label:"Completed"}],
       c4:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
-      c5:[{key:"name",label:"Proofreader"},{key:"count",label:"Completed"},{key:"target",label:"Target"},{key:"status",label:"Status"}],
+      c5:[{key:"name",label:"Proofreader"},{key:"count",label:"Completed"},{key:"backlog",label:"Backlog"},{key:"target",label:"Target"},{key:"status",label:"Status"}],
       c6:[{key:"label",label:"Period"},{key:"drafted",label:"Drafted"},{key:"avgTurnaround",label:"Avg Days"}],
       c7:[{key:"label",label:"Period"}],
       c8:[{key:"label",label:"Period"},{key:"drafted",label:"Urgents"},{key:"avgBizDays",label:"Avg Biz Days"}],
@@ -702,80 +702,71 @@
       );
     }
 
-    // ─── Chart 5: Total Drafts Proofread per Proofreader ──────
+    // ─── Chart 5: Proofread Completed & Backlog per Proofreader ──────
     function Chart5({deals,gran,bucket,proofTarget,proofOverrides}){
       const data=useMemo(()=>{
+        if(!bucket)return[];
         const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
-        const counts={};
+        const endOfPeriod=bucketEndDate(bucket,gran);
+
+        // Completed counts
+        const completed={};
         deals.forEach(d=>{
           if(!d.exitedProofreading)return;
           if(dateToBucket(d.exitedProofreading,gran)!==bucket)return;
-          if(!d.prooferName||d.prooferName==="Unknown")return;
-          if(/^\d+$/.test(d.prooferName))return;
-          counts[d.prooferName]=(counts[d.prooferName]||0)+1;
+          if(!d.prooferName||d.prooferName==="Unknown"||/^\d+$/.test(d.prooferName))return;
+          completed[d.prooferName]=(completed[d.prooferName]||0)+1;
         });
-        return Object.entries(counts)
-          .filter(([,c])=>c>=1)
-          .map(([name,count])=>{
-            const wt=proofOverrides[name]??proofTarget;
-            const target=Math.round(wt*mult);
-            return{name,count,target,met:count>=target,isCustom:name in proofOverrides};
-          })
-          .sort((a,b)=>b.count-a.count);
-      },[deals,gran,bucket,proofTarget,proofOverrides]);
 
-      const globalTarget=Math.round(proofTarget*(gran==="DoD"?1/5:gran==="MoM"?4.33:1));
-      const maxVal=Math.max(...data.map(d=>Math.max(d.count,d.target)),globalTarget,5);
-      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No proofread drafts in this period</div>;
-
-      return(
-        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
-          <BarChart data={data} layout="vertical" margin={{top:30,right:60,left:10,bottom:10}}>
-            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
-            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
-            <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
-            <Tooltip content={<DarkTooltip/>}/>
-            <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
-            <Bar dataKey="count" radius={[0,6,6,0]} barSize={22}>
-              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
-              {data.map((entry,i)=>(<Cell key={i} fill={entry.met?C.green:C.red}/>))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      );
-    }
-
-    // ─── Chart 5b: Proofreading Backlog per Proofreader ─────────
-    function Chart5b({deals,gran,bucket}){
-      const data=useMemo(()=>{
-        if(!bucket)return[];
-        const endOfPeriod=bucketEndDate(bucket,gran);
-        const counts={};
+        // Backlog counts
+        const backlog={};
         deals.forEach(d=>{
           if(!d.enteredProofreading)return;
           if(d.enteredProofreading>endOfPeriod)return;
           if(d.exitedProofreading&&d.exitedProofreading<=endOfPeriod)return;
           const name=d.prooferName&&d.prooferName!=="Unknown"&&!/^\d+$/.test(d.prooferName)?d.prooferName:"Unassigned";
-          counts[name]=(counts[name]||0)+1;
+          backlog[name]=(backlog[name]||0)+1;
         });
-        return Object.entries(counts)
-          .filter(([,c])=>c>=1)
-          .map(([name,count])=>({name,count}))
-          .sort((a,b)=>b.count-a.count);
-      },[deals,gran,bucket]);
 
-      const maxVal=Math.max(...data.map(d=>d.count),5);
-      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No proofreading backlog in this period</div>;
+        // Merge all proofreader names
+        const allNames=new Set([...Object.keys(completed),...Object.keys(backlog)]);
+        return Array.from(allNames).map(name=>{
+          const comp=completed[name]||0;
+          const back=backlog[name]||0;
+          const wt=proofOverrides[name]??proofTarget;
+          const target=Math.round(wt*mult);
+          return{name,completed:comp,backlog:back,target,met:comp>=target};
+        }).filter(d=>d.completed>=1||d.backlog>=1).sort((a,b)=>(b.completed+b.backlog)-(a.completed+a.backlog));
+      },[deals,gran,bucket,proofTarget,proofOverrides]);
+
+      const globalTarget=Math.round(proofTarget*(gran==="DoD"?1/5:gran==="MoM"?4.33:1));
+      const maxVal=Math.max(...data.map(d=>Math.max(d.completed+d.backlog,d.target)),globalTarget,5);
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No proofreading data in this period</div>;
+
+      const CompletedLabel=({x,y,width,value})=>{
+        if(!value)return null;
+        return<text x={x+width+4} y={y+11} fill={C.white} fontSize={11} fontWeight={600}>{value}</text>;
+      };
+      const BacklogLabel=({x,y,width,value})=>{
+        if(!value)return null;
+        return<text x={x+width+4} y={y+11} fill="rgba(243,156,18,0.9)" fontSize={11} fontWeight={600}>{value}</text>;
+      };
 
       return(
-        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
-          <BarChart data={data} layout="vertical" margin={{top:20,right:60,left:10,bottom:10}}>
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*52+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:30,right:60,left:10,bottom:10}} barCategoryGap="25%">
             <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
             <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
             <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
             <Tooltip content={<DarkTooltip/>}/>
-            <Bar dataKey="count" name="Backlog" radius={[0,6,6,0]} barSize={22} fill="rgba(243,156,18,0.5)">
-              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
+            <Legend verticalAlign="top" height={28} wrapperStyle={{color:C.text,fontSize:12}}/>
+            <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
+            <Bar dataKey="completed" name="Completed" radius={[0,6,6,0]} barSize={18}>
+              <LabelList content={<CompletedLabel/>}/>
+              {data.map((entry,i)=>(<Cell key={i} fill={entry.met?C.green:C.red}/>))}
+            </Bar>
+            <Bar dataKey="backlog" name="Backlog" radius={[0,6,6,0]} barSize={18} fill="rgba(243,156,18,0.5)">
+              <LabelList content={<BacklogLabel/>}/>
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -1425,10 +1416,21 @@
       },[deals,gran]);
 
       const c5Table=useMemo(()=>{
-        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;const groups={};
-        standardDeals.forEach(d=>{if(!d.exitedProofreading||dateToBucket(d.exitedProofreading,gran)!==selectedBucket)return;if(!d.prooferName||d.prooferName==="Unknown"||/^\d+$/.test(d.prooferName))return;(groups[d.prooferName]=groups[d.prooferName]||[]).push(d);});
-        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((proofOverrides[name]??proofTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:arr.length>=t?"\u2713 Met":"\u2717 Below"};}).sort((a,b)=>b.count-a.count);
-        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedProofreading)}));});
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
+        const endOfPeriod=selectedBucket?bucketEndDate(selectedBucket,gran):new Date();
+        const groups={};const backlogCounts={};
+        standardDeals.forEach(d=>{
+          if(d.exitedProofreading&&dateToBucket(d.exitedProofreading,gran)===selectedBucket&&d.prooferName&&d.prooferName!=="Unknown"&&!/^\d+$/.test(d.prooferName)){
+            (groups[d.prooferName]=groups[d.prooferName]||[]).push(d);
+          }
+          if(d.enteredProofreading&&d.enteredProofreading<=endOfPeriod&&(!d.exitedProofreading||d.exitedProofreading>endOfPeriod)){
+            const name=d.prooferName&&d.prooferName!=="Unknown"&&!/^\d+$/.test(d.prooferName)?d.prooferName:"Unassigned";
+            backlogCounts[name]=(backlogCounts[name]||0)+1;
+          }
+        });
+        const allNames=new Set([...Object.keys(groups),...Object.keys(backlogCounts)]);
+        const rows=Array.from(allNames).map(name=>{const arr=groups[name]||[];const t=Math.round((proofOverrides[name]??proofTarget)*mult);return{_key:name,name,count:arr.length,backlog:backlogCounts[name]||0,target:t,status:arr.length>=t?"\u2713 Met":"\u2717 Below"};}).sort((a,b)=>b.count-a.count);
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=(groups[r._key]||[]).map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedProofreading)}));});
         return{rows,detailMap};
       },[standardDeals,gran,selectedBucket,proofTarget,proofOverrides]);
 
@@ -1620,11 +1622,8 @@
 
           {/* Row 5a: Proofreading snapshot */}
           <div className="dash-row" style={S.row}>
-            <ChartCard chartId="chart-5" title="Total Drafts Proofread per Proofreader" infoText={INFO.chart5} columns={T_COLS.c5} rows={c5Table.rows} detailMap={c5Table.detailMap} detailCols={T_DCOLS.c5} csvName={`proofread_completed_${gran}_${selectedBucket}.csv`}>
+            <ChartCard chartId="chart-5" title="Proofread Completed & Backlog per Proofreader" infoText={INFO.chart5} columns={T_COLS.c5} rows={c5Table.rows} detailMap={c5Table.detailMap} detailCols={T_DCOLS.c5} csvName={`proofread_snapshot_${gran}_${selectedBucket}.csv`}>
               <Chart5 deals={standardDeals} gran={gran} bucket={selectedBucket} proofTarget={proofTarget} proofOverrides={proofOverrides}/>
-            </ChartCard>
-            <ChartCard chartId="chart-5b" title="Proofreading Backlog per Proofreader" infoText={INFO.chart5b} columns={[{key:"name",label:"Proofreader"},{key:"count",label:"Backlog"}]} rows={[]} csvName={`proof_backlog_${gran}_${selectedBucket}.csv`}>
-              <Chart5b deals={standardDeals} gran={gran} bucket={selectedBucket}/>
             </ChartCard>
           </div>
 
