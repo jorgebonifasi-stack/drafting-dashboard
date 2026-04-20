@@ -1,12 +1,23 @@
 const express = require("express");
 const fetch = require("node-fetch");
 const path = require("path");
+const session = require("express-session");
+const passport = require("passport");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ─── HubSpot config ─────────────────────────────────────────────
 const HUBSPOT_TOKEN = process.env.HUBSPOT_API_KEY;
+
+// ─── Google OAuth config ────────────────────────────────────────
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const SESSION_SECRET = process.env.SESSION_SECRET || "fallback-dev-secret-change-me";
+const ALLOWED_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN || "octopuslegacy.com";
+const CALLBACK_URL = process.env.CALLBACK_URL || "/auth/google/callback";
+const AUTH_ENABLED = !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 
 const PROPERTIES = [
   "hs_v2_date_entered_1223620771", "hs_v2_date_exited_1223620771",
@@ -196,13 +207,112 @@ async function fetchFreshData() {
 // ─── Middleware ──────────────────────────────────────────────────
 app.use(express.json({ limit: "50mb" }));
 
-// Serve static files from public directory
-app.use(express.static(path.join(__dirname, "public")));
+// ─── Session & Passport ─────────────────────────────────────────
+app.set("trust proxy", 1); // trust Render's proxy for secure cookies
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === "production" || !!process.env.RENDER,
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    sameSite: "lax"
+  }
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+// Passport serialize/deserialize — store minimal user info in session
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((user, done) => done(null, user));
+
+// Google OAuth strategy
+if (AUTH_ENABLED) {
+  passport.use(new GoogleStrategy({
+    clientID: GOOGLE_CLIENT_ID,
+    clientSecret: GOOGLE_CLIENT_SECRET,
+    callbackURL: CALLBACK_URL
+  }, (accessToken, refreshToken, profile, done) => {
+    const email = (profile.emails && profile.emails[0] && profile.emails[0].value) || "";
+    const domain = email.split("@")[1] || "";
+    if (domain.toLowerCase() !== ALLOWED_DOMAIN.toLowerCase()) {
+      return done(null, false, { message: "Unauthorized domain: " + domain });
+    }
+    return done(null, {
+      id: profile.id,
+      email: email,
+      name: profile.displayName || email,
+      photo: (profile.photos && profile.photos[0] && profile.photos[0].value) || null
+    });
+  }));
+  console.log("Google OAuth enabled — restricting to @" + ALLOWED_DOMAIN);
+} else {
+  console.log("Google OAuth NOT configured — dashboard is open (set GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET to enable)");
+}
+
+// ─── Auth Routes ────────────────────────────────────────────────
+app.get("/auth/google", (req, res, next) => {
+  if (!AUTH_ENABLED) return res.redirect("/");
+  passport.authenticate("google", { scope: ["profile", "email"] })(req, res, next);
+});
+
+app.get("/auth/google/callback",
+  (req, res, next) => {
+    if (!AUTH_ENABLED) return res.redirect("/");
+    passport.authenticate("google", { failureRedirect: "/auth/denied" })(req, res, next);
+  },
+  (req, res) => { res.redirect("/"); }
+);
+
+app.get("/auth/denied", (req, res) => {
+  res.status(403).send(`
+    <!DOCTYPE html><html><head><title>Access Denied</title>
+    <style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1a1a2e;color:#e0e0e0;}
+    .box{text-align:center;padding:40px;border:1px solid #333;border-radius:12px;background:#16213e;max-width:400px;}
+    h1{color:#e74c3c;font-size:20px;margin-bottom:16px;}
+    a{color:#3498db;text-decoration:none;}</style></head>
+    <body><div class="box"><h1>Access Denied</h1>
+    <p>Only <strong>@${ALLOWED_DOMAIN}</strong> accounts are allowed.</p>
+    <p style="margin-top:20px;"><a href="/auth/google">Try another account</a></p>
+    </div></body></html>
+  `);
+});
+
+app.get("/auth/logout", (req, res) => {
+  req.logout(() => {
+    req.session.destroy(() => {
+      res.redirect("/");
+    });
+  });
+});
+
+app.get("/api/user", (req, res) => {
+  if (req.isAuthenticated && req.isAuthenticated()) {
+    return res.json({ authenticated: true, user: req.user });
+  }
+  res.json({ authenticated: false });
+});
+
+// ─── Auth middleware — protect everything below ─────────────────
+function requireAuth(req, res, next) {
+  if (!AUTH_ENABLED) return next(); // no OAuth configured = open access
+  if (req.isAuthenticated && req.isAuthenticated()) return next();
+  // API routes return 401, page routes redirect to login
+  if (req.path.startsWith("/api/")) {
+    return res.status(401).json({ error: "Unauthorized — please sign in" });
+  }
+  return res.redirect("/auth/google");
+}
+
+// Serve static files — protected
+app.use(requireAuth, express.static(path.join(__dirname, "public")));
 
 // ─── API Routes ─────────────────────────────────────────────────
 
 // GET /api/deals — serves cached data or fetches fresh
-app.get("/api/deals", async (req, res) => {
+app.get("/api/deals", requireAuth, async (req, res) => {
   try {
     if (!HUBSPOT_TOKEN) {
       return res.status(500).json({ error: "HUBSPOT_API_KEY environment variable is not set" });
@@ -226,7 +336,7 @@ app.get("/api/deals", async (req, res) => {
 });
 
 // POST /api/deals/refresh — force refresh, ignoring cache
-app.post("/api/deals/refresh", async (req, res) => {
+app.post("/api/deals/refresh", requireAuth, async (req, res) => {
   try {
     if (!HUBSPOT_TOKEN) {
       return res.status(500).json({ error: "HUBSPOT_API_KEY environment variable is not set" });
@@ -364,7 +474,7 @@ let activityCache = { data: null, timestamp: 0 };
 const ACTIVITY_CACHE_TTL = 30 * 60 * 1000; // 30 min
 
 // GET /api/activity — drafter activity heatmap data
-app.get("/api/activity", async (req, res) => {
+app.get("/api/activity", requireAuth, async (req, res) => {
   try {
     if (!HUBSPOT_TOKEN) {
       return res.status(500).json({ error: "HUBSPOT_API_KEY not set" });
@@ -434,7 +544,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // Serve the dashboard for all other routes (SPA fallback)
-app.get("*", (req, res) => {
+app.get("*", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
