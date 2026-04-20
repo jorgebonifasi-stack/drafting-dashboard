@@ -1421,7 +1421,7 @@
     }
 
     // ─── Chart 14: Drafter Activity Heatmap ────────────────────
-    function ActivityHeatmap({drafterNames:drafterNamesProp}){
+    function ActivityHeatmap({drafterNames:drafterNamesProp,onTableData}){
       const[activityData,setActivityData]=useState(null);
       const[activityLoading,setActivityLoading]=useState(false);
       const[selectedDate,setSelectedDate]=useState(()=>{const d=new Date();return d.toISOString().slice(0,10);});
@@ -1481,6 +1481,21 @@
       },[activityData,drafterNamesProp,selectedDate]);
 
       const{drafters,hours,grid}=heatmapData;
+
+      // Expose table data to parent ChartCard
+      useEffect(()=>{
+        if(!onTableData)return;
+        const cols=[{key:"name",label:"Drafter"},...hours.map(h=>({key:"h"+h,label:String(h).padStart(2,"0")+":00"})),{key:"total",label:"Total Activities"},{key:"activeHours",label:"Active Hours"}];
+        const rows=drafters.map(d=>{
+          const row=grid[d.id]||{};
+          const totalAct=hours.reduce((s,h)=>s+(row[h]||0),0);
+          const activeH=hours.filter(h=>row[h]>0).length;
+          const r={_key:d.id,name:d.name,total:totalAct,activeHours:activeH};
+          hours.forEach(h=>{r["h"+h]=row[h]||0;});
+          return r;
+        });
+        onTableData({columns:cols,rows,csvName:`drafter_activity_${selectedDate}.csv`});
+      },[drafters,hours,grid,selectedDate,onTableData]);
 
       // Date navigation
       const changeDate=(delta)=>{
@@ -1571,6 +1586,19 @@
 
     async function generateSlides(gran, selectedBucket) {
       alert("Google Slides generation is not available in the Railway-hosted version. Use the CSV export buttons to get your data.");
+    }
+
+    // ─── Heatmap + ChartCard wrapper (lifts table data from heatmap) ──
+    function HeatmapWithCard({drafterNames}){
+      const[tableData,setTableData]=useState({columns:[],rows:[],csvName:""});
+      const onTableData=useCallback(d=>setTableData(d),[]);
+      return(
+        <div style={{padding:"0 24px 16px"}}>
+          <ChartCard chartId="chart-14" title="Drafter Activity Heatmap (Daily)" infoText={INFO.chart14} columns={tableData.columns} rows={tableData.rows} csvName={tableData.csvName}>
+            <ActivityHeatmap drafterNames={drafterNames} onTableData={onTableData}/>
+          </ChartCard>
+        </div>
+      );
     }
 
     // ─── Main Dashboard ─────────────────────────────────────────
@@ -2002,11 +2030,7 @@
           </div>
 
           {/* ── DRAFTER ACTIVITY ── */}
-          <div style={{padding:"0 24px 16px"}}>
-            <ChartCard chartId="chart-14" title="Drafter Activity Heatmap (Daily)" infoText={INFO.chart14} columns={[]} rows={[]} csvName="">
-              <ActivityHeatmap drafterNames={drafterNames}/>
-            </ChartCard>
-          </div>
+          <HeatmapWithCard drafterNames={drafterNames}/>
 
           <div style={S.footer}>{totalRaw} deals loaded &middot; Data range: {dateRange}</div>
 
