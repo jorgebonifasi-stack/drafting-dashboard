@@ -245,18 +245,76 @@ app.post("/api/deals/refresh", async (req, res) => {
 });
 
 // ─── Fetch engagements (activity) for heatmap ─────────────────
-// Uses the HubSpot v1 Engagements API which is more reliable for
-// fetching all engagement types (notes, calls, emails, tasks, meetings)
-async function fetchAllEngagements(daysBack) {
-  const since = Date.now() - (daysBack * 24 * 60 * 60 * 1000);
-  const headers = { "Authorization": "Bearer " + HUBSPOT_TOKEN };
+
+// Method A: v3 CRM Search for a single object type (notes, calls, tasks)
+async function fetchV3Engagements(objectType, sinceMs) {
+  const url = `https://api.hubapi.com/crm/v3/objects/${objectType}/search`;
+  const headers = {
+    "Authorization": "Bearer " + HUBSPOT_TOKEN,
+    "Content-Type": "application/json"
+  };
 
   let allResults = [];
-  let offset = 0;
-  const maxPages = 50;
+  let after = null;
 
-  for (let page = 0; page < maxPages; page++) {
-    const url = `https://api.hubapi.com/engagements/v1/engagements/paged?offset=${offset}&limit=250`;
+  for (let page = 0; page < 30; page++) {
+    const body = {
+      filterGroups: [
+        { filters: [{ propertyName: "hs_createdate", operator: "GTE", value: String(sinceMs) }] }
+      ],
+      properties: ["hs_createdate", "hs_timestamp", "hubspot_owner_id"],
+      sorts: [{ propertyName: "hs_createdate", direction: "DESCENDING" }],
+      limit: 100
+    };
+    if (after) body.after = after;
+
+    let response = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+      if (response.status === 429) { await sleep(Math.pow(2, attempt) * 1000); continue; }
+      break;
+    }
+
+    if (!response || !response.ok) {
+      const text = response ? await response.text().catch(() => "") : "";
+      console.error(`v3 search ${objectType} error: ${response ? response.status : "?"} ${text.substring(0, 200)}`);
+      break;
+    }
+
+    const data = await response.json();
+    (data.results || []).forEach(r => {
+      const p = r.properties || {};
+      const ts = p.hs_timestamp || p.hs_createdate;
+      const ownerId = p.hubspot_owner_id;
+      if (ts && ownerId) {
+        allResults.push({
+          ownerId: String(ownerId),
+          timestamp: new Date(ts).getTime(),
+          type: objectType
+        });
+      }
+    });
+
+    if (data.paging && data.paging.next && data.paging.next.after) {
+      after = data.paging.next.after;
+    } else {
+      break;
+    }
+    await sleep(150);
+  }
+
+  console.log(`  -> ${objectType}: ${allResults.length} results`);
+  return allResults;
+}
+
+// Method B: v1 recent/modified (catches emails, meetings, and anything v3 misses)
+async function fetchV1RecentEngagements(sinceMs) {
+  const headers = { "Authorization": "Bearer " + HUBSPOT_TOKEN };
+  let allResults = [];
+  let offset = 0;
+
+  for (let page = 0; page < 30; page++) {
+    const url = `https://api.hubapi.com/engagements/v1/engagements/recent/modified?count=100&offset=${offset}&since=${sinceMs}`;
 
     let response = null;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -266,45 +324,32 @@ async function fetchAllEngagements(daysBack) {
     }
 
     if (!response || !response.ok) {
-      const text = response ? await response.text() : "no response";
-      console.error("Engagements API error:", response ? response.status : "?", text);
+      const text = response ? await response.text().catch(() => "") : "";
+      console.error(`v1 recent error: ${response ? response.status : "?"} ${text.substring(0, 200)}`);
       break;
     }
 
     const data = await response.json();
-    const results = data.results || [];
-
-    // Filter to recent engagements and extract what we need
-    results.forEach(eng => {
-      const ts = eng.engagement && eng.engagement.timestamp;
-      const ownerId = eng.engagement && eng.engagement.ownerId;
-      const type = eng.engagement && eng.engagement.type;
-      if (ts && ts >= since && ownerId) {
+    (data.results || []).forEach(eng => {
+      const e = eng.engagement || {};
+      if (e.ownerId && e.timestamp && e.timestamp >= sinceMs) {
         allResults.push({
-          ownerId: String(ownerId),
-          timestamp: ts,
-          type: type || "unknown"
+          ownerId: String(e.ownerId),
+          timestamp: e.timestamp,
+          type: (e.type || "unknown").toLowerCase()
         });
       }
     });
 
-    // Check if there are more pages
     if (data.hasMore && data.offset) {
       offset = data.offset;
     } else {
       break;
     }
-
-    // Stop early if we've gone past our date range (engagements are sorted newest first)
-    const oldestInBatch = results.reduce((min, eng) => {
-      const ts = eng.engagement && eng.engagement.timestamp;
-      return ts && ts < min ? ts : min;
-    }, Infinity);
-    if (oldestInBatch < since) break;
-
     await sleep(150);
   }
 
+  console.log(`  -> v1 recent: ${allResults.length} results`);
   return allResults;
 }
 
@@ -324,15 +369,32 @@ app.get("/api/activity", async (req, res) => {
       return res.json({ ...activityCache.data, _cachedAt: String(activityCache.timestamp) });
     }
 
-    console.log("[" + new Date().toISOString() + "] Fetching activity data via Engagements v1...");
-    const daysBack = 14; // fetch 2 weeks for navigation flexibility
+    console.log("[" + new Date().toISOString() + "] Fetching activity data (v3 search + v1 recent)...");
+    const daysBack = 14;
+    const sinceMs = now - (daysBack * 24 * 60 * 60 * 1000);
 
-    const [activities, ownerMap] = await Promise.all([
-      fetchAllEngagements(daysBack),
+    // Fetch from multiple sources in parallel
+    const [notes, calls, tasks, v1Recent, ownerMap] = await Promise.all([
+      fetchV3Engagements("notes", sinceMs).catch(e => { console.error("notes error:", e.message); return []; }),
+      fetchV3Engagements("calls", sinceMs).catch(e => { console.error("calls error:", e.message); return []; }),
+      fetchV3Engagements("tasks", sinceMs).catch(e => { console.error("tasks error:", e.message); return []; }),
+      fetchV1RecentEngagements(sinceMs).catch(e => { console.error("v1 recent error:", e.message); return []; }),
       fetchOwners()
     ]);
 
-    console.log("[" + new Date().toISOString() + "] Fetched " + activities.length + " engagements from v1 API.");
+    // Merge and deduplicate (v1 may overlap with v3)
+    const seen = new Set();
+    const activities = [];
+    [...notes, ...calls, ...tasks, ...v1Recent].forEach(a => {
+      const key = a.ownerId + "_" + a.timestamp + "_" + a.type;
+      if (!seen.has(key)) {
+        seen.add(key);
+        activities.push(a);
+      }
+    });
+
+    console.log("[" + new Date().toISOString() + "] Total activities: " + activities.length +
+      " (notes:" + notes.length + " calls:" + calls.length + " tasks:" + tasks.length + " v1:" + v1Recent.length + ")");
 
     const data = { activities, ownerMap };
     activityCache = { data, timestamp: now };
