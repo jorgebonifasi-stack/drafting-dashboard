@@ -1700,6 +1700,14 @@
       const[proofOverrides,setProofOverrides]=useState({...DEFAULT_PROOF_OVERRIDES});
       const[generating,setGenerating]=useState(false);
       const[draftingOwnerOpts,setDraftingOwnerOpts]=useState({});
+      const[authUser,setAuthUser]=useState(null);
+
+      // Check auth status on mount
+      useEffect(()=>{
+        fetch("/api/user").then(r=>r.json()).then(d=>{
+          if(d.authenticated)setAuthUser(d.user);
+        }).catch(()=>{});
+      },[]);
 
       // ── load data via server (serves from cache, or fetches fresh) ──
       const loadData=useCallback(async(force)=>{
@@ -2020,6 +2028,13 @@
                 {loading?"\u23F3":"\uD83D\uDD04"} Refresh
               </button>
               {lastRefresh&&<span style={S.badge}>Data from {lastRefresh.toLocaleTimeString()}</span>}
+              {authUser&&(
+                <span style={{display:"flex",alignItems:"center",gap:6,marginLeft:8}}>
+                  {authUser.photo&&<img src={authUser.photo} alt="" style={{width:22,height:22,borderRadius:"50%"}}/>}
+                  <span style={{fontSize:11,color:C.muted}}>{authUser.name||authUser.email}</span>
+                  <a href="/auth/logout" style={{fontSize:11,color:C.accent,textDecoration:"none",marginLeft:4}}>Logout</a>
+                </span>
+              )}
             </div>
           </div>
 
