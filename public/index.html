@@ -1442,12 +1442,20 @@
       const heatmapData=useMemo(()=>{
         if(!activityData)return{drafters:[],hours:[],grid:{}};
 
-        // Get drafter names from draftingOwnerOptions (value→label mapping)
-        // and ownerMap (ownerId→name mapping)
+        // ownerMap maps HubSpot owner IDs → names (from /api/activity)
+        // draftingOwnerOptions maps custom enum values → labels (NOT owner IDs)
+        // We need to cross-reference by name to find which HubSpot owner IDs are drafters
         const ownerMap=activityData.ownerMap||{};
+        const drafterNames=new Set(Object.values(draftingOwnerOptions||{}).map(n=>n.trim().toLowerCase()));
+
+        // Build reverse lookup: for each HubSpot owner, check if their name matches a drafter
         const drafterOwnerIds=new Set();
-        // draftingOwnerOptions maps internal value → label; those values ARE owner IDs
-        Object.keys(draftingOwnerOptions||{}).forEach(id=>drafterOwnerIds.add(id));
+        Object.entries(ownerMap).forEach(([ownerId,name])=>{
+          if(drafterNames.has(name.trim().toLowerCase()))drafterOwnerIds.add(ownerId);
+        });
+
+        // If no cross-reference matches, fall back to showing ALL owners with activity
+        const useAllOwners=drafterOwnerIds.size===0;
 
         const hours=[];
         for(let h=7;h<=19;h++)hours.push(h);
@@ -1457,19 +1465,25 @@
         // Build grid: {ownerId: {hour: count}}
         const grid={};
         (activityData.activities||[]).forEach(a=>{
-          if(!drafterOwnerIds.has(a.ownerId))return;
+          if(!useAllOwners&&!drafterOwnerIds.has(a.ownerId))return;
           const dt=new Date(a.timestamp);
-          const dateStr=dt.toISOString().slice(0,10);
+          // Use local date (not UTC) so hours and date align with user's timezone
+          const dateStr=dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
           if(dateStr!==selDate)return;
           const hour=dt.getHours();
           if(!grid[a.ownerId])grid[a.ownerId]={};
           grid[a.ownerId][hour]=(grid[a.ownerId][hour]||0)+1;
         });
 
-        // Build drafter list — only those with any activity, plus all known drafters
-        const drafters=[...drafterOwnerIds].map(id=>({
+        // Build drafter list from owners that appear in the grid (have activity) + all known drafters
+        const allRelevantIds=new Set([...drafterOwnerIds,...Object.keys(grid)]);
+        const drafters=[...allRelevantIds].filter(id=>{
+          // If we matched drafters, only show matched drafters + those with activity who are drafters
+          if(!useAllOwners)return drafterOwnerIds.has(id);
+          return true;
+        }).map(id=>({
           id,
-          name:draftingOwnerOptions[id]||ownerMap[id]||id
+          name:ownerMap[id]||id
         })).filter(d=>d.name&&d.name!=="Unknown"&&!/^\d+$/.test(d.name)).sort((a,b)=>a.name.localeCompare(b.name));
 
         return{drafters,hours,grid};
