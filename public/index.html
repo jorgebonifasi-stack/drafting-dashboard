@@ -194,6 +194,10 @@
         const URGENT_CUTOVER=new Date("2026-04-18T00:00:00");
         const dateMarkedUrgent=parseHSDate(p.date_marked_urgent);
         const urgentStart=dateMarkedUrgent&&dateMarkedUrgent>=URGENT_CUTOVER?dateMarkedUrgent:draftingStart;
+        // Consultant Query (stage 1223751330)
+        const enteredConsultantQuery=parseHSDate(p.hs_v2_date_entered_1223751330);
+        // Exited Approved - Proof Reading (stage 1223620774)
+        const exitedApproved=parseHSDate(p.hs_v2_date_exited_1223620774);
         // Amendment fields
         const enteredAmendment=parseHSDate(p.hs_v2_date_entered_1338772492);
         const exitedAmendment=parseHSDate(p.hs_v2_date_exited_1338772492);
@@ -205,6 +209,7 @@
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
           enteredAppointmentOutcome,
+          origDraftsWithCustomer,origReadyForPrinting,enteredConsultantQuery,exitedApproved,
           enteredAmendment,exitedAmendment,amendmentSource,
           amendmentTurnaroundDays:enteredAmendment&&exitedAmendment?(exitedAmendment-enteredAmendment)/86400000:null,
           draftingTurnaroundDays:draftingStart&&exitedDrafting?(exitedDrafting-draftingStart)/86400000:null,
@@ -1489,12 +1494,11 @@
         });
 
         const stageEvents=[
-          {key:"enteredDrafting",label:"\u2192 Drafting Instructions"},
-          {key:"nativeExitedDrafting",label:"\u2192 Exited Drafting"},
-          {key:"enteredProofreading",label:"\u2192 Proofreading"},
-          {key:"exitedProofreading",label:"\u2192 Exited Proofreading"},
-          {key:"enteredDraftingQuery",label:"\u2192 Drafting Query"},
-          {key:"enteredAppointmentOutcome",label:"\u2192 Appointment Outcome"},
+          {key:"origDraftsWithCustomer",label:"\u2192 Drafts With Customer"},
+          {key:"origReadyForPrinting",label:"\u2192 Ready For Printing"},
+          {key:"enteredProofreading",label:"\u2192 Required - Proof Reading"},
+          {key:"enteredConsultantQuery",label:"\u2192 Consultant Query"},
+          {key:"exitedApproved",label:"\u2192 Exited Approved"},
         ];
 
         (allDeals||[]).forEach(deal=>{
