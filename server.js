@@ -422,6 +422,17 @@ app.get("/api/activity", async (req, res) => {
   }
 });
 
+// Temporary: fetch pipeline stages for mapping
+app.get("/api/pipeline-stages", async (req, res) => {
+  try {
+    const response = await fetch("https://api.hubapi.com/crm/v3/pipelines/deals", {
+      headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({
