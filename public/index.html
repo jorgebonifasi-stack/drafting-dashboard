@@ -437,15 +437,22 @@
                         {hasDetails&&<td style={td}>{expanded[r._key]?"\u25BC":"\u25B6"}<span style={{fontSize:10,opacity:0.5,marginLeft:4}}>{(detailMap[r._key]||[]).length}</span></td>}
                         {columns.map(c=><td key={c.key} style={td}>{r[c.key]}</td>)}
                       </tr>
-                      {expanded[r._key]&&(detailMap[r._key]||[]).map(deal=>(
+                      {expanded[r._key]&&(detailMap[r._key]||[]).map(deal=>{
+                        const linkUrl=deal._engUrl||(HS_BASE+deal.id);
+                        return(
                         <tr key={deal.id} style={{background:"rgba(0,0,0,0.25)"}}>
                           {hasDetails&&<td style={td}></td>}
                           <td style={{...td,paddingLeft:20}} colSpan={columns.length}>
-                            <a href={HS_BASE+deal.id} target="_blank" rel="noopener" style={{color:C.accent,textDecoration:"none",fontWeight:500}}>{deal.dealname||deal.id}</a>
-                            {(detailCols||[]).map(c=><span key={c.key} style={{marginLeft:16,fontSize:11,opacity:0.6}}>{c.label}: {deal[c.key]??"—"}</span>)}
+                            <a href={linkUrl} target="_blank" rel="noopener" style={{color:C.accent,textDecoration:"none",fontWeight:500}}>{deal.dealname||deal.id}</a>
+                            {(detailCols||[]).map(c=>{
+                              if(c.key==="dealLinks"&&deal._dealUrls&&deal._dealUrls.length>0){
+                                return <span key={c.key} style={{marginLeft:16,fontSize:11}}>{deal._dealUrls.map((u,i)=><a key={i} href={u} target="_blank" rel="noopener" style={{color:C.accent,textDecoration:"none",marginLeft:i?6:0}}>Deal {i+1}</a>)}</span>;
+                              }
+                              return <span key={c.key} style={{marginLeft:16,fontSize:11,opacity:0.6}}>{c.label}: {deal[c.key]??"—"}</span>;
+                            })}
                           </td>
                         </tr>
-                      ))}
+                      );})}
                     </React.Fragment>
                   ))}
                 </tbody>
@@ -1458,8 +1465,9 @@
 
         const selDate=selectedDate; // "YYYY-MM-DD"
 
-        // Build grid: {ownerId: {hour: count}}
+        // Build grid: {ownerId: {hour: count}} and collect individual activities per drafter
         const grid={};
+        const activitiesByOwner={};
         (activityData.activities||[]).forEach(a=>{
           if(!drafterOwnerIds.has(a.ownerId))return;
           const dt=new Date(a.timestamp);
@@ -1469,6 +1477,8 @@
           const hour=dt.getHours();
           if(!grid[a.ownerId])grid[a.ownerId]={};
           grid[a.ownerId][hour]=(grid[a.ownerId][hour]||0)+1;
+          if(!activitiesByOwner[a.ownerId])activitiesByOwner[a.ownerId]=[];
+          activitiesByOwner[a.ownerId].push(a);
         });
 
         // Build drafter list — only known drafters
@@ -1477,25 +1487,46 @@
           name:ownerMap[id]||id
         })).filter(d=>d.name&&d.name!=="Unknown"&&!/^\d+$/.test(d.name)).sort((a,b)=>a.name.localeCompare(b.name));
 
-        return{drafters,hours,grid};
+        return{drafters,hours,grid,activitiesByOwner};
       },[activityData,drafterNamesProp,selectedDate]);
 
-      const{drafters,hours,grid}=heatmapData;
+      const{drafters,hours,grid,activitiesByOwner}=heatmapData;
 
       // Expose table data to parent ChartCard
       useEffect(()=>{
         if(!onTableData)return;
-        const cols=[{key:"name",label:"Drafter"},...hours.map(h=>({key:"h"+h,label:String(h).padStart(2,"0")+":00"})),{key:"total",label:"Total Activities"},{key:"activeHours",label:"Active Hours"}];
-        const rows=drafters.map(d=>{
+        const HS_ENGAGE_BASE="https://app.hubspot.com/contacts/4385478/record/0-";
+        const typeMap={notes:"4",calls:"48",tasks:"27",email:"49",incoming_email:"49",meeting:"10"};
+        const cols=[{key:"name",label:"Drafter"},{key:"total",label:"Total Activities"},{key:"activeHours",label:"Active Hours"}];
+        const detailCols=[{key:"type",label:"Type"},{key:"time",label:"Time"},{key:"dealLinks",label:"Linked Deals"}];
+        const rows=[];
+        const detailMap={};
+        drafters.forEach(d=>{
           const row=grid[d.id]||{};
           const totalAct=hours.reduce((s,h)=>s+(row[h]||0),0);
           const activeH=hours.filter(h=>row[h]>0).length;
-          const r={_key:d.id,name:d.name,total:totalAct,activeHours:activeH};
-          hours.forEach(h=>{r["h"+h]=row[h]||0;});
-          return r;
+          rows.push({_key:d.id,name:d.name,total:totalAct,activeHours:activeH});
+          // Build detail rows from individual activities
+          const acts=activitiesByOwner[d.id]||[];
+          detailMap[d.id]=acts.map(a=>{
+            const dt=new Date(a.timestamp);
+            const timeStr=String(dt.getHours()).padStart(2,"0")+":"+String(dt.getMinutes()).padStart(2,"0");
+            const typeCode=typeMap[(a.type||"").toLowerCase()]||"";
+            const engUrl=a.url||(a.id&&typeCode?HS_ENGAGE_BASE+typeCode+"/"+a.id:null);
+            const dealLinks=(a.dealIds||[]).map(did=>"https://app.hubspot.com/contacts/4385478/deal/"+did);
+            return{
+              id:a.id||String(a.timestamp),
+              dealname:(a.type||"unknown").charAt(0).toUpperCase()+(a.type||"").slice(1)+" @ "+timeStr,
+              type:(a.type||"unknown").charAt(0).toUpperCase()+(a.type||"").slice(1),
+              time:timeStr,
+              dealLinks:dealLinks.length?dealLinks.length+" deal(s)":"—",
+              _engUrl:engUrl,
+              _dealUrls:dealLinks
+            };
+          }).sort((a,b)=>a.time.localeCompare(b.time));
         });
-        onTableData({columns:cols,rows,csvName:`drafter_activity_${selectedDate}.csv`});
-      },[drafters,hours,grid,selectedDate,onTableData]);
+        onTableData({columns:cols,rows,detailMap,detailCols,csvName:`drafter_activity_${selectedDate}.csv`});
+      },[drafters,hours,grid,activitiesByOwner,selectedDate,onTableData]);
 
       // Date navigation
       const changeDate=(delta)=>{
@@ -1590,11 +1621,11 @@
 
     // ─── Heatmap + ChartCard wrapper (lifts table data from heatmap) ──
     function HeatmapWithCard({drafterNames}){
-      const[tableData,setTableData]=useState({columns:[],rows:[],csvName:""});
+      const[tableData,setTableData]=useState({columns:[],rows:[],detailMap:null,detailCols:[],csvName:""});
       const onTableData=useCallback(d=>setTableData(d),[]);
       return(
         <div style={{padding:"0 24px 16px"}}>
-          <ChartCard chartId="chart-14" title="Drafter Activity Heatmap (Daily)" infoText={INFO.chart14} columns={tableData.columns} rows={tableData.rows} csvName={tableData.csvName}>
+          <ChartCard chartId="chart-14" title="Drafter Activity Heatmap (Daily)" infoText={INFO.chart14} columns={tableData.columns} rows={tableData.rows} detailMap={tableData.detailMap} detailCols={tableData.detailCols} csvName={tableData.csvName}>
             <ActivityHeatmap drafterNames={drafterNames} onTableData={onTableData}/>
           </ChartCard>
         </div>
