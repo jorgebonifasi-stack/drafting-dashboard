@@ -1428,7 +1428,7 @@
     }
 
     // ─── Chart 14: Drafter Activity Heatmap ────────────────────
-    function ActivityHeatmap({drafterNames:drafterNamesProp,onTableData}){
+    function ActivityHeatmap({drafterNames:drafterNamesProp,onTableData,deals:allDeals}){
       const[activityData,setActivityData]=useState(null);
       const[activityLoading,setActivityLoading]=useState(false);
       const[selectedDate,setSelectedDate]=useState(()=>{const d=new Date();return d.toISOString().slice(0,10);});
@@ -1481,6 +1481,49 @@
           activitiesByOwner[a.ownerId].push(a);
         });
 
+        // Inject deal stage movements as activities
+        // Build name→ownerId map for matching deals to owners
+        const nameToOwnerId={};
+        Object.entries(ownerMap).forEach(([id,name])=>{
+          if(drafterOwnerIds.has(id))nameToOwnerId[name.trim().toLowerCase()]=id;
+        });
+
+        const stageEvents=[
+          {key:"enteredDrafting",label:"\u2192 Drafting Instructions"},
+          {key:"nativeExitedDrafting",label:"\u2192 Exited Drafting"},
+          {key:"enteredProofreading",label:"\u2192 Proofreading"},
+          {key:"exitedProofreading",label:"\u2192 Exited Proofreading"},
+          {key:"enteredDraftingQuery",label:"\u2192 Drafting Query"},
+          {key:"enteredAppointmentOutcome",label:"\u2192 Appointment Outcome"},
+        ];
+
+        (allDeals||[]).forEach(deal=>{
+          const drafterLower=(deal.drafterName||"").trim().toLowerCase();
+          const oid=nameToOwnerId[drafterLower];
+          if(!oid)return;
+
+          stageEvents.forEach(ev=>{
+            const ts=deal[ev.key];
+            if(!ts)return;
+            const dt=new Date(ts);
+            const dateStr=dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
+            if(dateStr!==selDate)return;
+            const hour=dt.getHours();
+            if(!grid[oid])grid[oid]={};
+            grid[oid][hour]=(grid[oid][hour]||0)+1;
+            if(!activitiesByOwner[oid])activitiesByOwner[oid]=[];
+            activitiesByOwner[oid].push({
+              id:deal.id,
+              ownerId:oid,
+              timestamp:dt.getTime(),
+              type:"Stage Move",
+              dealIds:[deal.id],
+              _stageLabel:ev.label,
+              _dealName:deal.dealname
+            });
+          });
+        });
+
         // Build drafter list — only known drafters
         const drafters=[...drafterOwnerIds].map(id=>({
           id,
@@ -1488,7 +1531,7 @@
         })).filter(d=>d.name&&d.name!=="Unknown"&&!/^\d+$/.test(d.name)).sort((a,b)=>a.name.localeCompare(b.name));
 
         return{drafters,hours,grid,activitiesByOwner};
-      },[activityData,drafterNamesProp,selectedDate]);
+      },[activityData,drafterNamesProp,selectedDate,allDeals]);
 
       const{drafters,hours,grid,activitiesByOwner}=heatmapData;
 
@@ -1511,17 +1554,22 @@
           detailMap[d.id]=acts.map(a=>{
             const dt=new Date(a.timestamp);
             const timeStr=String(dt.getHours()).padStart(2,"0")+":"+String(dt.getMinutes()).padStart(2,"0");
+            const isStageMove=a.type==="Stage Move";
             const typeCode=typeMap[(a.type||"").toLowerCase()]||"";
-            const engUrl=a.url||(a.id&&typeCode?HS_ENGAGE_BASE+typeCode+"/"+a.id:null);
+            const dealUrl="https://app.hubspot.com/contacts/4385478/deal/"+a.id;
+            const engUrl=isStageMove?dealUrl:(a.url||(a.id&&typeCode?HS_ENGAGE_BASE+typeCode+"/"+a.id:null));
             const dealLinks=(a.dealIds||[]).map(did=>"https://app.hubspot.com/contacts/4385478/deal/"+did);
+            const displayName=isStageMove
+              ?(a._dealName||a.id)+" "+a._stageLabel
+              :a.type+" @ "+timeStr;
             return{
               id:a.id||String(a.timestamp),
-              dealname:(a.type||"unknown").charAt(0).toUpperCase()+(a.type||"").slice(1)+" @ "+timeStr,
-              type:(a.type||"unknown").charAt(0).toUpperCase()+(a.type||"").slice(1),
+              dealname:displayName,
+              type:isStageMove?"Stage Move":a.type,
               time:timeStr,
-              dealLinks:dealLinks.length?dealLinks.length+" deal(s)":"—",
+              dealLinks:isStageMove?(a._dealName||"Deal"):dealLinks.length?dealLinks.length+" deal(s)":"\u2014",
               _engUrl:engUrl,
-              _dealUrls:dealLinks
+              _dealUrls:isStageMove?[dealUrl]:dealLinks
             };
           }).sort((a,b)=>a.time.localeCompare(b.time));
         });
@@ -1620,13 +1668,13 @@
     }
 
     // ─── Heatmap + ChartCard wrapper (lifts table data from heatmap) ──
-    function HeatmapWithCard({drafterNames}){
+    function HeatmapWithCard({drafterNames,deals}){
       const[tableData,setTableData]=useState({columns:[],rows:[],detailMap:null,detailCols:[],csvName:""});
       const onTableData=useCallback(d=>setTableData(d),[]);
       return(
         <div style={{padding:"0 24px 16px"}}>
           <ChartCard chartId="chart-14" title="Drafter Activity Heatmap (Daily)" infoText={INFO.chart14} columns={tableData.columns} rows={tableData.rows} detailMap={tableData.detailMap} detailCols={tableData.detailCols} csvName={tableData.csvName}>
-            <ActivityHeatmap drafterNames={drafterNames} onTableData={onTableData}/>
+            <ActivityHeatmap drafterNames={drafterNames} onTableData={onTableData} deals={deals}/>
           </ChartCard>
         </div>
       );
@@ -2061,7 +2109,7 @@
           </div>
 
           {/* ── DRAFTER ACTIVITY ── */}
-          <HeatmapWithCard drafterNames={drafterNames}/>
+          <HeatmapWithCard drafterNames={drafterNames} deals={deals}/>
 
           <div style={S.footer}>{totalRaw} deals loaded &middot; Data range: {dateRange}</div>
 
