@@ -344,6 +344,78 @@ app.get("/api/activity", async (req, res) => {
   }
 });
 
+// Diagnostic endpoint — tries multiple HubSpot engagement APIs to find what works
+app.get("/api/activity-debug", async (req, res) => {
+  if (!HUBSPOT_TOKEN) return res.status(500).json({ error: "No token" });
+
+  const headers = { "Authorization": "Bearer " + HUBSPOT_TOKEN, "Content-Type": "application/json" };
+  const results = {};
+
+  // Test 1: Engagements v1 paged
+  try {
+    const r = await fetch("https://api.hubapi.com/engagements/v1/engagements/paged?limit=10", { headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN } });
+    const text = await r.text();
+    results["v1_engagements"] = { status: r.status, body: text.substring(0, 500) };
+  } catch (e) { results["v1_engagements"] = { error: e.message }; }
+
+  // Test 2: CRM v3 notes search
+  try {
+    const r = await fetch("https://api.hubapi.com/crm/v3/objects/notes/search", {
+      method: "POST", headers,
+      body: JSON.stringify({ filterGroups: [], properties: ["hs_timestamp", "hs_note_body", "hubspot_owner_id"], limit: 5 })
+    });
+    const text = await r.text();
+    results["v3_notes_search"] = { status: r.status, body: text.substring(0, 500) };
+  } catch (e) { results["v3_notes_search"] = { error: e.message }; }
+
+  // Test 3: CRM v3 notes list (no search, just list)
+  try {
+    const r = await fetch("https://api.hubapi.com/crm/v3/objects/notes?limit=5&properties=hs_timestamp,hubspot_owner_id,hs_note_body", {
+      headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
+    });
+    const text = await r.text();
+    results["v3_notes_list"] = { status: r.status, body: text.substring(0, 500) };
+  } catch (e) { results["v3_notes_list"] = { error: e.message }; }
+
+  // Test 4: CRM v3 calls list
+  try {
+    const r = await fetch("https://api.hubapi.com/crm/v3/objects/calls?limit=5&properties=hs_timestamp,hubspot_owner_id", {
+      headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
+    });
+    const text = await r.text();
+    results["v3_calls_list"] = { status: r.status, body: text.substring(0, 500) };
+  } catch (e) { results["v3_calls_list"] = { error: e.message }; }
+
+  // Test 5: CRM v3 emails list
+  try {
+    const r = await fetch("https://api.hubapi.com/crm/v3/objects/emails?limit=5&properties=hs_timestamp,hubspot_owner_id", {
+      headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
+    });
+    const text = await r.text();
+    results["v3_emails_list"] = { status: r.status, body: text.substring(0, 500) };
+  } catch (e) { results["v3_emails_list"] = { error: e.message }; }
+
+  // Test 6: CRM v3 tasks list
+  try {
+    const r = await fetch("https://api.hubapi.com/crm/v3/objects/tasks?limit=5&properties=hs_timestamp,hubspot_owner_id", {
+      headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
+    });
+    const text = await r.text();
+    results["v3_tasks_list"] = { status: r.status, body: text.substring(0, 500) };
+  } catch (e) { results["v3_tasks_list"] = { error: e.message }; }
+
+  // Test 7: Engagements v2 (recent)
+  try {
+    const r = await fetch("https://api.hubapi.com/engagements/v1/engagements/recent/modified?count=10", {
+      headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
+    });
+    const text = await r.text();
+    results["v1_recent_modified"] = { status: r.status, body: text.substring(0, 500) };
+  } catch (e) { results["v1_recent_modified"] = { error: e.message }; }
+
+  res.json(results);
+});
+
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({
