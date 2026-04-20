@@ -28,7 +28,8 @@ const PROPERTIES = [
   "amendment_source",
   "date_marked_urgent",
   "first_date_exited_drafting_instructions",
-  "hs_v2_date_entered_1223751329"
+  "hs_v2_date_entered_1223751329",
+  "hs_v2_date_entered_1223751330"
 ];
 
 // ─── In-memory cache ─────────────────────────────────────────────
@@ -420,17 +421,6 @@ app.get("/api/activity", async (req, res) => {
     console.error("Error fetching activity:", err.message);
     res.status(500).json({ error: err.message });
   }
-});
-
-// Temporary: fetch pipeline stages for mapping
-app.get("/api/pipeline-stages", async (req, res) => {
-  try {
-    const response = await fetch("https://api.hubapi.com/crm/v3/pipelines/deals", {
-      headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Health check
