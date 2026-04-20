@@ -43,6 +43,20 @@ const PROPERTIES = [
   "hs_v2_date_entered_1223751330"
 ];
 
+// ─── Komal Singh exclusion list ─────────────────────────────────
+// Deals that had drafting queries under Komal Singh's ownership.
+// After reassignment, these queries should NOT count against the new owner's metrics.
+const fs = require("fs");
+let KOMAL_EXCLUSION_IDS = new Set();
+try {
+  const exPath = path.join(__dirname, "komal-exclusions.json");
+  const exData = JSON.parse(fs.readFileSync(exPath, "utf8"));
+  KOMAL_EXCLUSION_IDS = new Set(exData.deals.map(d => d.recordId));
+  console.log(`[Komal exclusion] Loaded ${KOMAL_EXCLUSION_IDS.size} deal IDs to exclude from query metrics`);
+} catch (e) {
+  console.log("[Komal exclusion] No exclusion file found or error reading it — no exclusions active");
+}
+
 // ─── In-memory cache ─────────────────────────────────────────────
 let cache = { data: null, timestamp: 0 };
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -200,7 +214,8 @@ async function fetchFreshData() {
     proofOwnerOptions,
     queryReasonOptions,
     urgentReasonOptions,
-    amendmentSourceOptions
+    amendmentSourceOptions,
+    komalExclusionIds: Array.from(KOMAL_EXCLUSION_IDS)
   };
 }
 
