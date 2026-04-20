@@ -1486,10 +1486,29 @@
           name:ownerMap[id]||id
         })).filter(d=>d.name&&d.name!=="Unknown"&&!/^\d+$/.test(d.name)).sort((a,b)=>a.name.localeCompare(b.name));
 
-        return{drafters,hours,grid};
+        // Debug info
+        const debug={
+          totalActivities:(activityData.activities||[]).length,
+          ownerMapKeys:Object.keys(ownerMap).slice(0,10),
+          ownerMapSample:Object.entries(ownerMap).slice(0,10).map(([k,v])=>k+":"+v),
+          drafterOptionKeys:Object.keys(draftingOwnerOptions||{}).slice(0,10),
+          drafterOptionValues:Object.values(draftingOwnerOptions||{}).slice(0,10),
+          drafterNamesSet:[...drafterNames].slice(0,10),
+          matchedOwnerIds:[...drafterOwnerIds],
+          useAllOwners,
+          gridKeys:Object.keys(grid),
+          activitiesOnDate:(activityData.activities||[]).filter(a=>{
+            const dt=new Date(a.timestamp);
+            const ds=dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
+            return ds===selDate;
+          }).length,
+          uniqueOwnerIdsInActivities:[...new Set((activityData.activities||[]).map(a=>a.ownerId))].slice(0,15)
+        };
+
+        return{drafters,hours,grid,debug};
       },[activityData,draftingOwnerOptions,selectedDate]);
 
-      const{drafters,hours,grid}=heatmapData;
+      const{drafters,hours,grid,debug}=heatmapData;
 
       // Date navigation
       const changeDate=(delta)=>{
@@ -1509,6 +1528,19 @@
             <button onClick={()=>changeDate(1)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 12px",cursor:"pointer",fontSize:14}}>&rarr;</button>
             <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 10px",fontSize:12}}/>
           </div>
+          {debug&&<div style={{background:"#1a1a2e",border:"1px solid #444",borderRadius:6,padding:12,marginBottom:16,fontSize:11,color:"#ccc",whiteSpace:"pre-wrap",maxHeight:300,overflow:"auto"}}>
+            <b style={{color:"#ff0"}}>DEBUG (remove after fixing)</b>{"\n"}
+            Total activities from API: {debug.totalActivities}{"\n"}
+            Activities on selected date: {debug.activitiesOnDate}{"\n"}
+            Owner map sample: {JSON.stringify(debug.ownerMapSample,null,1)}{"\n"}
+            Drafter option keys: {JSON.stringify(debug.drafterOptionKeys,null,1)}{"\n"}
+            Drafter option values: {JSON.stringify(debug.drafterOptionValues,null,1)}{"\n"}
+            Drafter names (lowercase): {JSON.stringify(debug.drafterNamesSet,null,1)}{"\n"}
+            Matched owner IDs: {JSON.stringify(debug.matchedOwnerIds,null,1)}{"\n"}
+            useAllOwners: {String(debug.useAllOwners)}{"\n"}
+            Grid keys (owners with activity): {JSON.stringify(debug.gridKeys,null,1)}{"\n"}
+            Unique owner IDs in all activities: {JSON.stringify(debug.uniqueOwnerIdsInActivities,null,1)}
+          </div>}
           {!drafters.length?(
             <div style={{color:C.muted,textAlign:"center",padding:40}}>No drafter activity data for this date</div>
           ):(
