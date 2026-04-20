@@ -387,11 +387,22 @@ app.get("/api/activity", async (req, res) => {
       fetchOwners()
     ]);
 
+    // Normalize type names (v3 uses plural "notes", v1 uses singular "note")
+    const normalizeType = t => {
+      const map = { notes: "Note", note: "Note", calls: "Call", call: "Call",
+        tasks: "Task", task: "Task", email: "Email", incoming_email: "Email",
+        forwarded_email: "Email", meeting: "Meeting" };
+      return map[(t || "").toLowerCase()] || (t || "Unknown").charAt(0).toUpperCase() + (t || "").slice(1).toLowerCase();
+    };
+
     // Merge and deduplicate (v1 may overlap with v3)
     const seen = new Set();
     const activities = [];
     [...notes, ...calls, ...tasks, ...v1Recent].forEach(a => {
-      const key = a.ownerId + "_" + a.timestamp + "_" + a.type;
+      a.type = normalizeType(a.type);
+      // Round timestamp to nearest minute for better dedup (v1 and v3 may differ by ms)
+      const roundedTs = Math.round(a.timestamp / 60000) * 60000;
+      const key = a.ownerId + "_" + roundedTs + "_" + a.type;
       if (!seen.has(key)) {
         seen.add(key);
         activities.push(a);
