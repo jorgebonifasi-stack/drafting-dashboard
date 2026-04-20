@@ -244,6 +244,97 @@ app.post("/api/deals/refresh", async (req, res) => {
   }
 });
 
+// ─── Fetch engagements (activity) for heatmap ─────────────────
+async function fetchEngagements(objectType, daysBack) {
+  const url = `https://api.hubapi.com/crm/v3/objects/${objectType}/search`;
+  const headers = {
+    "Authorization": "Bearer " + HUBSPOT_TOKEN,
+    "Content-Type": "application/json"
+  };
+
+  const since = new Date();
+  since.setDate(since.getDate() - daysBack);
+
+  let allResults = [];
+  let after = null;
+
+  for (let page = 0; page < 20; page++) {
+    const body = {
+      filterGroups: [
+        { filters: [{ propertyName: "hs_timestamp", operator: "GTE", value: String(since.getTime()) }] }
+      ],
+      properties: ["hs_timestamp", "hubspot_owner_id"],
+      limit: 100
+    };
+    if (after) body.after = after;
+
+    let response = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+      if (response.status === 429) { await sleep(Math.pow(2, attempt) * 1000); continue; }
+      if (!response.ok) break;
+      break;
+    }
+    if (!response || !response.ok) break;
+
+    const data = await response.json();
+    allResults = allResults.concat(data.results || []);
+    if (data.paging && data.paging.next && data.paging.next.after) {
+      after = data.paging.next.after;
+    } else {
+      break;
+    }
+    if (after) await sleep(150);
+  }
+
+  return allResults;
+}
+
+// In-memory activity cache
+let activityCache = { data: null, timestamp: 0 };
+const ACTIVITY_CACHE_TTL = 30 * 60 * 1000; // 30 min
+
+// GET /api/activity — drafter activity heatmap data
+app.get("/api/activity", async (req, res) => {
+  try {
+    if (!HUBSPOT_TOKEN) {
+      return res.status(500).json({ error: "HUBSPOT_API_KEY not set" });
+    }
+
+    const now = Date.now();
+    if (activityCache.data && (now - activityCache.timestamp) < ACTIVITY_CACHE_TTL) {
+      return res.json({ ...activityCache.data, _cachedAt: String(activityCache.timestamp) });
+    }
+
+    console.log("[" + new Date().toISOString() + "] Fetching activity data...");
+    const daysBack = 7;
+
+    const [notes, calls, emails, tasks, ownerMap] = await Promise.all([
+      fetchEngagements("notes", daysBack).catch(() => []),
+      fetchEngagements("calls", daysBack).catch(() => []),
+      fetchEngagements("emails", daysBack).catch(() => []),
+      fetchEngagements("tasks", daysBack).catch(() => []),
+      fetchOwners()
+    ]);
+
+    // Merge all engagements into {ownerId, timestamp} pairs
+    const activities = [...notes, ...calls, ...emails, ...tasks].map(e => ({
+      ownerId: e.properties.hubspot_owner_id || null,
+      timestamp: e.properties.hs_timestamp ? Number(e.properties.hs_timestamp) : null,
+      type: e.properties.hs_object_type || "unknown"
+    })).filter(a => a.ownerId && a.timestamp);
+
+    const data = { activities, ownerMap };
+    activityCache = { data, timestamp: now };
+    console.log("[" + new Date().toISOString() + "] Fetched " + activities.length + " activities.");
+
+    res.json({ ...data, _cachedAt: String(now) });
+  } catch (err) {
+    console.error("Error fetching activity:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({
