@@ -342,6 +342,7 @@
       chart5:'Drafts proofread (completed) and backlog per proofreader for the selected period. Completed: deals that exited "Required \u2014 Proof Reading" in the period. Backlog: deals that entered but have not yet exited by end of the period. Grouped by Proof Reading Owner.',
       chart6:'Bars: total standard drafts completed per period. Line: average turnaround in calendar days (first entry into "Drafting Instructions (Estate Planning)" \u2192 completion). Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". SLA: 10d internal, 28d customer.',
       chart7:'Query rate per drafter per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period per drafter. Numerator: those with a Drafting Query. Green \u22645%, amber \u226410%, red >10%.',
+      chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour. Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
       chart13:'Count of deals entering "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart12:'Drafting pipeline flow over time. Entered: uses original (workflow-stamped) entry date for stability. Exited & Backlog: uses native HubSpot dates (latest entry/exit) for accuracy. Current period backlog uses live dealstage count. Includes all deals (standard + urgent).',
       chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day.',
@@ -1419,6 +1420,123 @@
       );
     }
 
+    // ─── Chart 14: Drafter Activity Heatmap ────────────────────
+    function ActivityHeatmap({draftingOwnerOptions}){
+      const[activityData,setActivityData]=useState(null);
+      const[activityLoading,setActivityLoading]=useState(false);
+      const[selectedDate,setSelectedDate]=useState(()=>{const d=new Date();return d.toISOString().slice(0,10);});
+
+      const loadActivity=useCallback(async()=>{
+        setActivityLoading(true);
+        try{
+          const res=await fetch("/api/activity");
+          if(!res.ok)throw new Error("Failed to fetch activity");
+          const data=await res.json();
+          setActivityData(data);
+        }catch(e){console.error(e);}
+        setActivityLoading(false);
+      },[]);
+
+      useEffect(()=>{loadActivity();},[loadActivity]);
+
+      const heatmapData=useMemo(()=>{
+        if(!activityData)return{drafters:[],hours:[],grid:{}};
+
+        // Get drafter names from draftingOwnerOptions (value→label mapping)
+        // and ownerMap (ownerId→name mapping)
+        const ownerMap=activityData.ownerMap||{};
+        const drafterOwnerIds=new Set();
+        // draftingOwnerOptions maps internal value → label; those values ARE owner IDs
+        Object.keys(draftingOwnerOptions||{}).forEach(id=>drafterOwnerIds.add(id));
+
+        const hours=[];
+        for(let h=7;h<=19;h++)hours.push(h);
+
+        const selDate=selectedDate; // "YYYY-MM-DD"
+
+        // Build grid: {ownerId: {hour: count}}
+        const grid={};
+        (activityData.activities||[]).forEach(a=>{
+          if(!drafterOwnerIds.has(a.ownerId))return;
+          const dt=new Date(a.timestamp);
+          const dateStr=dt.toISOString().slice(0,10);
+          if(dateStr!==selDate)return;
+          const hour=dt.getHours();
+          if(!grid[a.ownerId])grid[a.ownerId]={};
+          grid[a.ownerId][hour]=(grid[a.ownerId][hour]||0)+1;
+        });
+
+        // Build drafter list — only those with any activity, plus all known drafters
+        const drafters=[...drafterOwnerIds].map(id=>({
+          id,
+          name:draftingOwnerOptions[id]||ownerMap[id]||id
+        })).filter(d=>d.name&&d.name!=="Unknown"&&!/^\d+$/.test(d.name)).sort((a,b)=>a.name.localeCompare(b.name));
+
+        return{drafters,hours,grid};
+      },[activityData,draftingOwnerOptions,selectedDate]);
+
+      const{drafters,hours,grid}=heatmapData;
+
+      // Date navigation
+      const changeDate=(delta)=>{
+        const d=new Date(selectedDate+"T12:00:00");
+        d.setDate(d.getDate()+delta);
+        setSelectedDate(d.toISOString().slice(0,10));
+      };
+      const dayLabel=new Date(selectedDate+"T12:00:00").toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"});
+
+      if(activityLoading&&!activityData)return<div style={{color:C.text,textAlign:"center",padding:40}}>Loading activity data...</div>;
+
+      return(
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+            <button onClick={()=>changeDate(-1)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 12px",cursor:"pointer",fontSize:14}}>&larr;</button>
+            <span style={{color:C.white,fontWeight:700,fontSize:15,minWidth:140,textAlign:"center"}}>{dayLabel}</span>
+            <button onClick={()=>changeDate(1)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 12px",cursor:"pointer",fontSize:14}}>&rarr;</button>
+            <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 10px",fontSize:12}}/>
+          </div>
+          {!drafters.length?(
+            <div style={{color:C.muted,textAlign:"center",padding:40}}>No drafter activity data for this date</div>
+          ):(
+            <div style={{overflowX:"auto"}}>
+              <table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}>
+                <thead>
+                  <tr>
+                    <th style={{textAlign:"left",padding:"6px 10px",color:C.text,fontWeight:600,borderBottom:`1px solid ${C.grid}`,position:"sticky",left:0,background:C.surface,zIndex:1,minWidth:130}}>Drafter</th>
+                    {hours.map(h=>(
+                      <th key={h} style={{padding:"6px 4px",color:C.text,fontWeight:600,borderBottom:`1px solid ${C.grid}`,textAlign:"center",minWidth:42,fontSize:11}}>{String(h).padStart(2,"0")}:00</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {drafters.map(d=>{
+                    const row=grid[d.id]||{};
+                    const totalHours=hours.filter(h=>row[h]>0).length;
+                    return(
+                      <tr key={d.id}>
+                        <td style={{padding:"6px 10px",color:C.text,borderBottom:`1px solid rgba(255,255,255,0.05)`,position:"sticky",left:0,background:C.surface,zIndex:1,fontWeight:500}}>
+                          {d.name} <span style={{color:C.muted,fontSize:10,fontWeight:400}}>({totalHours}h)</span>
+                        </td>
+                        {hours.map(h=>{
+                          const count=row[h]||0;
+                          const bg=count===0?"rgba(255,255,255,0.03)":count<=2?"rgba(46,204,113,0.25)":count<=5?"rgba(46,204,113,0.5)":"rgba(46,204,113,0.8)";
+                          return(
+                            <td key={h} style={{padding:"6px 4px",borderBottom:`1px solid rgba(255,255,255,0.05)`,textAlign:"center",background:bg,borderRadius:3,transition:"background 0.2s"}} title={`${d.name} @ ${h}:00 — ${count} activities`}>
+                              {count>0?<span style={{color:C.white,fontWeight:600,fontSize:11}}>{count}</span>:<span style={{color:"rgba(255,255,255,0.1)"}}>&mdash;</span>}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // ─── Skeleton ───────────────────────────────────────────────
     function SkeletonUI(){
       const shimmer={background:`linear-gradient(90deg,${C.surface} 25%,#2a2a2a 50%,${C.surface} 75%)`,backgroundSize:"200% 100%",animation:"shimmer 1.5s infinite",borderRadius:8};
@@ -1465,6 +1583,7 @@
       const[proofTarget,setProofTarget]=useState(DEFAULT_PROOF_TARGET);
       const[proofOverrides,setProofOverrides]=useState({...DEFAULT_PROOF_OVERRIDES});
       const[generating,setGenerating]=useState(false);
+      const[draftingOwnerOpts,setDraftingOwnerOpts]=useState({});
 
       // ── load data via server (serves from cache, or fetches fresh) ──
       const loadData=useCallback(async(force)=>{
@@ -1479,6 +1598,7 @@
           const urgentReasonOpts=result.urgentReasonOptions||{};
           const amendmentSourceOpts=result.amendmentSourceOptions||{};
           setTotalRaw(rawDeals.length);
+          setDraftingOwnerOpts(draftingOpts);
           setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
@@ -1873,6 +1993,13 @@
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-13" title={"Appointment Outcome \u2014 Deals Entered"} infoText={INFO.chart13} columns={T_COLS.c13} rows={c13Table.rows} detailMap={c13Table.detailMap} detailCols={T_DCOLS.c13} csvName={`appointment_outcome_${gran}.csv`}>
               <Chart13 deals={deals} gran={gran}/>
+            </ChartCard>
+          </div>
+
+          {/* ── DRAFTER ACTIVITY ── */}
+          <div style={{padding:"0 24px 16px"}}>
+            <ChartCard chartId="chart-14" title="Drafter Activity Heatmap (Daily)" infoText={INFO.chart14} columns={[]} rows={[]} csvName="">
+              <ActivityHeatmap draftingOwnerOptions={draftingOwnerOpts}/>
             </ChartCard>
           </div>
 
