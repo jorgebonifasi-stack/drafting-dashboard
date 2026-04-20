@@ -171,6 +171,7 @@
         else{const validDates=[origDraftsWithCustomer,origReadyForPrinting].filter(dt=>dt&&dt>=anchorEntered);const newLogic=validDates.length?new Date(Math.min(...validDates)):null;exitedDrafting=newLogic&&newLogic>=CUTOVER?newLogic:null;}
         // Old metric: purely based on Date exited "Drafting Instructions" (for comparison chart)
         const exitedDraftingOld=anchorEntered?nativeExitedDrafting:null;
+        const enteredAppointmentOutcome=parseHSDate(p.hs_v2_date_entered_1223751329);
         const enteredProofreading=parseHSDate(p.hs_v2_date_entered_1223620773);
         const exitedProofreading=parseHSDate(p.hs_v2_date_exited_1223620773);
         const enteredDraftingQuery=parseHSDate(p.hs_v2_date_entered_1223620772);
@@ -203,6 +204,7 @@
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
+          enteredAppointmentOutcome,
           enteredAmendment,exitedAmendment,amendmentSource,
           amendmentTurnaroundDays:enteredAmendment&&exitedAmendment?(exitedAmendment-enteredAmendment)/86400000:null,
           draftingTurnaroundDays:draftingStart&&exitedDrafting?(exitedDrafting-draftingStart)/86400000:null,
@@ -340,6 +342,7 @@
       chart5:'Drafts proofread (completed) and backlog per proofreader for the selected period. Completed: deals that exited "Required \u2014 Proof Reading" in the period. Backlog: deals that entered but have not yet exited by end of the period. Grouped by Proof Reading Owner.',
       chart6:'Bars: total standard drafts completed per period. Line: average turnaround in calendar days (first entry into "Drafting Instructions (Estate Planning)" \u2192 completion). Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". SLA: 10d internal, 28d customer.',
       chart7:'Query rate per drafter per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period per drafter. Numerator: those with a Drafting Query. Green \u22645%, amber \u226410%, red >10%.',
+      chart13:'Count of deals entering "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart12:'Drafting pipeline flow over time. Entered: uses original (workflow-stamped) entry date for stability. Exited & Backlog: uses native HubSpot dates (latest entry/exit) for accuracy. Current period backlog uses live dealstage count. Includes all deals (standard + urgent).',
       chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day.',
       chart9:'Average turnaround in business days (Mon\u2013Fri) for urgent drafts completed in the selected period, grouped by Drafting Owner. From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day. Green = met, red = breached.',
@@ -370,6 +373,7 @@
       c10:[{key:"label",label:"Period"},{key:"amendments",label:"Amendments"},{key:"avgDays",label:"Avg Days"}],
       c11:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Days"},{key:"count",label:"Deals"}],
       c12:[{key:"label",label:"Period"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"net",label:"Net"},{key:"backlog",label:"Backlog"}],
+      c13:[{key:"label",label:"Period"},{key:"count",label:"Deals"}],
     };
     const T_DCOLS={
       c1:[{key:"date",label:"Completed"}],
@@ -384,6 +388,7 @@
       c10:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"},{key:"source",label:"Source"}],
       c11:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"},{key:"source",label:"Source"}],
       c12:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered DI"},{key:"exited",label:"Exited DI"}],
+      c13:[{key:"dealname",label:"Deal"},{key:"date",label:"Date Entered"}],
     };
 
     // ─── ChartCard: wraps each chart with data table + CSV ──────
@@ -1362,6 +1367,58 @@
       );
     }
 
+    // ─── Chart 13: Appointment Outcome — Deals Entered ────────
+    function Chart13({deals,gran}){
+      const data=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        const counts={};
+        deals.forEach(d=>{
+          if(!d.enteredAppointmentOutcome)return;
+          const b=dateToBucket(d.enteredAppointmentOutcome,gran);
+          counts[b]=(counts[b]||0)+1;
+        });
+
+        // 3-period moving average
+        const raw=uniq.map(b=>counts[b]||0);
+        return uniq.map((bucket,i)=>{
+          const count=raw[i];
+          const window=raw.slice(Math.max(0,i-2),i+1);
+          const ma=window.length?parseFloat((window.reduce((s,v)=>s+v,0)/window.length).toFixed(0)):null;
+          return{bucket,label:bucketLabel(bucket,gran),count,ma};
+        });
+      },[deals,gran]);
+
+      const maxVal=Math.max(...data.map(d=>d.count),5);
+
+      return(
+        <ResponsiveContainer width="100%" height={340}>
+          <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} domain={[0,Math.ceil(maxVal*1.15)]}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
+            <Bar dataKey="count" name="Deals Entered" fill="rgba(52,152,219,0.45)" stroke="#3498db" strokeWidth={0.5} barSize={30} radius={[4,4,0,0]}>
+              <LabelList dataKey="count" position="top" fill={C.text} fontSize={11} fontWeight={600}/>
+            </Bar>
+            <Line type="monotone" dataKey="ma" name="3-Period Avg" stroke={C.amber} strokeWidth={2.5} dot={{fill:C.amber,r:4}} activeDot={{r:6}} connectNulls/>
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
     // ─── Skeleton ───────────────────────────────────────────────
     function SkeletonUI(){
       const shimmer={background:`linear-gradient(90deg,${C.surface} 25%,#2a2a2a 50%,${C.surface} 75%)`,backgroundSize:"200% 100%",animation:"shimmer 1.5s infinite",borderRadius:8};
@@ -1691,6 +1748,17 @@
         return{rows,detailMap};
       },[deals,gran]);
 
+      const c13Table=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const byB={};
+        deals.forEach(d=>{if(!d.enteredAppointmentOutcome)return;const b=dateToBucket(d.enteredAppointmentOutcome,gran);(byB[b]=byB[b]||[]).push(d);});
+        const rows=uniq.map(bucket=>({_key:bucket,label:bucketLabel(bucket,gran),count:(byB[bucket]||[]).length}));
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(byB[b]||[]).map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.enteredAppointmentOutcome)}));});
+        return{rows,detailMap};
+      },[deals,gran]);
+
       if(loading&&!deals.length)return<SkeletonUI/>;
 
       return(
@@ -1798,6 +1866,13 @@
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-3" title={"Proofreading \u2014 Productivity & Avg Turnaround"} infoText={INFO.chart3} columns={T_COLS.c3} rows={c3Table.rows} detailMap={c3Table.detailMap} detailCols={T_DCOLS.c3} csvName={`proof_productivity_${gran}.csv`}>
               <Chart3 deals={standardDeals} gran={gran}/>
+            </ChartCard>
+          </div>
+
+          {/* ── APPOINTMENT OUTCOME ── */}
+          <div className="dash-row" style={S.row}>
+            <ChartCard chartId="chart-13" title={"Appointment Outcome \u2014 Deals Entered"} infoText={INFO.chart13} columns={T_COLS.c13} rows={c13Table.rows} detailMap={c13Table.detailMap} detailCols={T_DCOLS.c13} csvName={`appointment_outcome_${gran}.csv`}>
+              <Chart13 deals={deals} gran={gran}/>
             </ChartCard>
           </div>
 
