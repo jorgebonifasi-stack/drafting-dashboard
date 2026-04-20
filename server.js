@@ -25,7 +25,10 @@ const PROPERTIES = [
   "original_date_entered_ready_for_printing",
   "original_date_entered_sent_to_customer",
   "hs_v2_date_entered_1338772492", "hs_v2_date_exited_1338772492",
-  "amendment_source"
+  "amendment_source",
+  "date_marked_urgent",
+  "first_date_exited_drafting_instructions",
+  "hs_v2_date_entered_1223751329"
 ];
 
 // ─── In-memory cache ─────────────────────────────────────────────
@@ -50,7 +53,8 @@ async function fetchAllDeals() {
     { filters: [{ propertyName: "hs_v2_date_entered_1223620773", operator: "HAS_PROPERTY" }] },
     { filters: [{ propertyName: "hs_v2_date_exited_1223620773", operator: "HAS_PROPERTY" }] },
     { filters: [{ propertyName: "hs_v2_date_entered_1223620775", operator: "HAS_PROPERTY" }] },
-    { filters: [{ propertyName: "hs_v2_date_entered_1223620777", operator: "HAS_PROPERTY" }] }
+    { filters: [{ propertyName: "hs_v2_date_entered_1223620777", operator: "HAS_PROPERTY" }] },
+    { filters: [{ propertyName: "hs_v2_date_entered_1223751329", operator: "HAS_PROPERTY" }] }
   ];
 
   let allDeals = [];
