@@ -35,7 +35,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect, useCallback, useMemo } = React;
+    const { useState, useEffect, useCallback, useMemo, useRef } = React;
     const {
       BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
       ComposedChart, Line, ReferenceLine, ReferenceArea, Legend, Cell,
@@ -141,7 +141,7 @@
     }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,komalExclusionIds){
       return rawDeals.map(d=>{
         const p=d.properties||{};
         const enteredDrafting=parseHSDate(p.hs_v2_date_entered_1223620771);
@@ -207,6 +207,7 @@
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
+          komalQueryExcluded:!!(komalExclusionIds&&komalExclusionIds.has&&komalExclusionIds.has(String(d.id))&&drafterName.toLowerCase()!=="komal singh"),
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
           enteredAppointmentOutcome,
           origDraftsWithCustomer,origReadyForPrinting,enteredConsultantQuery,exitedApproved,
@@ -401,8 +402,25 @@
     function ChartCard({title,infoText,children,columns,rows,detailMap,detailCols,csvName,csvBuilder,chartId}){
       const[showTable,setShowTable]=useState(false);
       const[expanded,setExpanded]=useState({});
+      const chartRef=useRef(null);
       const toggle=k=>setExpanded(p=>({...p,[k]:!p[k]}));
       const hasDetails=!!detailMap;
+
+      const doPNG=async()=>{
+        const el=chartRef.current;
+        if(!el||typeof html2canvas==="undefined")return;
+        try{
+          // Show the embedded title for the PNG
+          const titleEl=el.querySelector(".png-title");
+          if(titleEl)titleEl.style.display="block";
+          const canvas=await html2canvas(el,{backgroundColor:"#1e1e1e",scale:2,useCORS:true,logging:false});
+          if(titleEl)titleEl.style.display="none";
+          const link=document.createElement("a");
+          link.download=(csvName||chartId||"chart").replace(/\.csv$/,"")+".png";
+          link.href=canvas.toDataURL("image/png");
+          link.click();
+        }catch(e){console.error("PNG export failed:",e);}
+      };
 
       const doCSV=()=>{
         if(csvBuilder){downloadCSV(csvName||"data.csv",csvBuilder());return;}
@@ -428,9 +446,10 @@
             <div style={{display:"flex",gap:6}}>
               <button style={{...S.btn,padding:"4px 10px",fontSize:11}} onClick={()=>setShowTable(!showTable)}>{showTable?"Hide":"View"} Data</button>
               <button style={{...S.btn,padding:"4px 10px",fontSize:11}} onClick={doCSV}>{"\u2B07"} CSV</button>
+              <button style={{...S.btn,padding:"4px 10px",fontSize:11}} onClick={doPNG}>{"\uD83D\uDDBC"} PNG</button>
             </div>
           </div>
-          <div id={chartId||undefined}>{children}</div>
+          <div ref={chartRef} id={chartId||undefined} style={{padding:8}}><div style={{color:C.white,fontSize:13,fontWeight:600,marginBottom:8,display:"none"}} className="png-title">{title}</div>{children}</div>
           {showTable&&(rows||[]).length>0&&(
             <div style={{marginTop:16,maxHeight:400,overflowY:"auto",overflowX:"auto",border:`1px solid ${C.border}`,borderRadius:8}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
@@ -682,7 +701,7 @@
           const b=dateToBucket(d.enteredProofreading,gran);
           if(!periodData[b])periodData[b]={total:0,queried:0};
           periodData[b].total++;
-          if(d.enteredDraftingQuery){
+          if(d.enteredDraftingQuery&&!d.komalQueryExcluded){
             periodData[b].queried++;
             if(d.queryReasons.length){
               if(!reasonData[b])reasonData[b]={};
@@ -885,7 +904,7 @@
           dTotals[d.drafterName]=(dTotals[d.drafterName]||0)+1;
           if(!dealMap[key])dealMap[key]=[];
           dealMap[key].push(d);
-          if(d.enteredDraftingQuery){
+          if(d.enteredDraftingQuery&&!d.komalQueryExcluded){
             byPD[key].queried++;
           }
         });
@@ -970,19 +989,20 @@
             </table>
           </div>
           {expanded&&expandedDeals.length>0&&(()=>{
-            const queriedCount=expandedDeals.filter(d=>d.enteredDraftingQuery).length;
-            const sortedDeals=[...expandedDeals].sort((a,b)=>a.enteredDraftingQuery&&!b.enteredDraftingQuery?-1:!a.enteredDraftingQuery&&b.enteredDraftingQuery?1:0);
+            const queriedCount=expandedDeals.filter(d=>d.enteredDraftingQuery&&!d.komalQueryExcluded).length;
+            const excludedCount=expandedDeals.filter(d=>d.komalQueryExcluded).length;
+            const sortedDeals=[...expandedDeals].sort((a,b)=>{const aQ=a.enteredDraftingQuery&&!a.komalQueryExcluded;const bQ=b.enteredDraftingQuery&&!b.komalQueryExcluded;return aQ&&!bQ?-1:!aQ&&bQ?1:0;});
             return(
             <div style={{marginTop:12,padding:16,background:"rgba(0,0,0,0.25)",borderRadius:8,border:`1px solid ${C.border}`}}>
               <div style={{fontSize:12,color:C.white,fontWeight:600,marginBottom:10}}>
-                {expandedName} — {bucketLabel(expandedBucket,gran)} — {queriedCount} queried / {expandedDeals.length} total
+                {expandedName} — {bucketLabel(expandedBucket,gran)} — {queriedCount} queried / {expandedDeals.length} total{excludedCount>0?` (${excludedCount} excluded — Komal reassignment)`:""}
                 <button style={{...S.btn,padding:"2px 8px",fontSize:10,marginLeft:12,verticalAlign:"middle"}} onClick={()=>setExpanded(null)}>{"\u2715"} Close</button>
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:200,overflowY:"auto"}}>
                 {sortedDeals.map(d=>(
                   <div key={d.id} style={{fontSize:12,display:"flex",alignItems:"center",gap:12}}>
-                    <a href={HS_BASE+d.id} target="_blank" rel="noopener" style={{color:d.enteredDraftingQuery?C.red:C.accent,textDecoration:"none",fontWeight:500}}>{d.dealname||d.id}</a>
-                    {d.enteredDraftingQuery?<span style={{fontSize:11,color:C.text,opacity:0.6}}>{d.queryReasons.join(", ")}</span>:<span style={{fontSize:11,color:C.text,opacity:0.4}}>No query</span>}
+                    <a href={HS_BASE+d.id} target="_blank" rel="noopener" style={{color:d.komalQueryExcluded?"#888":d.enteredDraftingQuery?C.red:C.accent,textDecoration:d.komalQueryExcluded?"line-through":"none",fontWeight:500}}>{d.dealname||d.id}</a>
+                    {d.komalQueryExcluded?<span style={{fontSize:11,color:"#888",fontStyle:"italic"}}>Excluded (Komal)</span>:d.enteredDraftingQuery?<span style={{fontSize:11,color:C.text,opacity:0.6}}>{d.queryReasons.join(", ")}</span>:<span style={{fontSize:11,color:C.text,opacity:0.4}}>No query</span>}
                   </div>
                 ))}
               </div>
@@ -1691,6 +1711,7 @@
       const[deals,setDeals]=useState([]);
       const[lastRefresh,setLastRefresh]=useState(null);
       const[totalRaw,setTotalRaw]=useState(0);
+      const[komalExclusions,setKomalExclusions]=useState(new Set());
       const[gran,setGran]=useState("WoW");
       const[selectedBucket,setSelectedBucket]=useState(null);
       const[settingsOpen,setSettingsOpen]=useState(false);
@@ -1721,9 +1742,11 @@
           const queryReasonOpts=result.queryReasonOptions||{};
           const urgentReasonOpts=result.urgentReasonOptions||{};
           const amendmentSourceOpts=result.amendmentSourceOptions||{};
+          const komalIds=new Set(result.komalExclusionIds||[]);
+          setKomalExclusions(komalIds);
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts));
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,komalIds));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -1834,7 +1857,7 @@
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         const totals={};const qd={};
-        deals.forEach(d=>{if(!d.enteredProofreading)return;const b=dateToBucket(d.enteredProofreading,gran);totals[b]=(totals[b]||0)+1;if(d.enteredDraftingQuery){(qd[b]=qd[b]||[]).push(d);}});
+        deals.forEach(d=>{if(!d.enteredProofreading)return;const b=dateToBucket(d.enteredProofreading,gran);totals[b]=(totals[b]||0)+1;if(d.enteredDraftingQuery&&!d.komalQueryExcluded){(qd[b]=qd[b]||[]).push(d);}});
         const rows=uniq.map(bucket=>{const total=totals[bucket]||0;const queriedArr=qd[bucket]||[];const queried=queriedArr.length;const rate=total>0?parseFloat(Math.min((queried/total)*100,100).toFixed(0)):null;
           return{_key:bucket,label:bucketLabel(bucket,gran),rate:rate!=null?rate+"%":"—",total,queried};});
         const detailMap={};uniq.forEach(b=>{detailMap[b]=(qd[b]||[]).map(d=>({id:d.id,dealname:d.dealname,reasons:d.queryReasons.join(", ")||"—"}));});
@@ -1883,7 +1906,7 @@
           if(!byPD[key])byPD[key]={total:0,queried:0,queriedDeals:[],allDeals:[]};
           byPD[key].total++;dTotals[d.drafterName]=(dTotals[d.drafterName]||0)+1;
           byPD[key].allDeals.push(d);
-          if(d.enteredDraftingQuery){byPD[key].queried++;byPD[key].queriedDeals.push(d);}
+          if(d.enteredDraftingQuery&&!d.komalQueryExcluded){byPD[key].queried++;byPD[key].queriedDeals.push(d);}
         });
         const activeDrafters=Object.entries(dTotals).filter(([,c])=>c>=10).map(([n])=>n).sort();
         const cols=[{key:"label",label:"Period"}].concat(activeDrafters.map(n=>({key:n,label:n})));
@@ -1894,7 +1917,7 @@
         });
         const detailMap={};uniq.forEach(b=>{
           const allDealsForPeriod=[];
-          activeDrafters.forEach(name=>{const pd=byPD[`${b}|${name}`];if(pd)pd.allDeals.forEach(d=>allDealsForPeriod.push({id:d.id,dealname:d.dealname,drafter:name,queried:d.enteredDraftingQuery?"Yes":"No",reasons:d.queryReasons.join(", ")||"—"}));});
+          activeDrafters.forEach(name=>{const pd=byPD[`${b}|${name}`];if(pd)pd.allDeals.forEach(d=>allDealsForPeriod.push({id:d.id,dealname:d.dealname,drafter:name,queried:(d.enteredDraftingQuery&&!d.komalQueryExcluded)?"Yes":"No",reasons:d.komalQueryExcluded?"(Excluded — Komal reassignment)":d.queryReasons.join(", ")||"—"}));});
           // Sort: queried deals first, then by drafter name
           allDealsForPeriod.sort((a,b)=>a.queried===b.queried?a.drafter.localeCompare(b.drafter):(a.queried==="Yes"?-1:1));
           detailMap[b]=allDealsForPeriod;
