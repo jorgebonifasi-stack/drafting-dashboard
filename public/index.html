@@ -1421,7 +1421,7 @@
     }
 
     // ─── Chart 14: Drafter Activity Heatmap ────────────────────
-    function ActivityHeatmap({draftingOwnerOptions}){
+    function ActivityHeatmap({drafterNames:drafterNamesProp}){
       const[activityData,setActivityData]=useState(null);
       const[activityLoading,setActivityLoading]=useState(false);
       const[selectedDate,setSelectedDate]=useState(()=>{const d=new Date();return d.toISOString().slice(0,10);});
@@ -1443,19 +1443,15 @@
         if(!activityData)return{drafters:[],hours:[],grid:{}};
 
         // ownerMap maps HubSpot owner IDs → names (from /api/activity)
-        // draftingOwnerOptions maps custom enum values → labels (NOT owner IDs)
-        // We need to cross-reference by name to find which HubSpot owner IDs are drafters
+        // drafterNamesProp is an array of drafter names from processed deals
         const ownerMap=activityData.ownerMap||{};
-        const drafterNames=new Set(Object.values(draftingOwnerOptions||{}).map(n=>n.trim().toLowerCase()));
+        const knownDrafters=new Set((drafterNamesProp||[]).map(n=>n.trim().toLowerCase()));
 
-        // Build reverse lookup: for each HubSpot owner, check if their name matches a drafter
+        // Build reverse lookup: for each HubSpot owner, check if their name matches a known drafter
         const drafterOwnerIds=new Set();
         Object.entries(ownerMap).forEach(([ownerId,name])=>{
-          if(drafterNames.has(name.trim().toLowerCase()))drafterOwnerIds.add(ownerId);
+          if(knownDrafters.has(name.trim().toLowerCase()))drafterOwnerIds.add(ownerId);
         });
-
-        // If no cross-reference matches, fall back to showing ALL owners with activity
-        const useAllOwners=drafterOwnerIds.size===0;
 
         const hours=[];
         for(let h=7;h<=19;h++)hours.push(h);
@@ -1465,7 +1461,7 @@
         // Build grid: {ownerId: {hour: count}}
         const grid={};
         (activityData.activities||[]).forEach(a=>{
-          if(!useAllOwners&&!drafterOwnerIds.has(a.ownerId))return;
+          if(!drafterOwnerIds.has(a.ownerId))return;
           const dt=new Date(a.timestamp);
           // Use local date (not UTC) so hours and date align with user's timezone
           const dateStr=dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
@@ -1475,13 +1471,8 @@
           grid[a.ownerId][hour]=(grid[a.ownerId][hour]||0)+1;
         });
 
-        // Build drafter list from owners that appear in the grid (have activity) + all known drafters
-        const allRelevantIds=new Set([...drafterOwnerIds,...Object.keys(grid)]);
-        const drafters=[...allRelevantIds].filter(id=>{
-          // If we matched drafters, only show matched drafters + those with activity who are drafters
-          if(!useAllOwners)return drafterOwnerIds.has(id);
-          return true;
-        }).map(id=>({
+        // Build drafter list — only known drafters
+        const drafters=[...drafterOwnerIds].map(id=>({
           id,
           name:ownerMap[id]||id
         })).filter(d=>d.name&&d.name!=="Unknown"&&!/^\d+$/.test(d.name)).sort((a,b)=>a.name.localeCompare(b.name));
@@ -1489,24 +1480,19 @@
         // Debug info
         const debug={
           totalActivities:(activityData.activities||[]).length,
-          ownerMapKeys:Object.keys(ownerMap).slice(0,10),
           ownerMapSample:Object.entries(ownerMap).slice(0,10).map(([k,v])=>k+":"+v),
-          drafterOptionKeys:Object.keys(draftingOwnerOptions||{}).slice(0,10),
-          drafterOptionValues:Object.values(draftingOwnerOptions||{}).slice(0,10),
-          drafterNamesSet:[...drafterNames].slice(0,10),
-          matchedOwnerIds:[...drafterOwnerIds],
-          useAllOwners,
-          gridKeys:Object.keys(grid),
+          knownDrafterNames:(drafterNamesProp||[]).slice(0,15),
+          matchedOwnerIds:[...drafterOwnerIds].map(id=>id+":"+ownerMap[id]),
+          gridKeys:Object.keys(grid).map(id=>id+":"+ownerMap[id]),
           activitiesOnDate:(activityData.activities||[]).filter(a=>{
             const dt=new Date(a.timestamp);
             const ds=dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
             return ds===selDate;
-          }).length,
-          uniqueOwnerIdsInActivities:[...new Set((activityData.activities||[]).map(a=>a.ownerId))].slice(0,15)
+          }).length
         };
 
         return{drafters,hours,grid,debug};
-      },[activityData,draftingOwnerOptions,selectedDate]);
+      },[activityData,drafterNamesProp,selectedDate]);
 
       const{drafters,hours,grid,debug}=heatmapData;
 
@@ -1532,14 +1518,9 @@
             <b style={{color:"#ff0"}}>DEBUG (remove after fixing)</b>{"\n"}
             Total activities from API: {debug.totalActivities}{"\n"}
             Activities on selected date: {debug.activitiesOnDate}{"\n"}
-            Owner map sample: {JSON.stringify(debug.ownerMapSample,null,1)}{"\n"}
-            Drafter option keys: {JSON.stringify(debug.drafterOptionKeys,null,1)}{"\n"}
-            Drafter option values: {JSON.stringify(debug.drafterOptionValues,null,1)}{"\n"}
-            Drafter names (lowercase): {JSON.stringify(debug.drafterNamesSet,null,1)}{"\n"}
+            Known drafter names (from deals): {JSON.stringify(debug.knownDrafterNames,null,1)}{"\n"}
             Matched owner IDs: {JSON.stringify(debug.matchedOwnerIds,null,1)}{"\n"}
-            useAllOwners: {String(debug.useAllOwners)}{"\n"}
-            Grid keys (owners with activity): {JSON.stringify(debug.gridKeys,null,1)}{"\n"}
-            Unique owner IDs in all activities: {JSON.stringify(debug.uniqueOwnerIdsInActivities,null,1)}
+            Grid keys (drafters with activity): {JSON.stringify(debug.gridKeys,null,1)}
           </div>}
           {!drafters.length?(
             <div style={{color:C.muted,textAlign:"center",padding:40}}>No drafter activity data for this date</div>
@@ -2045,7 +2026,7 @@
           {/* ── DRAFTER ACTIVITY ── */}
           <div style={{padding:"0 24px 16px"}}>
             <ChartCard chartId="chart-14" title="Drafter Activity Heatmap (Daily)" infoText={INFO.chart14} columns={[]} rows={[]} csvName="">
-              <ActivityHeatmap draftingOwnerOptions={draftingOwnerOpts}/>
+              <ActivityHeatmap drafterNames={drafterNames}/>
             </ChartCard>
           </div>
 
