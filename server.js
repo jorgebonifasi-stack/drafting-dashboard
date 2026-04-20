@@ -41,21 +41,13 @@ function sleep(ms) {
 }
 
 // ─── Fetch all deals from HubSpot CRM Search API ───────────────
-async function fetchAllDeals() {
+// HubSpot limits to 5 filterGroups per request, so we batch and deduplicate
+async function fetchDealsWithFilters(filterGroups) {
   const url = "https://api.hubapi.com/crm/v3/objects/deals/search";
   const headers = {
     "Authorization": "Bearer " + HUBSPOT_TOKEN,
     "Content-Type": "application/json"
   };
-
-  const filterGroups = [
-    { filters: [{ propertyName: "hs_v2_date_entered_1223620771", operator: "HAS_PROPERTY" }] },
-    { filters: [{ propertyName: "hs_v2_date_entered_1223620773", operator: "HAS_PROPERTY" }] },
-    { filters: [{ propertyName: "hs_v2_date_exited_1223620773", operator: "HAS_PROPERTY" }] },
-    { filters: [{ propertyName: "hs_v2_date_entered_1223620775", operator: "HAS_PROPERTY" }] },
-    { filters: [{ propertyName: "hs_v2_date_entered_1223620777", operator: "HAS_PROPERTY" }] },
-    { filters: [{ propertyName: "hs_v2_date_entered_1223751329", operator: "HAS_PROPERTY" }] }
-  ];
 
   let allDeals = [];
   let after = null;
@@ -106,6 +98,39 @@ async function fetchAllDeals() {
   }
 
   return allDeals;
+}
+
+async function fetchAllDeals() {
+  // Batch 1: pipeline stage filters (max 5)
+  const batch1 = [
+    { filters: [{ propertyName: "hs_v2_date_entered_1223620771", operator: "HAS_PROPERTY" }] },
+    { filters: [{ propertyName: "hs_v2_date_entered_1223620773", operator: "HAS_PROPERTY" }] },
+    { filters: [{ propertyName: "hs_v2_date_exited_1223620773", operator: "HAS_PROPERTY" }] },
+    { filters: [{ propertyName: "hs_v2_date_entered_1223620775", operator: "HAS_PROPERTY" }] },
+    { filters: [{ propertyName: "hs_v2_date_entered_1223620777", operator: "HAS_PROPERTY" }] }
+  ];
+
+  // Batch 2: additional stage filters
+  const batch2 = [
+    { filters: [{ propertyName: "hs_v2_date_entered_1223751329", operator: "HAS_PROPERTY" }] }
+  ];
+
+  const [deals1, deals2] = await Promise.all([
+    fetchDealsWithFilters(batch1),
+    fetchDealsWithFilters(batch2)
+  ]);
+
+  // Deduplicate by deal ID
+  const seen = new Set();
+  const merged = [];
+  [...deals1, ...deals2].forEach(d => {
+    if (!seen.has(d.id)) {
+      seen.add(d.id);
+      merged.push(d);
+    }
+  });
+
+  return merged;
 }
 
 // ─── Fetch HubSpot owners ──────────────────────────────────────
