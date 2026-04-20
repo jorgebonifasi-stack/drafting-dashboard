@@ -1477,24 +1477,10 @@
           name:ownerMap[id]||id
         })).filter(d=>d.name&&d.name!=="Unknown"&&!/^\d+$/.test(d.name)).sort((a,b)=>a.name.localeCompare(b.name));
 
-        // Debug info
-        const debug={
-          totalActivities:(activityData.activities||[]).length,
-          ownerMapSample:Object.entries(ownerMap).slice(0,10).map(([k,v])=>k+":"+v),
-          knownDrafterNames:(drafterNamesProp||[]).slice(0,15),
-          matchedOwnerIds:[...drafterOwnerIds].map(id=>id+":"+ownerMap[id]),
-          gridKeys:Object.keys(grid).map(id=>id+":"+ownerMap[id]),
-          activitiesOnDate:(activityData.activities||[]).filter(a=>{
-            const dt=new Date(a.timestamp);
-            const ds=dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
-            return ds===selDate;
-          }).length
-        };
-
-        return{drafters,hours,grid,debug};
+        return{drafters,hours,grid};
       },[activityData,drafterNamesProp,selectedDate]);
 
-      const{drafters,hours,grid,debug}=heatmapData;
+      const{drafters,hours,grid}=heatmapData;
 
       // Date navigation
       const changeDate=(delta)=>{
@@ -1514,14 +1500,6 @@
             <button onClick={()=>changeDate(1)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 12px",cursor:"pointer",fontSize:14}}>&rarr;</button>
             <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 10px",fontSize:12}}/>
           </div>
-          {debug&&<div style={{background:"#1a1a2e",border:"1px solid #444",borderRadius:6,padding:12,marginBottom:16,fontSize:11,color:"#ccc",whiteSpace:"pre-wrap",maxHeight:300,overflow:"auto"}}>
-            <b style={{color:"#ff0"}}>DEBUG (remove after fixing)</b>{"\n"}
-            Total activities from API: {debug.totalActivities}{"\n"}
-            Activities on selected date: {debug.activitiesOnDate}{"\n"}
-            Known drafter names (from deals): {JSON.stringify(debug.knownDrafterNames,null,1)}{"\n"}
-            Matched owner IDs: {JSON.stringify(debug.matchedOwnerIds,null,1)}{"\n"}
-            Grid keys (drafters with activity): {JSON.stringify(debug.gridKeys,null,1)}
-          </div>}
           {!drafters.length?(
             <div style={{color:C.muted,textAlign:"center",padding:40}}>No drafter activity data for this date</div>
           ):(
