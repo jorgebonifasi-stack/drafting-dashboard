@@ -245,46 +245,64 @@ app.post("/api/deals/refresh", async (req, res) => {
 });
 
 // ─── Fetch engagements (activity) for heatmap ─────────────────
-async function fetchEngagements(objectType, daysBack) {
-  const url = `https://api.hubapi.com/crm/v3/objects/${objectType}/search`;
-  const headers = {
-    "Authorization": "Bearer " + HUBSPOT_TOKEN,
-    "Content-Type": "application/json"
-  };
-
-  const since = new Date();
-  since.setDate(since.getDate() - daysBack);
+// Uses the HubSpot v1 Engagements API which is more reliable for
+// fetching all engagement types (notes, calls, emails, tasks, meetings)
+async function fetchAllEngagements(daysBack) {
+  const since = Date.now() - (daysBack * 24 * 60 * 60 * 1000);
+  const headers = { "Authorization": "Bearer " + HUBSPOT_TOKEN };
 
   let allResults = [];
-  let after = null;
+  let offset = 0;
+  const maxPages = 50;
 
-  for (let page = 0; page < 20; page++) {
-    const body = {
-      filterGroups: [
-        { filters: [{ propertyName: "hs_timestamp", operator: "GTE", value: String(since.getTime()) }] }
-      ],
-      properties: ["hs_timestamp", "hubspot_owner_id"],
-      limit: 100
-    };
-    if (after) body.after = after;
+  for (let page = 0; page < maxPages; page++) {
+    const url = `https://api.hubapi.com/engagements/v1/engagements/paged?offset=${offset}&limit=250`;
 
     let response = null;
     for (let attempt = 0; attempt < 3; attempt++) {
-      response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+      response = await fetch(url, { headers });
       if (response.status === 429) { await sleep(Math.pow(2, attempt) * 1000); continue; }
-      if (!response.ok) break;
       break;
     }
-    if (!response || !response.ok) break;
+
+    if (!response || !response.ok) {
+      const text = response ? await response.text() : "no response";
+      console.error("Engagements API error:", response ? response.status : "?", text);
+      break;
+    }
 
     const data = await response.json();
-    allResults = allResults.concat(data.results || []);
-    if (data.paging && data.paging.next && data.paging.next.after) {
-      after = data.paging.next.after;
+    const results = data.results || [];
+
+    // Filter to recent engagements and extract what we need
+    results.forEach(eng => {
+      const ts = eng.engagement && eng.engagement.timestamp;
+      const ownerId = eng.engagement && eng.engagement.ownerId;
+      const type = eng.engagement && eng.engagement.type;
+      if (ts && ts >= since && ownerId) {
+        allResults.push({
+          ownerId: String(ownerId),
+          timestamp: ts,
+          type: type || "unknown"
+        });
+      }
+    });
+
+    // Check if there are more pages
+    if (data.hasMore && data.offset) {
+      offset = data.offset;
     } else {
       break;
     }
-    if (after) await sleep(150);
+
+    // Stop early if we've gone past our date range (engagements are sorted newest first)
+    const oldestInBatch = results.reduce((min, eng) => {
+      const ts = eng.engagement && eng.engagement.timestamp;
+      return ts && ts < min ? ts : min;
+    }, Infinity);
+    if (oldestInBatch < since) break;
+
+    await sleep(150);
   }
 
   return allResults;
@@ -306,27 +324,18 @@ app.get("/api/activity", async (req, res) => {
       return res.json({ ...activityCache.data, _cachedAt: String(activityCache.timestamp) });
     }
 
-    console.log("[" + new Date().toISOString() + "] Fetching activity data...");
-    const daysBack = 7;
+    console.log("[" + new Date().toISOString() + "] Fetching activity data via Engagements v1...");
+    const daysBack = 14; // fetch 2 weeks for navigation flexibility
 
-    const [notes, calls, emails, tasks, ownerMap] = await Promise.all([
-      fetchEngagements("notes", daysBack).catch(() => []),
-      fetchEngagements("calls", daysBack).catch(() => []),
-      fetchEngagements("emails", daysBack).catch(() => []),
-      fetchEngagements("tasks", daysBack).catch(() => []),
+    const [activities, ownerMap] = await Promise.all([
+      fetchAllEngagements(daysBack),
       fetchOwners()
     ]);
 
-    // Merge all engagements into {ownerId, timestamp} pairs
-    const activities = [...notes, ...calls, ...emails, ...tasks].map(e => ({
-      ownerId: e.properties.hubspot_owner_id || null,
-      timestamp: e.properties.hs_timestamp ? Number(e.properties.hs_timestamp) : null,
-      type: e.properties.hs_object_type || "unknown"
-    })).filter(a => a.ownerId && a.timestamp);
+    console.log("[" + new Date().toISOString() + "] Fetched " + activities.length + " engagements from v1 API.");
 
     const data = { activities, ownerMap };
     activityCache = { data, timestamp: now };
-    console.log("[" + new Date().toISOString() + "] Fetched " + activities.length + " activities.");
 
     res.json({ ...data, _cachedAt: String(now) });
   } catch (err) {
