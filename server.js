@@ -288,9 +288,11 @@ async function fetchV3Engagements(objectType, sinceMs) {
       const ownerId = p.hubspot_owner_id;
       if (ts && ownerId) {
         allResults.push({
+          id: r.id,
           ownerId: String(ownerId),
           timestamp: new Date(ts).getTime(),
-          type: objectType
+          type: objectType,
+          url: r.url || null
         });
       }
     });
@@ -332,11 +334,14 @@ async function fetchV1RecentEngagements(sinceMs) {
     const data = await response.json();
     (data.results || []).forEach(eng => {
       const e = eng.engagement || {};
+      const assoc = eng.associations || {};
       if (e.ownerId && e.timestamp && e.timestamp >= sinceMs) {
         allResults.push({
+          id: String(e.id),
           ownerId: String(e.ownerId),
           timestamp: e.timestamp,
-          type: (e.type || "unknown").toLowerCase()
+          type: (e.type || "unknown").toLowerCase(),
+          dealIds: (assoc.dealIds || []).map(String)
         });
       }
     });
