@@ -287,67 +287,6 @@ async function fetchAllDeals() {
   return merged;
 }
 
-// ─── Fetch dealstage history (all transitions with timestamps) ─
-// Returns: { dealId: { firstQueryDate, firstProofreadingDate, queryCount } }
-// Used so Drafting Query tracking reflects the FIRST time a query was raised,
-// not the most recent — because hs_v2_date_entered_<stage> is overwritten on re-entry.
-const STAGE_DRAFTING_QUERY = "1223620772";
-const STAGE_REQUIRED_PROOFREADING = "1223620773";
-
-async function fetchDealStageHistories(dealIds) {
-  const url = "https://api.hubapi.com/crm/v3/objects/deals/batch/read";
-  const headers = {
-    "Authorization": "Bearer " + HUBSPOT_TOKEN,
-    "Content-Type": "application/json"
-  };
-  const result = {};
-  const BATCH_SIZE = 100;
-  const startedAt = Date.now();
-
-  for (let i = 0; i < dealIds.length; i += BATCH_SIZE) {
-    const batch = dealIds.slice(i, i + BATCH_SIZE);
-    const body = {
-      propertiesWithHistory: ["dealstage"],
-      inputs: batch.map(id => ({ id }))
-    };
-
-    let response = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-      if (response.status === 429) { await sleep(Math.pow(2, attempt) * 1000); continue; }
-      break;
-    }
-    if (!response || !response.ok) {
-      const text = response ? await response.text().catch(() => "") : "";
-      console.error(`Stage history batch ${Math.floor(i / BATCH_SIZE)} failed: ${response ? response.status : "?"} ${text.substring(0, 200)}`);
-      continue;
-    }
-
-    const data = await response.json();
-    (data.results || []).forEach(r => {
-      const hist = (r.propertiesWithHistory && r.propertiesWithHistory.dealstage) || [];
-      const qTimes = [];
-      const pTimes = [];
-      hist.forEach(h => {
-        const t = new Date(h.timestamp).getTime();
-        if (isNaN(t)) return;
-        if (h.value === STAGE_DRAFTING_QUERY) qTimes.push(t);
-        else if (h.value === STAGE_REQUIRED_PROOFREADING) pTimes.push(t);
-      });
-      result[r.id] = {
-        firstQueryDate: qTimes.length ? Math.min(...qTimes) : null,
-        firstProofreadingDate: pTimes.length ? Math.min(...pTimes) : null,
-        queryCount: qTimes.length
-      };
-    });
-
-    if (i + BATCH_SIZE < dealIds.length) await sleep(150);
-  }
-
-  console.log(`[Stage history] Fetched ${Object.keys(result).length} / ${dealIds.length} deals in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
-  return result;
-}
-
 // ─── Fetch HubSpot owners ──────────────────────────────────────
 async function fetchOwners() {
   const url = "https://api.hubapi.com/crm/v3/owners?limit=500";
@@ -415,10 +354,6 @@ async function fetchFreshData() {
       fetchDealStageLabels().catch(() => ({}))
     ]);
 
-  // Stage history depends on deal IDs — run after deals are fetched.
-  const dealHistoryMap = await fetchDealStageHistories(deals.map(d => d.id))
-    .catch(e => { console.error("Stage history fetch failed:", e.message); return {}; });
-
   return {
     deals,
     ownerMap,
@@ -429,7 +364,6 @@ async function fetchFreshData() {
     amendmentSourceOptions,
     leadSourceOptions,
     stageLabels,
-    dealHistoryMap,
     komalExclusionIds: Array.from(KOMAL_EXCLUSION_IDS)
   };
 }
