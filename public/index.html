@@ -724,7 +724,7 @@
         // Pre-cutover buckets: numerator = deals that exited proofreading in the bucket AND have drafting_query_reason populated.
         // Post-cutover buckets: numerator = deals whose date_drafting_query (workflow-stamped first query) falls in the bucket.
         // Denominator (both): deals that exited Required — Proof Reading in the bucket.
-        const cutoverBucket=dateToBucket(new Date("2026-04-22T00:00:00"),gran);
+        const cutoverBucket=dateToBucket(new Date(Date.UTC(2026,3,22)),gran);
         const isNewLogic=b=>b>=cutoverBucket;
         const periodData={};
         const reasonSet=new Set();
@@ -941,7 +941,7 @@
         // Pre-cutover buckets: numerator = deals that exited proofreading in the bucket AND have drafting_query_reason populated.
         // Post-cutover buckets: numerator = deals whose date_drafting_query falls in the bucket.
         // Denominator (both): deals that exited Required — Proof Reading in the bucket, per drafter.
-        const cutoverBucket=dateToBucket(new Date("2026-04-22T00:00:00"),gran);
+        const cutoverBucket=dateToBucket(new Date(Date.UTC(2026,3,22)),gran);
         const isNewLogic=b=>b>=cutoverBucket;
         const byPD={};const dTotals={};const dealMap={};
         deals.forEach(d=>{
@@ -2079,7 +2079,7 @@
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         // Methodology cutover: 22/04/2026 — see Chart4 for details.
-        const cutoverBucket=dateToBucket(new Date("2026-04-22T00:00:00"),gran);
+        const cutoverBucket=dateToBucket(new Date(Date.UTC(2026,3,22)),gran);
         const isNewLogic=b=>b>=cutoverBucket;
         const totals={};const qd={};
         deals.forEach(d=>{
@@ -2134,7 +2134,7 @@
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         // Methodology cutover: 22/04/2026 — see Chart4 for details.
-        const cutoverBucket=dateToBucket(new Date("2026-04-22T00:00:00"),gran);
+        const cutoverBucket=dateToBucket(new Date(Date.UTC(2026,3,22)),gran);
         const isNewLogic=b=>b>=cutoverBucket;
         const byPD={};const dTotals={};
         deals.forEach(d=>{
