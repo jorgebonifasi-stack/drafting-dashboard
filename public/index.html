@@ -1039,20 +1039,33 @@
       );
     }
 
-    function SettingsPanel({open,onClose,standardTarget,setStandardTarget,overrides,setOverrides,drafterNames,proofTarget,setProofTarget,proofOverrides,setProofOverrides,prooferNames}){
+    function SettingsPanel({open,onClose,standardTarget,setStandardTarget,overrides,setOverrides,drafterNames,proofTarget,setProofTarget,proofOverrides,setProofOverrides,prooferNames,saveStatus,saveError}){
       const[newName,setNewName]=useState("");
       const[newProofName,setNewProofName]=useState("");
       if(!open)return null;
       const allNames=[...new Set([...drafterNames,...Object.keys(overrides)])].filter(n=>!/^\d+$/.test(n)).sort();
       const allProofNames=[...new Set([...prooferNames,...Object.keys(proofOverrides)])].filter(n=>!/^\d+$/.test(n)).sort();
+      const statusPill=(()=>{
+        if(saveStatus==="saving")return{text:"Saving\u2026",color:C.amber,bg:"rgba(243,156,18,0.12)"};
+        if(saveStatus==="saved")return{text:"Saved \u2713",color:C.green,bg:"rgba(39,174,96,0.12)"};
+        if(saveStatus==="error")return{text:"Save failed",color:C.red,bg:"rgba(231,76,60,0.15)"};
+        return null;
+      })();
       return(
         <React.Fragment>
           <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:998}} onClick={onClose}/>
           <div style={S.sidePanel}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
               <h2 style={{color:C.white,fontSize:16,margin:0}}>Target Settings</h2>
               <button onClick={onClose} style={{...S.btn,padding:"4px 10px"}}>&#10005;</button>
             </div>
+            {statusPill&&(
+              <div style={{fontSize:11,color:statusPill.color,background:statusPill.bg,border:`1px solid ${statusPill.color}`,borderRadius:6,padding:"4px 10px",display:"inline-block",marginBottom:16}}>
+                {statusPill.text}
+                {saveStatus==="error"&&saveError&&<span style={{marginLeft:8,opacity:0.8}}>— {saveError}</span>}
+              </div>
+            )}
+            {!statusPill&&<div style={{marginBottom:16}}/>}
 
             {/* ── Drafting Section ── */}
             <h3 style={{color:C.accent,fontSize:13,textTransform:"uppercase",letterSpacing:1,marginBottom:10,borderBottom:`1px solid ${C.border}`,paddingBottom:6}}>Drafting</h3>
@@ -1098,7 +1111,7 @@
               <button onClick={()=>{if(newProofName.trim()){setProofOverrides(prev=>({...prev,[newProofName.trim()]:proofTarget}));setNewProofName("");}}} style={{...S.btn,fontSize:12}}>Add</button>
             </div>
 
-            <p style={{fontSize:11,color:C.text,opacity:0.5,marginTop:20}}>{"\u2605"} = custom override. Changes apply when you close this panel.</p>
+            <p style={{fontSize:11,color:C.text,opacity:0.5,marginTop:20}}>{"\u2605"} = custom override. Changes auto-save to the shared Google Sheet.</p>
           </div>
         </React.Fragment>
       );
@@ -1850,6 +1863,11 @@
       const[stageLabels,setStageLabels]=useState({});
       const[view,setView]=useState("graphs");
       const[authUser,setAuthUser]=useState(null);
+      // Targets persistence (Google Sheets via /api/targets)
+      const[targetsLoaded,setTargetsLoaded]=useState(false);
+      const[saveStatus,setSaveStatus]=useState("idle"); // idle | saving | saved | error
+      const[saveError,setSaveError]=useState(null);
+      const saveTimerRef=useRef(null);
 
       // Check auth status on mount
       useEffect(()=>{
@@ -1857,6 +1875,45 @@
           if(d.authenticated)setAuthUser(d.user);
         }).catch(()=>{});
       },[]);
+
+      // Load persisted targets from Google Sheets on mount
+      useEffect(()=>{
+        fetch("/api/targets").then(r=>r.json()).then(d=>{
+          if(d&&d.drafting){
+            if(Number.isFinite(d.drafting.default))setStandardTarget(d.drafting.default);
+            if(d.drafting.overrides)setOverrides(d.drafting.overrides);
+          }
+          if(d&&d.proofreading){
+            if(Number.isFinite(d.proofreading.default))setProofTarget(d.proofreading.default);
+            if(d.proofreading.overrides)setProofOverrides(d.proofreading.overrides);
+          }
+        }).catch(e=>console.error("Failed to load targets:",e))
+         .finally(()=>setTargetsLoaded(true));
+      },[]);
+
+      // Debounced save whenever targets change (after initial load)
+      useEffect(()=>{
+        if(!targetsLoaded)return;
+        if(saveTimerRef.current)clearTimeout(saveTimerRef.current);
+        saveTimerRef.current=setTimeout(()=>{
+          setSaveStatus("saving");setSaveError(null);
+          fetch("/api/targets",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({
+              drafting:{default:standardTarget,overrides},
+              proofreading:{default:proofTarget,overrides:proofOverrides}
+            })
+          }).then(async r=>{
+            if(!r.ok){const e=await r.json().catch(()=>({error:r.statusText}));throw new Error(e.error||"Save failed");}
+            setSaveStatus("saved");
+            setTimeout(()=>setSaveStatus(prev=>prev==="saved"?"idle":prev),2000);
+          }).catch(err=>{
+            setSaveStatus("error");setSaveError(err.message||String(err));
+          });
+        },800);
+        return()=>{if(saveTimerRef.current)clearTimeout(saveTimerRef.current);};
+      },[standardTarget,overrides,proofTarget,proofOverrides,targetsLoaded]);
 
       // ── load data via server (serves from cache, or fetches fresh) ──
       const loadData=useCallback(async(force)=>{
@@ -2304,7 +2361,8 @@
             standardTarget={standardTarget} setStandardTarget={setStandardTarget}
             overrides={overrides} setOverrides={setOverrides} drafterNames={drafterNames}
             proofTarget={proofTarget} setProofTarget={setProofTarget}
-            proofOverrides={proofOverrides} setProofOverrides={setProofOverrides} prooferNames={prooferNames}/>
+            proofOverrides={proofOverrides} setProofOverrides={setProofOverrides} prooferNames={prooferNames}
+            saveStatus={saveStatus} saveError={saveError}/>
         </div>
       );
     }

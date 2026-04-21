@@ -4,6 +4,7 @@ const path = require("path");
 const session = require("express-session");
 const passport = require("passport");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
+const { google } = require("googleapis");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -56,6 +57,132 @@ try {
   console.log(`[Komal exclusion] Loaded ${KOMAL_EXCLUSION_IDS.size} deal IDs to exclude from query metrics`);
 } catch (e) {
   console.log("[Komal exclusion] No exclusion file found or error reading it — no exclusions active");
+}
+
+// ─── Google Sheets (target overrides persistence) ───────────────
+const SHEETS_ID = process.env.GOOGLE_SHEETS_ID;
+const SHEETS_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON;
+const SHEETS_ENABLED = !!(SHEETS_ID && SHEETS_SERVICE_ACCOUNT_JSON);
+const DEFAULT_TARGETS = {
+  drafting: {
+    default: 80,
+    overrides: { "Komal Singh": 60, "Liam Tuapola": 60, "Gurleen Sagoo": 30, "Erin James": 48 }
+  },
+  proofreading: {
+    default: 425,
+    overrides: { "Neelam Ranchhod": 425 }
+  }
+};
+
+let sheetsClient = null;
+function getSheetsClient() {
+  if (sheetsClient) return sheetsClient;
+  if (!SHEETS_ENABLED) return null;
+  try {
+    const creds = JSON.parse(SHEETS_SERVICE_ACCOUNT_JSON);
+    const auth = new google.auth.JWT({
+      email: creds.client_email,
+      key: creds.private_key,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+    });
+    sheetsClient = google.sheets({ version: "v4", auth });
+    return sheetsClient;
+  } catch (e) {
+    console.error("[Sheets] Failed to init client:", e.message);
+    return null;
+  }
+}
+
+async function ensureTargetTabsExist() {
+  const sheets = getSheetsClient();
+  if (!sheets) return;
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEETS_ID });
+    const existing = new Set((meta.data.sheets || []).map(s => s.properties.title));
+    const toCreate = ["Drafting", "Proofreading"].filter(n => !existing.has(n));
+    if (toCreate.length) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SHEETS_ID,
+        requestBody: {
+          requests: toCreate.map(title => ({ addSheet: { properties: { title } } }))
+        }
+      });
+      // Seed new tabs with headers + defaults
+      for (const title of toCreate) {
+        const key = title.toLowerCase();
+        const def = DEFAULT_TARGETS[key];
+        const rows = [
+          ["Name", "Target"],
+          ["_default", def.default],
+          ...Object.entries(def.overrides).map(([n, v]) => [n, v])
+        ];
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SHEETS_ID,
+          range: `${title}!A1`,
+          valueInputOption: "RAW",
+          requestBody: { values: rows }
+        });
+      }
+      console.log(`[Sheets] Created and seeded tabs: ${toCreate.join(", ")}`);
+    }
+  } catch (e) {
+    console.error("[Sheets] ensureTargetTabsExist error:", e.message);
+  }
+}
+
+async function readTargetsFromSheet() {
+  const sheets = getSheetsClient();
+  if (!sheets) return null;
+  try {
+    const res = await sheets.spreadsheets.values.batchGet({
+      spreadsheetId: SHEETS_ID,
+      ranges: ["Drafting!A2:B", "Proofreading!A2:B"]
+    });
+    const parseTab = (rows, fallback) => {
+      let defaultVal = fallback.default;
+      const overrides = {};
+      (rows || []).forEach(row => {
+        const name = (row[0] || "").trim();
+        const val = parseInt(row[1], 10);
+        if (!name || isNaN(val)) return;
+        if (name === "_default") defaultVal = val;
+        else overrides[name] = val;
+      });
+      return { default: defaultVal, overrides };
+    };
+    const [dr, pr] = res.data.valueRanges || [];
+    return {
+      drafting: parseTab(dr && dr.values, DEFAULT_TARGETS.drafting),
+      proofreading: parseTab(pr && pr.values, DEFAULT_TARGETS.proofreading)
+    };
+  } catch (e) {
+    console.error("[Sheets] read error:", e.message);
+    return null;
+  }
+}
+
+async function writeTargetsToSheet(payload) {
+  const sheets = getSheetsClient();
+  if (!sheets) throw new Error("Google Sheets not configured on server");
+  const toRows = tab => [
+    ["_default", Number.isFinite(tab.default) ? tab.default : ""],
+    ...Object.entries(tab.overrides || {}).map(([k, v]) => [k, Number.isFinite(v) ? v : ""])
+  ];
+  // Clear data rows then write fresh
+  await sheets.spreadsheets.values.batchClear({
+    spreadsheetId: SHEETS_ID,
+    requestBody: { ranges: ["Drafting!A2:B", "Proofreading!A2:B"] }
+  });
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SHEETS_ID,
+    requestBody: {
+      valueInputOption: "RAW",
+      data: [
+        { range: "Drafting!A2", values: toRows(payload.drafting || DEFAULT_TARGETS.drafting) },
+        { range: "Proofreading!A2", values: toRows(payload.proofreading || DEFAULT_TARGETS.proofreading) }
+      ]
+    }
+  });
 }
 
 // ─── In-memory cache ─────────────────────────────────────────────
@@ -570,6 +697,37 @@ app.get("/api/activity", requireAuth, async (req, res) => {
   }
 });
 
+// ─── Targets (persisted overrides via Google Sheets) ──────────
+app.get("/api/targets", requireAuth, async (req, res) => {
+  try {
+    const data = await readTargetsFromSheet();
+    if (!data) {
+      return res.json({ ...DEFAULT_TARGETS, _source: SHEETS_ENABLED ? "error_fallback" : "code_defaults" });
+    }
+    res.json({ ...data, _source: "sheet" });
+  } catch (e) {
+    console.error("/api/targets GET error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/targets", requireAuth, async (req, res) => {
+  if (!SHEETS_ENABLED) {
+    return res.status(503).json({ error: "Google Sheets not configured on server (GOOGLE_SHEETS_ID + GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON required)" });
+  }
+  try {
+    const body = req.body || {};
+    if (!body.drafting || !body.proofreading) {
+      return res.status(400).json({ error: "Request body must include drafting and proofreading objects" });
+    }
+    await writeTargetsToSheet(body);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("/api/targets POST error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({
@@ -601,6 +759,12 @@ async function backgroundRefresh() {
 // ─── Start server ───────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`Dashboard server running on port ${PORT}`);
+  if (SHEETS_ENABLED) {
+    console.log("[Sheets] Targets persistence enabled (spreadsheet: " + SHEETS_ID + ")");
+    ensureTargetTabsExist();
+  } else {
+    console.log("[Sheets] Targets persistence DISABLED — set GOOGLE_SHEETS_ID and GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON to enable");
+  }
 
   // Initial data fetch on startup
   backgroundRefresh();
