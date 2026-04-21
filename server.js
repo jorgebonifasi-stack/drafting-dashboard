@@ -301,7 +301,7 @@ async function fetchDealStageHistories(dealIds) {
     "Content-Type": "application/json"
   };
   const result = {};
-  const BATCH_SIZE = 50; // HubSpot caps propertiesWithHistory batch reads at 50 inputs
+  const BATCH_SIZE = 100;
   const startedAt = Date.now();
 
   for (let i = 0; i < dealIds.length; i += BATCH_SIZE) {
