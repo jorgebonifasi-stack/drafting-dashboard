@@ -163,8 +163,12 @@
     }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,komalExclusionIds){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,dealHistoryMap,komalExclusionIds){
       return rawDeals.map(d=>{
+        const hist=(dealHistoryMap||{})[d.id]||{};
+        const firstQueryDate=hist.firstQueryDate?new Date(hist.firstQueryDate):null;
+        const firstProofreadingDate=hist.firstProofreadingDate?new Date(hist.firstProofreadingDate):null;
+        const queryCount=hist.queryCount||0;
         const p=d.properties||{};
         const enteredDrafting=parseHSDate(p.hs_v2_date_entered_1223620771);
         const nativeExitedDrafting=parseHSDate(p.hs_v2_date_exited_1223620771);
@@ -232,6 +236,7 @@
         return{
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
           leadSources,dateOfAppointment,
+          firstQueryDate,firstProofreadingDate,queryCount,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
           komalQueryExcluded:!!(komalExclusionIds&&komalExclusionIds.has&&komalExclusionIds.has(String(d.id))&&drafterName.toLowerCase()!=="komal singh"),
@@ -371,10 +376,10 @@
       chart2:'Average calendar days from first entering "Drafting Instructions (Estate Planning)" to completion. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Includes Drafting Query time. Grouped by Drafting Owner.',
       chart3:'Line: average calendar days from entering to exiting "Required \u2014 Proof Reading" for deals completed that period. Bars: deals that entered "Required \u2014 Proof Reading" (Date entered "Required - Proof Reading (Estate Planning)") in that period. SLA: 2 days.',
       chart5b:'Deprecated — merged into Chart 5.',
-      chart4:'Query rate per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period. Numerator: those in the cohort that also have a Drafting Query. SLA: green \u22645%, amber \u226410%, red >10%.',
+      chart4:'Query rate per period. Denominator: deals bucketed by their FIRST entry into "Required \u2014 Proof Reading". Numerator: deals bucketed by their FIRST entry into "Drafting Query" (deduped per deal; a deal with 3 queries counts once, in the period of its first query). Uses full dealstage history, so bucketing is unaffected by later stage re-entries. SLA: green \u22645%, amber \u226410%, red >10%.',
       chart5:'Drafts proofread (completed) and backlog per proofreader for the selected period. Completed: deals that exited "Required \u2014 Proof Reading" in the period. Backlog: deals that entered but have not yet exited by end of the period. Grouped by Proof Reading Owner.',
       chart6:'Bars: total standard drafts completed per period. Line: average turnaround in calendar days (first entry into "Drafting Instructions (Estate Planning)" \u2192 completion). Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". SLA: 10d internal, 28d customer.',
-      chart7:'Query rate per drafter per period. Cohort: deals that entered "Required \u2014 Proof Reading" in that period per drafter. Numerator: those with a Drafting Query. Green \u22645%, amber \u226410%, red >10%.',
+      chart7:'Query rate per drafter per period. Denominator: deals bucketed by their FIRST entry into "Required \u2014 Proof Reading" (per drafter). Numerator: deals bucketed by their FIRST entry into "Drafting Query" (deduped per deal). Uses full dealstage history so bucketing is unaffected by later stage re-entries. Green \u22645%, amber \u226410%, red >10%.',
       chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour. Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
       chart13:'Count of deals entering "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart12:'Drafting pipeline flow over time. Entered: uses original (workflow-stamped) entry date for stability. Exited & Backlog: uses native HubSpot dates (latest entry/exit) for accuracy. Current period backlog uses live dealstage count. Includes all deals (standard + urgent).',
@@ -413,10 +418,10 @@
       c1:[{key:"date",label:"Completed"}],
       c2:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"days",label:"Days"}],
       c3:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"}],
-      c4:[{key:"reasons",label:"Reasons"}],
+      c4:[{key:"queryDate",label:"First Query Date"},{key:"reasons",label:"Reasons"}],
       c5:[{key:"date",label:"Completed"}],
       c6:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"days",label:"Days"}],
-      c7:[{key:"drafter",label:"Drafter"},{key:"queried",label:"Queried"},{key:"reasons",label:"Query Reasons"}],
+      c7:[{key:"drafter",label:"Drafter"},{key:"queried",label:"Queried"},{key:"queryDate",label:"First Query Date"},{key:"reasons",label:"Query Reasons"}],
       c8:[{key:"start",label:"Urgent From"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"},{key:"reason",label:"Reason"}],
       c9:[{key:"start",label:"Urgent From"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"}],
       c10:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"},{key:"source",label:"Source"}],
@@ -718,17 +723,21 @@
         const seen=new Set();
         const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
 
-        // Cohort: deals that entered Required — Proof Reading per period
-        // Numerator: those in the cohort that also have a drafting query
+        // Denominator: deals bucketed by their FIRST entry into Required — Proof Reading
+        // Numerator:   deals bucketed by their FIRST entry into Drafting Query (dedupe per deal)
+        // These can fall in different periods — rate = first-queries placed in P ÷ deals first-entering proofreading in P.
         const periodData={};
         const reasonSet=new Set();
         const reasonData={};
         deals.forEach(d=>{
-          if(!d.enteredProofreading)return;
-          const b=dateToBucket(d.enteredProofreading,gran);
-          if(!periodData[b])periodData[b]={total:0,queried:0};
-          periodData[b].total++;
-          if(d.enteredDraftingQuery&&!d.komalQueryExcluded){
+          if(d.firstProofreadingDate){
+            const b=dateToBucket(d.firstProofreadingDate,gran);
+            if(!periodData[b])periodData[b]={total:0,queried:0};
+            periodData[b].total++;
+          }
+          if(d.firstQueryDate&&!d.komalQueryExcluded){
+            const b=dateToBucket(d.firstQueryDate,gran);
+            if(!periodData[b])periodData[b]={total:0,queried:0};
             periodData[b].queried++;
             if(d.queryReasons.length){
               if(!reasonData[b])reasonData[b]={};
@@ -920,18 +929,23 @@
         const periods=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
 
         const byPD={};const dTotals={};const dealMap={};
-        // Cohort: deals entering Required — Proof Reading per drafter per period
-        // Numerator: those in the cohort that also have a drafting query
+        // Denominator: deals bucketed by their FIRST entry into Required — Proof Reading, attributed to drafter
+        // Numerator:   deals bucketed by their FIRST entry into Drafting Query (deduped per deal), attributed to drafter
         deals.forEach(d=>{
-          if(!d.enteredProofreading||!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
-          const b=dateToBucket(d.enteredProofreading,gran);
-          const key=`${b}|${d.drafterName}`;
-          if(!byPD[key])byPD[key]={total:0,queried:0};
-          byPD[key].total++;
-          dTotals[d.drafterName]=(dTotals[d.drafterName]||0)+1;
-          if(!dealMap[key])dealMap[key]=[];
-          dealMap[key].push(d);
-          if(d.enteredDraftingQuery&&!d.komalQueryExcluded){
+          if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+          if(d.firstProofreadingDate){
+            const b=dateToBucket(d.firstProofreadingDate,gran);
+            const key=`${b}|${d.drafterName}`;
+            if(!byPD[key])byPD[key]={total:0,queried:0};
+            byPD[key].total++;
+            dTotals[d.drafterName]=(dTotals[d.drafterName]||0)+1;
+            if(!dealMap[key])dealMap[key]=[];
+            dealMap[key].push(d);
+          }
+          if(d.firstQueryDate&&!d.komalQueryExcluded){
+            const b=dateToBucket(d.firstQueryDate,gran);
+            const key=`${b}|${d.drafterName}`;
+            if(!byPD[key])byPD[key]={total:0,queried:0};
             byPD[key].queried++;
           }
         });
@@ -1929,12 +1943,13 @@
           const amendmentSourceOpts=result.amendmentSourceOptions||{};
           const leadSourceOpts=result.leadSourceOptions||{};
           const stageLbls=result.stageLabels||{};
+          const dealHistoryMap=result.dealHistoryMap||{};
           const komalIds=new Set(result.komalExclusionIds||[]);
           setKomalExclusions(komalIds);
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
           setStageLabels(stageLbls);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,komalIds));
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,dealHistoryMap,komalIds));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -2045,10 +2060,13 @@
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         const totals={};const qd={};
-        deals.forEach(d=>{if(!d.enteredProofreading)return;const b=dateToBucket(d.enteredProofreading,gran);totals[b]=(totals[b]||0)+1;if(d.enteredDraftingQuery&&!d.komalQueryExcluded){(qd[b]=qd[b]||[]).push(d);}});
+        deals.forEach(d=>{
+          if(d.firstProofreadingDate){const b=dateToBucket(d.firstProofreadingDate,gran);totals[b]=(totals[b]||0)+1;}
+          if(d.firstQueryDate&&!d.komalQueryExcluded){const b=dateToBucket(d.firstQueryDate,gran);(qd[b]=qd[b]||[]).push(d);}
+        });
         const rows=uniq.map(bucket=>{const total=totals[bucket]||0;const queriedArr=qd[bucket]||[];const queried=queriedArr.length;const rate=total>0?parseFloat(Math.min((queried/total)*100,100).toFixed(0)):null;
           return{_key:bucket,label:bucketLabel(bucket,gran),rate:rate!=null?rate+"%":"—",total,queried};});
-        const detailMap={};uniq.forEach(b=>{detailMap[b]=(qd[b]||[]).map(d=>({id:d.id,dealname:d.dealname,reasons:d.queryReasons.join(", ")||"—"}));});
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(qd[b]||[]).map(d=>({id:d.id,dealname:d.dealname,queryDate:fmtDate(d.firstQueryDate),reasons:d.queryReasons.join(", ")||"—"}));});
         return{rows,detailMap};
       },[deals,gran]);
 
@@ -2087,14 +2105,21 @@
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         const byPD={};const dTotals={};
-        // Cohort: deals entering proofreading per drafter per period; numerator = those with a query
+        // Denominator bucket: deal's FIRST entry into Required — Proof Reading.
+        // Numerator bucket:   deal's FIRST entry into Drafting Query (deduped per deal).
         deals.forEach(d=>{
-          if(!d.enteredProofreading||!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
-          const b=dateToBucket(d.enteredProofreading,gran);const key=`${b}|${d.drafterName}`;
-          if(!byPD[key])byPD[key]={total:0,queried:0,queriedDeals:[],allDeals:[]};
-          byPD[key].total++;dTotals[d.drafterName]=(dTotals[d.drafterName]||0)+1;
-          byPD[key].allDeals.push(d);
-          if(d.enteredDraftingQuery&&!d.komalQueryExcluded){byPD[key].queried++;byPD[key].queriedDeals.push(d);}
+          if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+          if(d.firstProofreadingDate){
+            const b=dateToBucket(d.firstProofreadingDate,gran);const key=`${b}|${d.drafterName}`;
+            if(!byPD[key])byPD[key]={total:0,queried:0,queriedDeals:[],allDeals:[]};
+            byPD[key].total++;dTotals[d.drafterName]=(dTotals[d.drafterName]||0)+1;
+            byPD[key].allDeals.push(d);
+          }
+          if(d.firstQueryDate&&!d.komalQueryExcluded){
+            const b=dateToBucket(d.firstQueryDate,gran);const key=`${b}|${d.drafterName}`;
+            if(!byPD[key])byPD[key]={total:0,queried:0,queriedDeals:[],allDeals:[]};
+            byPD[key].queried++;byPD[key].queriedDeals.push(d);
+          }
         });
         const activeDrafters=Object.entries(dTotals).filter(([,c])=>c>=10).map(([n])=>n).sort();
         const cols=[{key:"label",label:"Period"}].concat(activeDrafters.map(n=>({key:n,label:n})));
@@ -2105,7 +2130,7 @@
         });
         const detailMap={};uniq.forEach(b=>{
           const allDealsForPeriod=[];
-          activeDrafters.forEach(name=>{const pd=byPD[`${b}|${name}`];if(pd)pd.allDeals.forEach(d=>allDealsForPeriod.push({id:d.id,dealname:d.dealname,drafter:name,queried:(d.enteredDraftingQuery&&!d.komalQueryExcluded)?"Yes":"No",reasons:d.komalQueryExcluded?"(Excluded — Komal reassignment)":d.queryReasons.join(", ")||"—"}));});
+          activeDrafters.forEach(name=>{const pd=byPD[`${b}|${name}`];if(pd)pd.allDeals.forEach(d=>allDealsForPeriod.push({id:d.id,dealname:d.dealname,drafter:name,queried:(d.firstQueryDate&&!d.komalQueryExcluded)?"Yes":"No",queryDate:fmtDate(d.firstQueryDate),reasons:d.komalQueryExcluded?"(Excluded — Komal reassignment)":d.queryReasons.join(", ")||"—"}));});
           // Sort: queried deals first, then by drafter name
           allDealsForPeriod.sort((a,b)=>a.queried===b.queried?a.drafter.localeCompare(b.drafter):(a.queried==="Yes"?-1:1));
           detailMap[b]=allDealsForPeriod;
@@ -2114,15 +2139,15 @@
       },[deals,gran]);
 
       const c7CsvBuilder=useCallback(()=>{
-        const hdr=["Period","Drafter","Query Rate %","Total Deals","Queried Deals","Deal Name","HubSpot Link","Query Reasons"];
+        const hdr=["Period","Drafter","Query Rate %","Deals Entering Proofreading","First Queries Placed","Deal Name","First Query Date","HubSpot Link","Query Reasons"];
         const lines=[hdr];
         (c7Table.uniq||[]).forEach(bucket=>{
           (c7Table.activeDrafters||[]).forEach(name=>{
             const pd=c7Table.byPD[`${bucket}|${name}`];
             if(!pd||pd.queried===0)return;
-            const rate=((pd.queried/pd.total)*100).toFixed(0)+"%";
+            const rate=pd.total>0?Math.min((pd.queried/pd.total)*100,100).toFixed(0)+"%":"—";
             pd.queriedDeals.forEach(d=>{
-              lines.push([bucketLabel(bucket,gran),name,rate,pd.total,pd.queried,d.dealname||d.id,HS_BASE+d.id,d.queryReasons.join(", ")||""]);
+              lines.push([bucketLabel(bucket,gran),name,rate,pd.total,pd.queried,d.dealname||d.id,fmtDate(d.firstQueryDate),HS_BASE+d.id,d.queryReasons.join(", ")||""]);
             });
           });
         });
