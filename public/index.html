@@ -1735,14 +1735,24 @@
     // ─── Macmillan SLA Table ───────────────────────────────────
     function MacmillanSLATable({deals,stageLabels}){
       const SLA_DAYS=20;
+      // Normalise stage labels (collapse dash/whitespace/case) so "Required — Proof Reading"
+      // matches "Required - Proof Reading" etc.
+      const normStage=s=>(s||"").toLowerCase().replace(/[\u2013\u2014-]+/g," ").replace(/\s+/g," ").trim();
+      const ALLOWED_STAGES=new Set([
+        "drafting instructions",
+        "drafting query",
+        "required proof reading",
+        "approved proof reading"
+      ]);
       const rows=useMemo(()=>{
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
         deals.forEach(d=>{
           if(!d.leadSources||!d.leadSources.includes("Macmillan"))return;
           if(!d.dateOfAppointment)return;
-          // Exclude deals that reached "Drafts With Customer" or "Ready For Printing"
-          if(d.origDraftsWithCustomer||d.origReadyForPrinting)return;
+          // Only include deals currently in a pre-"Drafts with Customer" stage
+          const stageLabel=stageLabels[d.dealstage]||d.dealstage||"";
+          if(!ALLOWED_STAGES.has(normStage(stageLabel)))return;
           const deadline=addBusinessDays(d.dateOfAppointment,SLA_DAYS);
           const bizRemaining=signedBusinessDays(today,deadline);
           out.push({
@@ -1774,7 +1784,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan — Deals Nearing SLA</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Lead source = Macmillan, SLA = 20 business days from Date of Appointment. Excludes deals that reached Drafts With Customer or Ready For Printing.
+                  Lead source = Macmillan, SLA = 20 business days from Date of Appointment. Only deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, or Approved — Proof Reading.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:12}}>
