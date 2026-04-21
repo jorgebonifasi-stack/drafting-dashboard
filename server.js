@@ -40,7 +40,8 @@ const PROPERTIES = [
   "date_marked_urgent",
   "first_date_exited_drafting_instructions",
   "hs_v2_date_entered_1223751329",
-  "hs_v2_date_entered_1223751330"
+  "hs_v2_date_entered_1223751330",
+  "ep_lead_source", "date_of_appointment"
 ];
 
 // ─── Komal Singh exclusion list ─────────────────────────────────
@@ -194,9 +195,26 @@ async function fetchPropertyOptions(propName) {
   return map;
 }
 
+// ─── Fetch deal pipeline stage labels ──────────────────────────
+async function fetchDealStageLabels() {
+  const url = "https://api.hubapi.com/crm/v3/pipelines/deals";
+  const response = await fetch(url, {
+    headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
+  });
+  if (!response.ok) return {};
+  const data = await response.json();
+  const map = {};
+  (data.results || []).forEach(pipeline => {
+    (pipeline.stages || []).forEach(stage => {
+      map[stage.id] = stage.label;
+    });
+  });
+  return map;
+}
+
 // ─── Fetch all fresh data ──────────────────────────────────────
 async function fetchFreshData() {
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions] =
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, stageLabels] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -204,7 +222,9 @@ async function fetchFreshData() {
       fetchPropertyOptions("proof_reading__owner").catch(() => ({})),
       fetchPropertyOptions("drafting_query_reason").catch(() => ({})),
       fetchPropertyOptions("urgent_request_reason").catch(() => ({})),
-      fetchPropertyOptions("amendment_source").catch(() => ({}))
+      fetchPropertyOptions("amendment_source").catch(() => ({})),
+      fetchPropertyOptions("ep_lead_source").catch(() => ({})),
+      fetchDealStageLabels().catch(() => ({}))
     ]);
 
   return {
@@ -215,6 +235,8 @@ async function fetchFreshData() {
     queryReasonOptions,
     urgentReasonOptions,
     amendmentSourceOptions,
+    leadSourceOptions,
+    stageLabels,
     komalExclusionIds: Array.from(KOMAL_EXCLUSION_IDS)
   };
 }

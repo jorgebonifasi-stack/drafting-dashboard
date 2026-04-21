@@ -139,9 +139,31 @@
       }
       return count;
     }
+    // Signed business days between start → end (negative if end < start)
+    function signedBusinessDays(start,end){
+      if(!start||!end)return null;
+      const a=new Date(start);a.setHours(0,0,0,0);
+      const b=new Date(end);b.setHours(0,0,0,0);
+      if(a.getTime()===b.getTime())return 0;
+      const sign=b>a?1:-1;
+      const days=calcBusinessDays(sign>0?a:b,sign>0?b:a)||0;
+      return sign*days;
+    }
+    // Add N business days to a date
+    function addBusinessDays(start,days){
+      const result=new Date(start);
+      result.setHours(0,0,0,0);
+      let added=0;
+      while(added<days){
+        result.setDate(result.getDate()+1);
+        const dow=result.getDay();
+        if(dow!==0&&dow!==6)added++;
+      }
+      return result;
+    }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,komalExclusionIds){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,komalExclusionIds){
       return rawDeals.map(d=>{
         const p=d.properties||{};
         const enteredDrafting=parseHSDate(p.hs_v2_date_entered_1223620771);
@@ -203,8 +225,13 @@
         const exitedAmendment=parseHSDate(p.hs_v2_date_exited_1338772492);
         const rawAmendSource=p.amendment_source||"";
         const amendmentSource=rawAmendSource?(amendmentSourceOptions||{})[rawAmendSource.trim()]||rawAmendSource.trim():"";
+        // Lead source (multi-select checkbox, ;-separated) + appointment date
+        const rawLeadSource=p.ep_lead_source||"";
+        const leadSources=rawLeadSource?rawLeadSource.split(";").map(v=>(leadSourceOptions||{})[v.trim()]||v.trim()).filter(Boolean):[];
+        const dateOfAppointment=parseHSDate(p.date_of_appointment);
         return{
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
+          leadSources,dateOfAppointment,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
           komalQueryExcluded:!!(komalExclusionIds&&komalExclusionIds.has&&komalExclusionIds.has(String(d.id))&&drafterName.toLowerCase()!=="komal singh"),
@@ -1705,6 +1732,95 @@
     }
 
     // ─── Main Dashboard ─────────────────────────────────────────
+    // ─── Macmillan SLA Table ───────────────────────────────────
+    function MacmillanSLATable({deals,stageLabels}){
+      const SLA_DAYS=20;
+      const rows=useMemo(()=>{
+        const today=new Date();today.setHours(0,0,0,0);
+        const out=[];
+        deals.forEach(d=>{
+          if(!d.leadSources||!d.leadSources.includes("Macmillan"))return;
+          if(!d.dateOfAppointment)return;
+          // Exclude deals that reached "Drafts With Customer" or "Ready For Printing"
+          if(d.origDraftsWithCustomer||d.origReadyForPrinting)return;
+          const deadline=addBusinessDays(d.dateOfAppointment,SLA_DAYS);
+          const bizRemaining=signedBusinessDays(today,deadline);
+          out.push({
+            id:d.id,
+            dealname:d.dealname,
+            drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
+            appointment:d.dateOfAppointment,
+            deadline,
+            bizRemaining,
+            stage:stageLabels[d.dealstage]||d.dealstage||"—"
+          });
+        });
+        out.sort((a,b)=>(a.bizRemaining??1e9)-(b.bizRemaining??1e9));
+        return out;
+      },[deals,stageLabels]);
+
+      const rowColor=n=>n==null?C.text:n<0?C.red:n<=2?C.amber:n<=5?"#F1C40F":C.green;
+
+      const exportCSV=useCallback(()=>{
+        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Current Stage","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.stage,HS_BASE+r.id])];
+        downloadCSV(`macmillan_sla_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows]);
+
+      return(
+        <div style={{padding:"16px 24px"}}>
+          <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
+              <div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan — Deals Nearing SLA</div>
+                <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
+                  Lead source = Macmillan, SLA = 20 business days from Date of Appointment. Excludes deals that reached Drafts With Customer or Ready For Printing.
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <span style={{fontSize:12,color:C.text,opacity:0.7}}>{rows.length} deal{rows.length===1?"":"s"}</span>
+                <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"\u2B07"} CSV</button>
+              </div>
+            </div>
+            {rows.length===0?(
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No open Macmillan deals with an appointment date.</div>
+            ):(
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                  <thead>
+                    <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Appointment</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Biz Days Remaining</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Current Stage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r=>(
+                      <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                        <td style={{padding:"10px 12px"}}>
+                          <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                        </td>
+                        <td style={{padding:"10px 12px"}}>{r.drafter}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
+                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.bizRemaining)}}>
+                          {r.bizRemaining==null?"—":r.bizRemaining<0?`${r.bizRemaining}d (breached)`:`${r.bizRemaining}d`}
+                        </td>
+                        <td style={{padding:"10px 12px"}}>{r.stage}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     function Dashboard(){
       const[loading,setLoading]=useState(true);
       const[error,setError]=useState(null);
@@ -1721,6 +1837,8 @@
       const[proofOverrides,setProofOverrides]=useState({...DEFAULT_PROOF_OVERRIDES});
       const[generating,setGenerating]=useState(false);
       const[draftingOwnerOpts,setDraftingOwnerOpts]=useState({});
+      const[stageLabels,setStageLabels]=useState({});
+      const[view,setView]=useState("graphs");
       const[authUser,setAuthUser]=useState(null);
 
       // Check auth status on mount
@@ -1742,11 +1860,14 @@
           const queryReasonOpts=result.queryReasonOptions||{};
           const urgentReasonOpts=result.urgentReasonOptions||{};
           const amendmentSourceOpts=result.amendmentSourceOptions||{};
+          const leadSourceOpts=result.leadSourceOptions||{};
+          const stageLbls=result.stageLabels||{};
           const komalIds=new Set(result.komalExclusionIds||[]);
           setKomalExclusions(komalIds);
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,komalIds));
+          setStageLabels(stageLbls);
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,komalIds));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -2032,21 +2153,31 @@
         <div style={S.page}>
           {/* Top Bar */}
           <div style={S.topBar}>
-            <h1 style={S.title}>Estate Planning &mdash; Drafting &amp; Proofreading</h1>
+            <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+              <h1 style={S.title}>Estate Planning &mdash; Drafting &amp; Proofreading</h1>
+              <div style={{display:"flex",gap:4,padding:2,background:C.surface,borderRadius:8,border:`1px solid ${C.border}`}}>
+                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="graphs"?C.accent:"transparent",color:view==="graphs"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("graphs")}>Graphs</button>
+                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="sla"?C.accent:"transparent",color:view==="sla"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("sla")}>Macmillan SLA</button>
+              </div>
+            </div>
             <div style={S.controls}>
-              {["DoD","WoW","MoM"].map(g=>(
+              {view==="graphs"&&["DoD","WoW","MoM"].map(g=>(
                 <button key={g} style={S.toggle(gran===g)} onClick={()=>setGran(g)}>{g}</button>
               ))}
-              <select style={S.select} value={selectedBucket||""} onChange={e=>setSelectedBucket(e.target.value)}>
-                {availableBuckets.map(b=>(<option key={b} value={b}>{bucketLabel(b,gran)}</option>))}
-              </select>
-              <button style={{...S.btn,background:"#7C3AED",color:"#fff",border:"1px solid #9333EA"}} disabled={generating||loading} onClick={async()=>{
-                setGenerating(true);
-                try{await generateSlides(gran,selectedBucket);}catch(err){alert("Slide generation failed: "+err.message);}finally{setGenerating(false);}
-              }} title="Generate PPTX Slides">
-                {generating?"\u23F3 Generating...":"\uD83D\uDCCA Generate Slides"}
-              </button>
-              <button style={S.btn} onClick={()=>setSettingsOpen(true)} title="Target Settings">&#9881;&#65039;</button>
+              {view==="graphs"&&(
+                <select style={S.select} value={selectedBucket||""} onChange={e=>setSelectedBucket(e.target.value)}>
+                  {availableBuckets.map(b=>(<option key={b} value={b}>{bucketLabel(b,gran)}</option>))}
+                </select>
+              )}
+              {view==="graphs"&&(
+                <button style={{...S.btn,background:"#7C3AED",color:"#fff",border:"1px solid #9333EA"}} disabled={generating||loading} onClick={async()=>{
+                  setGenerating(true);
+                  try{await generateSlides(gran,selectedBucket);}catch(err){alert("Slide generation failed: "+err.message);}finally{setGenerating(false);}
+                }} title="Generate PPTX Slides">
+                  {generating?"\u23F3 Generating...":"\uD83D\uDCCA Generate Slides"}
+                </button>
+              )}
+              {view==="graphs"&&<button style={S.btn} onClick={()=>setSettingsOpen(true)} title="Target Settings">&#9881;&#65039;</button>}
               <button style={S.btn} onClick={()=>loadData(true)} disabled={loading} title="Force refresh from HubSpot">
                 {loading?"\u23F3":"\uD83D\uDD04"} Refresh
               </button>
@@ -2065,6 +2196,9 @@
             <div style={{margin:"16px 24px",padding:"12px 16px",background:"rgba(231,76,60,0.15)",border:`1px solid ${C.red}`,borderRadius:8,color:C.red,fontSize:13}}>{error}</div>
           )}
 
+          {view==="sla"&&<MacmillanSLATable deals={deals} stageLabels={stageLabels}/>}
+
+          {view==="graphs"&&<>
           {/* Row 1a: Drafts Completed — New vs Old metric */}
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-1" title="Total Drafts Completed per Drafter (New Metric)" infoText={INFO.chart1} columns={T_COLS.c1} rows={c1Table.rows} detailMap={c1Table.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_new_${gran}_${selectedBucket}.csv`}>
@@ -2152,6 +2286,7 @@
 
           {/* ── DRAFTER ACTIVITY ── */}
           <HeatmapWithCard drafterNames={drafterNames} deals={deals}/>
+          </>}
 
           <div style={S.footer}>{totalRaw} deals loaded &middot; Data range: {dateRange}</div>
 
