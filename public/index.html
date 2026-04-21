@@ -103,6 +103,16 @@
       const[y,m]=bucket.split("-");
       return new Date(parseInt(y),parseInt(m),0,23,59,59,999);
     }
+    // Start date of a bucket, in UTC, for cutover comparisons.
+    function bucketStartDate(bucket,gran){
+      if(gran==="DoD")return new Date(bucket+"T00:00:00Z");
+      if(gran==="WoW"){
+        const[y,wStr]=bucket.split("-W");
+        return mondayOfISOWeek(parseInt(y),parseInt(wStr));
+      }
+      const[y,m]=bucket.split("-");
+      return new Date(Date.UTC(parseInt(y),parseInt(m)-1,1));
+    }
 
     // ─── parse HubSpot timestamp ────────────────────────────────
     function parseHSDate(v){
@@ -724,8 +734,8 @@
         // Pre-cutover buckets: numerator = deals that exited proofreading in the bucket AND have drafting_query_reason populated.
         // Post-cutover buckets: numerator = deals whose date_drafting_query (workflow-stamped first query) falls in the bucket.
         // Denominator (both): deals that exited Required — Proof Reading in the bucket.
-        const cutoverBucket=dateToBucket(new Date(Date.UTC(2026,3,22)),gran);
-        const isNewLogic=b=>b>=cutoverBucket;
+        const CUTOVER_DATE=new Date(Date.UTC(2026,3,22));
+        const isNewLogic=b=>bucketStartDate(b,gran)>=CUTOVER_DATE;
         const periodData={};
         const reasonSet=new Set();
         const reasonData={};
@@ -941,8 +951,8 @@
         // Pre-cutover buckets: numerator = deals that exited proofreading in the bucket AND have drafting_query_reason populated.
         // Post-cutover buckets: numerator = deals whose date_drafting_query falls in the bucket.
         // Denominator (both): deals that exited Required — Proof Reading in the bucket, per drafter.
-        const cutoverBucket=dateToBucket(new Date(Date.UTC(2026,3,22)),gran);
-        const isNewLogic=b=>b>=cutoverBucket;
+        const CUTOVER_DATE=new Date(Date.UTC(2026,3,22));
+        const isNewLogic=b=>bucketStartDate(b,gran)>=CUTOVER_DATE;
         const byPD={};const dTotals={};const dealMap={};
         deals.forEach(d=>{
           if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
@@ -2079,8 +2089,8 @@
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         // Methodology cutover: 22/04/2026 — see Chart4 for details.
-        const cutoverBucket=dateToBucket(new Date(Date.UTC(2026,3,22)),gran);
-        const isNewLogic=b=>b>=cutoverBucket;
+        const CUTOVER_DATE=new Date(Date.UTC(2026,3,22));
+        const isNewLogic=b=>bucketStartDate(b,gran)>=CUTOVER_DATE;
         const totals={};const qd={};
         deals.forEach(d=>{
           if(d.exitedProofreading){
@@ -2134,8 +2144,8 @@
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         // Methodology cutover: 22/04/2026 — see Chart4 for details.
-        const cutoverBucket=dateToBucket(new Date(Date.UTC(2026,3,22)),gran);
-        const isNewLogic=b=>b>=cutoverBucket;
+        const CUTOVER_DATE=new Date(Date.UTC(2026,3,22));
+        const isNewLogic=b=>bucketStartDate(b,gran)>=CUTOVER_DATE;
         const byPD={};const dTotals={};
         deals.forEach(d=>{
           if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
