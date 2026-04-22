@@ -46,19 +46,46 @@ const PROPERTIES = [
   "date_drafting_query"
 ];
 
-// ─── Komal Singh exclusion list ─────────────────────────────────
-// Deals that had drafting queries under Komal Singh's ownership.
-// After reassignment, these queries should NOT count against the new owner's metrics.
+// ─── Deactivated drafter exclusion list ─────────────────────────
+// Map of { dealId → originalDrafterName } for deals that had drafting queries
+// under a now-deactivated drafter's ownership. If the deal has since been
+// reassigned, those queries should NOT count against the new owner.
+// Reads from two sources (merged):
+//   - drafter-exclusions.json  (current format, supports multiple drafters)
+//   - komal-exclusions.json    (legacy format, Komal only)
 const fs = require("fs");
-let KOMAL_EXCLUSION_IDS = new Set();
+const DRAFTER_EXCLUSIONS = {}; // dealId → originalDrafterName
+
+try {
+  const exPath = path.join(__dirname, "drafter-exclusions.json");
+  const exData = JSON.parse(fs.readFileSync(exPath, "utf8"));
+  (exData.drafters || []).forEach(drafter => {
+    (drafter.deals || []).forEach(d => {
+      if (d.recordId) DRAFTER_EXCLUSIONS[String(d.recordId)] = drafter.name;
+    });
+  });
+  const names = (exData.drafters || []).map(d => `${d.name} (${(d.deals || []).length})`).join(", ");
+  console.log(`[Drafter exclusions] Loaded from drafter-exclusions.json: ${names || "none"}`);
+} catch (e) {
+  console.log("[Drafter exclusions] No drafter-exclusions.json found — skipping");
+}
+
 try {
   const exPath = path.join(__dirname, "komal-exclusions.json");
   const exData = JSON.parse(fs.readFileSync(exPath, "utf8"));
-  KOMAL_EXCLUSION_IDS = new Set(exData.deals.map(d => d.recordId));
-  console.log(`[Komal exclusion] Loaded ${KOMAL_EXCLUSION_IDS.size} deal IDs to exclude from query metrics`);
+  let added = 0;
+  (exData.deals || []).forEach(d => {
+    if (d.recordId && !DRAFTER_EXCLUSIONS[String(d.recordId)]) {
+      DRAFTER_EXCLUSIONS[String(d.recordId)] = "Komal Singh";
+      added++;
+    }
+  });
+  console.log(`[Drafter exclusions] Loaded ${added} legacy Komal Singh deal IDs from komal-exclusions.json`);
 } catch (e) {
-  console.log("[Komal exclusion] No exclusion file found or error reading it — no exclusions active");
+  // legacy file is optional — fine if absent
 }
+
+console.log(`[Drafter exclusions] Total deals excluded when reassigned: ${Object.keys(DRAFTER_EXCLUSIONS).length}`);
 
 // ─── Google Sheets (target overrides persistence) ───────────────
 const SHEETS_ID = process.env.GOOGLE_SHEETS_ID;
@@ -94,13 +121,13 @@ function getSheetsClient() {
   }
 }
 
-async function ensureTargetTabsExist() {
+async function ensureSheetTabsExist() {
   const sheets = getSheetsClient();
   if (!sheets) return;
   try {
     const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEETS_ID });
     const existing = new Set((meta.data.sheets || []).map(s => s.properties.title));
-    const toCreate = ["Drafting", "Proofreading"].filter(n => !existing.has(n));
+    const toCreate = ["Drafting", "Proofreading", "Logins"].filter(n => !existing.has(n));
     if (toCreate.length) {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId: SHEETS_ID,
@@ -110,13 +137,18 @@ async function ensureTargetTabsExist() {
       });
       // Seed new tabs with headers + defaults
       for (const title of toCreate) {
-        const key = title.toLowerCase();
-        const def = DEFAULT_TARGETS[key];
-        const rows = [
-          ["Name", "Target"],
-          ["_default", def.default],
-          ...Object.entries(def.overrides).map(([n, v]) => [n, v])
-        ];
+        let rows;
+        if (title === "Logins") {
+          rows = [["Timestamp", "Email", "Name", "IP"]];
+        } else {
+          const key = title.toLowerCase();
+          const def = DEFAULT_TARGETS[key];
+          rows = [
+            ["Name", "Target"],
+            ["_default", def.default],
+            ...Object.entries(def.overrides).map(([n, v]) => [n, v])
+          ];
+        }
         await sheets.spreadsheets.values.update({
           spreadsheetId: SHEETS_ID,
           range: `${title}!A1`,
@@ -127,7 +159,23 @@ async function ensureTargetTabsExist() {
       console.log(`[Sheets] Created and seeded tabs: ${toCreate.join(", ")}`);
     }
   } catch (e) {
-    console.error("[Sheets] ensureTargetTabsExist error:", e.message);
+    console.error("[Sheets] ensureSheetTabsExist error:", e.message);
+  }
+}
+
+async function appendLoginToSheet({ timestamp, email, name, ip }) {
+  const sheets = getSheetsClient();
+  if (!sheets) return;
+  try {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEETS_ID,
+      range: "Logins!A:D",
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [[timestamp, email, name || "", ip || ""]] }
+    });
+  } catch (e) {
+    console.error("[Sheets] Login log error:", e.message);
   }
 }
 
@@ -365,7 +413,7 @@ async function fetchFreshData() {
     amendmentSourceOptions,
     leadSourceOptions,
     stageLabels,
-    komalExclusionIds: Array.from(KOMAL_EXCLUSION_IDS)
+    dealExclusions: DRAFTER_EXCLUSIONS
   };
 }
 
@@ -428,7 +476,17 @@ app.get("/auth/google/callback",
     if (!AUTH_ENABLED) return res.redirect("/");
     passport.authenticate("google", { failureRedirect: "/auth/denied" })(req, res, next);
   },
-  (req, res) => { res.redirect("/"); }
+  (req, res) => {
+    if (req.user && req.user.email) {
+      appendLoginToSheet({
+        timestamp: new Date().toISOString(),
+        email: req.user.email,
+        name: req.user.name,
+        ip: req.ip || (req.connection && req.connection.remoteAddress) || ""
+      }).catch(e => console.error("[Sheets] Login append failed:", e.message));
+    }
+    res.redirect("/");
+  }
 );
 
 app.get("/auth/denied", (req, res) => {
@@ -762,7 +820,7 @@ app.listen(PORT, () => {
   console.log(`Dashboard server running on port ${PORT}`);
   if (SHEETS_ENABLED) {
     console.log("[Sheets] Targets persistence enabled (spreadsheet: " + SHEETS_ID + ")");
-    ensureTargetTabsExist();
+    ensureSheetTabsExist();
   } else {
     console.log("[Sheets] Targets persistence DISABLED — set GOOGLE_SHEETS_ID and GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON to enable");
   }
