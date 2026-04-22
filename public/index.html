@@ -861,13 +861,18 @@
             <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
             <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
             <Tooltip content={<DarkTooltip/>}/>
-            <Legend verticalAlign="top" height={28} wrapperStyle={{color:C.text,fontSize:12}}/>
+            <Legend verticalAlign="top" height={28} wrapperStyle={{color:C.text,fontSize:12}}
+              payload={[
+                {value:"Completed (target met)",type:"square",color:C.green},
+                {value:"Completed (below target)",type:"square",color:C.red},
+                {value:"Backlog",type:"square",color:"rgba(243,156,18,0.7)"}
+              ]}/>
             <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
-            <Bar dataKey="completed" name="Completed" radius={[0,6,6,0]} barSize={18}>
+            <Bar dataKey="completed" name="Completed" radius={[0,6,6,0]} barSize={18} fill={C.red}>
               <LabelList content={<CompletedLabel/>}/>
               {data.map((entry,i)=>(<Cell key={i} fill={entry.met?C.green:C.red}/>))}
             </Bar>
-            <Bar dataKey="backlog" name="Backlog" radius={[0,6,6,0]} barSize={18} fill="rgba(243,156,18,0.5)">
+            <Bar dataKey="backlog" name="Backlog" radius={[0,6,6,0]} barSize={18} fill="rgba(243,156,18,0.7)">
               <LabelList content={<BacklogLabel/>}/>
             </Bar>
           </BarChart>
