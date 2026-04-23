@@ -20,6 +20,13 @@ const ALLOWED_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN || "octopuslegacy.com";
 const CALLBACK_URL = process.env.CALLBACK_URL || "/auth/google/callback";
 const AUTH_ENABLED = !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 
+// Admin allowlist (comma-separated emails in ADMIN_EMAILS env var).
+// If unset, admin endpoints are blocked for everyone (safer default).
+const ADMIN_EMAILS = new Set(
+  (process.env.ADMIN_EMAILS || "")
+    .split(",").map(e => e.trim().toLowerCase()).filter(Boolean)
+);
+
 const PROPERTIES = [
   "hs_v2_date_entered_1223620771", "hs_v2_date_exited_1223620771",
   "hs_v2_date_entered_1223620775", "hs_v2_date_entered_1223620777",
@@ -529,6 +536,27 @@ function requireAuth(req, res, next) {
   return res.redirect("/auth/google");
 }
 
+function requireAdmin(req, res, next) {
+  const email = (req.user && req.user.email || "").toLowerCase();
+  if (!email || !ADMIN_EMAILS.has(email)) {
+    if (req.path.startsWith("/api/")) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+    return res.status(403).send(`
+      <!DOCTYPE html><html><head><title>Admin only</title>
+      <style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1a1a1a;color:#e0e0e0;}
+      .box{text-align:center;padding:40px;border:1px solid #333;border-radius:12px;background:#242424;max-width:400px;}
+      h1{color:#E74C3C;font-size:20px;margin-bottom:16px;}
+      a{color:#3498db;text-decoration:none;}</style></head>
+      <body><div class="box"><h1>Admin only</h1>
+      <p>This page is restricted. Your account (${email || "(not signed in)"}) is not on the admin list.</p>
+      <p style="margin-top:20px;"><a href="/">Back to dashboard</a></p>
+      </div></body></html>
+    `);
+  }
+  next();
+}
+
 // Serve static files — protected
 app.use(requireAuth, express.static(path.join(__dirname, "public")));
 
@@ -785,6 +813,32 @@ app.post("/api/targets", requireAuth, async (req, res) => {
     console.error("/api/targets POST error:", e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// ─── Admin: Login Activity ─────────────────────────────────────
+app.get("/api/logins", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const sheets = getSheetsClient();
+    if (!sheets) return res.status(503).json({ error: "Google Sheets not configured" });
+    const data = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEETS_ID,
+      range: "Logins!A2:D"
+    });
+    const logins = (data.data.values || []).map(r => ({
+      timestamp: r[0] || "",
+      email: r[1] || "",
+      name: r[2] || "",
+      ip: r[3] || ""
+    }));
+    res.json({ logins });
+  } catch (e) {
+    console.error("/api/logins error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/admin/logins", requireAuth, requireAdmin, (req, res) => {
+  res.sendFile(path.join(__dirname, "admin", "logins.html"));
 });
 
 // Health check
