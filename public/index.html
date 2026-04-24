@@ -128,6 +128,28 @@
       return null;
     }
 
+    // ─── productivity status thresholds ────────────────────────
+    // met:   count ≥ target                         → green
+    // close: target × (1 − 12.5%) ≤ count < target  → amber
+    // below: count < target × (1 − 12.5%)           → red
+    const CLOSE_MARGIN = 10 / 80; // 12.5%
+    function perfState(count, target){
+      if (!target || target <= 0) return "below";
+      if (count >= target) return "met";
+      if (count >= target * (1 - CLOSE_MARGIN)) return "close";
+      return "below";
+    }
+    function perfColor(state){
+      if (state === "met") return "#27AE60";
+      if (state === "close") return "#F39C12";
+      return "#E74C3C";
+    }
+    function perfLabel(state){
+      if (state === "met") return "\u2713 Met";
+      if (state === "close") return "\u26A0 Close";
+      return "\u2717 Below";
+    }
+
     // ─── defaults ───────────────────────────────────────────────
     const DEFAULT_STANDARD_TARGET=80;
     const DEFAULT_OVERRIDES={"Komal Singh":60,"Liam Tuapola":60,"Gurleen Sagoo":30,"Erin James":48};
@@ -387,6 +409,7 @@
       chart4:'Query rate per period. Denominator: deals that exited "Required \u2014 Proof Reading" in the period. Numerator (methodology split at 22/04/2026): before 22/04 \u2014 deals in the denominator that have a drafting query reason populated (cohort rate). From 22/04 \u2014 deals whose workflow-stamped "Date Drafting Query" falls in the period (so the bucket reflects when the query was actually placed, not when the deal finished proofreading). Rate capped at 100%. SLA: green \u22645%, amber \u226410%, red >10%.',
       chart5:'Drafts proofread (completed) and backlog per proofreader for the selected period. Completed: deals that exited "Required \u2014 Proof Reading" in the period. Backlog: deals that entered but have not yet exited by end of the period. Grouped by Proof Reading Owner.',
       chart6:'Bars: total standard drafts completed per period. Line: average turnaround in calendar days (first entry into "Drafting Instructions (Estate Planning)" \u2192 completion). Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". SLA: 10d internal, 28d customer.',
+      chart6b:'Average drafts per drafter per period. Two series on separate Y-axes. Standard (blue, left axis): total standard drafts from qualifying drafters \u00f7 count of qualifying drafters. A drafter qualifies if they completed more than a threshold scaling with granularity (>32/week, >6.4/day, >139/month). Urgent (amber, right axis): total urgent drafts \u00f7 count of drafters who did \u22651 urgent in the period (no minimum threshold).',
       chart7:'Query rate per drafter per period. Denominator: deals that exited "Required \u2014 Proof Reading" in the period, attributed to the drafter. Numerator (methodology split at 22/04/2026): before 22/04 \u2014 deals in the denominator with a drafting query reason populated. From 22/04 \u2014 deals whose workflow-stamped "Date Drafting Query" falls in the period. Rate capped at 100%. Green \u22645%, amber \u226410%, red >10%.',
       chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour. Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
       chart13:'Count of deals entering "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
@@ -414,6 +437,7 @@
       c4:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
       c5:[{key:"name",label:"Proofreader"},{key:"count",label:"Completed"},{key:"backlog",label:"Backlog"},{key:"target",label:"Target"},{key:"status",label:"Status"}],
       c6:[{key:"label",label:"Period"},{key:"drafted",label:"Drafted"},{key:"avgTurnaround",label:"Avg Days"}],
+      c6b:[{key:"label",label:"Period"},{key:"stdAvg",label:"Std avg"},{key:"stdDrafters",label:"Std drafters"},{key:"urgAvg",label:"Urg avg"},{key:"urgDrafters",label:"Urg drafters"}],
       c7:[{key:"label",label:"Period"}],
       c8:[{key:"label",label:"Period"},{key:"drafted",label:"Urgents"},{key:"avgBizDays",label:"Avg Biz Days"}],
       c9:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Biz Days"},{key:"count",label:"Deals"}],
@@ -429,6 +453,7 @@
       c4:[{key:"queryDate",label:"First Query Date"},{key:"reasons",label:"Reasons"}],
       c5:[{key:"date",label:"Completed"}],
       c6:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"days",label:"Days"}],
+      c6b:[{key:"drafter",label:"Drafter"},{key:"type",label:"Type"},{key:"count",label:"Drafts"}],
       c7:[{key:"drafter",label:"Drafter"},{key:"queried",label:"Queried"},{key:"queryDate",label:"First Query Date"},{key:"reasons",label:"Query Reasons"}],
       c8:[{key:"start",label:"Urgent From"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"},{key:"reason",label:"Reason"}],
       c9:[{key:"start",label:"Urgent From"},{key:"exit",label:"Completed"},{key:"bizDays",label:"Biz Days"}],
@@ -543,7 +568,7 @@
           .map(([name,count])=>{
             const wt=overrides[name]??standardTarget;
             const target=Math.round(wt*mult);
-            return{name,count,target,met:count>=target,isCustom:name in overrides};
+            return{name,count,target,state:perfState(count,target),isCustom:name in overrides};
           }).sort((a,b)=>b.count-a.count);
       },[deals,gran,bucket,standardTarget,overrides]);
 
@@ -561,7 +586,7 @@
             <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
             <Bar dataKey="count" radius={[0,6,6,0]} barSize={22}>
               <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
-              {data.map((entry,i)=>(<Cell key={i} fill={entry.met?C.green:C.red}/>))}
+              {data.map((entry,i)=>(<Cell key={i} fill={perfColor(entry.state)}/>))}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -583,7 +608,7 @@
           .map(([name,count])=>{
             const wt=overrides[name]??standardTarget;
             const target=Math.round(wt*mult);
-            return{name,count,target,met:count>=target,isCustom:name in overrides};
+            return{name,count,target,state:perfState(count,target),isCustom:name in overrides};
           }).sort((a,b)=>b.count-a.count);
       },[deals,gran,bucket,standardTarget,overrides]);
 
@@ -601,7 +626,7 @@
             <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
             <Bar dataKey="count" radius={[0,6,6,0]} barSize={22}>
               <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
-              {data.map((entry,i)=>(<Cell key={i} fill={entry.met?C.green:C.red}/>))}
+              {data.map((entry,i)=>(<Cell key={i} fill={perfColor(entry.state)}/>))}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -837,7 +862,7 @@
           const back=backlog[name]||0;
           const wt=proofOverrides[name]??proofTarget;
           const target=Math.round(wt*mult);
-          return{name,completed:comp,backlog:back,target,met:comp>=target};
+          return{name,completed:comp,backlog:back,target,state:perfState(comp,target)};
         }).filter(d=>d.completed>=1||d.backlog>=1).sort((a,b)=>(b.completed+b.backlog)-(a.completed+a.backlog));
       },[deals,gran,bucket,proofTarget,proofOverrides]);
 
@@ -863,14 +888,15 @@
             <Tooltip content={<DarkTooltip/>}/>
             <Legend verticalAlign="top" height={28} wrapperStyle={{color:C.text,fontSize:12}}
               payload={[
-                {value:"Completed (target met)",type:"square",color:C.green},
-                {value:"Completed (below target)",type:"square",color:C.red},
+                {value:"Met",type:"square",color:C.green},
+                {value:"Close (within 12.5%)",type:"square",color:C.amber},
+                {value:"Below",type:"square",color:C.red},
                 {value:"Backlog",type:"square",color:"rgba(243,156,18,0.7)"}
               ]}/>
             <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
             <Bar dataKey="completed" name="Completed" radius={[0,6,6,0]} barSize={18} fill={C.red}>
               <LabelList content={<CompletedLabel/>}/>
-              {data.map((entry,i)=>(<Cell key={i} fill={entry.met?C.green:C.red}/>))}
+              {data.map((entry,i)=>(<Cell key={i} fill={perfColor(entry.state)}/>))}
             </Bar>
             <Bar dataKey="backlog" name="Backlog" radius={[0,6,6,0]} barSize={18} fill="rgba(243,156,18,0.7)">
               <LabelList content={<BacklogLabel/>}/>
@@ -932,6 +958,81 @@
               <LabelList dataKey="avgTurnaround" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}d`:""} offset={12}/>
             </Line>
           </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 6b: Avg Productivity per Drafter (Standard + Urgent) ──
+    // Standard bar = total standard drafts from qualifying drafters ÷ count(qualifying).
+    //   A drafter qualifies if they completed > 32 × mult drafts that period (DoD 1/5, WoW 1, MoM 4.33).
+    // Urgent bar = total urgent drafts ÷ count(active drafters). No threshold — any drafter
+    //   who did ≥ 1 urgent in the period counts. Rendered on a separate right-hand Y-axis
+    //   because urgent volumes are much smaller than standard.
+    function Chart6b({standardDeals,urgentDeals,gran}){
+      const data=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
+        const threshold=32*mult;
+
+        const aggregate=(source)=>{
+          const byBucket={};
+          source.forEach(d=>{
+            if(!d.exitedDrafting)return;
+            if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+            const b=dateToBucket(d.exitedDrafting,gran);
+            if(!byBucket[b])byBucket[b]={};
+            byBucket[b][d.drafterName]=(byBucket[b][d.drafterName]||0)+1;
+          });
+          return byBucket;
+        };
+        const stdBB=aggregate(standardDeals);
+        const urgBB=aggregate(urgentDeals);
+
+        return uniq.map(bucket=>{
+          const std=stdBB[bucket]||{};
+          const stdQual=Object.values(std).filter(c=>c>threshold);
+          const stdSum=stdQual.reduce((a,b)=>a+b,0);
+          const stdAvg=stdQual.length?parseFloat((stdSum/stdQual.length).toFixed(1)):null;
+          const urg=urgBB[bucket]||{};
+          const urgCounts=Object.values(urg);
+          const urgSum=urgCounts.reduce((a,b)=>a+b,0);
+          const urgAvg=urgCounts.length?parseFloat((urgSum/urgCounts.length).toFixed(1)):null;
+          return{
+            bucket,label:bucketLabel(bucket,gran),
+            stdAvg,stdDrafters:stdQual.length,stdTotal:stdSum,
+            urgAvg,urgDrafters:urgCounts.length,urgTotal:urgSum
+          };
+        });
+      },[standardDeals,urgentDeals,gran]);
+
+      return(
+        <ResponsiveContainer width="100%" height={340}>
+          <BarChart data={data} margin={{top:30,right:40,left:10,bottom:10}} barGap={4}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Standard / drafter",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Urgent / drafter",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
+            <Bar yAxisId="left" dataKey="stdAvg" name="Standard (avg / qualifying drafter)" fill={C.blueFaded} stroke={C.blue} strokeWidth={0.5} barSize={18} radius={[4,4,0,0]}>
+              <LabelList dataKey="stdAvg" position="top" fill={C.blue} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}`:""}/>
+            </Bar>
+            <Bar yAxisId="right" dataKey="urgAvg" name="Urgent (avg / active drafter)" fill="rgba(243,156,18,0.35)" stroke={C.amber} strokeWidth={0.5} barSize={18} radius={[4,4,0,0]}>
+              <LabelList dataKey="urgAvg" position="top" fill={C.amber} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}`:""}/>
+            </Bar>
+          </BarChart>
         </ResponsiveContainer>
       );
     }
@@ -2055,7 +2156,7 @@
       const c1Table=useMemo(()=>{
         const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;const groups={};
         standardDeals.forEach(d=>{if(!d.exitedDrafting||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
-        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((overrides[name]??standardTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:arr.length>=t?"\u2713 Met":"\u2717 Below"};}).sort((a,b)=>b.count-a.count);
+        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((overrides[name]??standardTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:perfLabel(perfState(arr.length,t))};}).sort((a,b)=>b.count-a.count);
         const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedDrafting)}));});
         return{rows,detailMap};
       },[standardDeals,gran,selectedBucket,standardTarget,overrides]);
@@ -2064,7 +2165,7 @@
       const c1bTable=useMemo(()=>{
         const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;const groups={};
         standardDeals.forEach(d=>{if(!d.exitedDraftingOld||dateToBucket(d.exitedDraftingOld,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
-        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((overrides[name]??standardTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:arr.length>=t?"\u2713 Met":"\u2717 Below"};}).sort((a,b)=>b.count-a.count);
+        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((overrides[name]??standardTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:perfLabel(perfState(arr.length,t))};}).sort((a,b)=>b.count-a.count);
         const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedDraftingOld)}));});
         return{rows,detailMap};
       },[standardDeals,gran,selectedBucket,standardTarget,overrides]);
@@ -2129,7 +2230,7 @@
           }
         });
         const allNames=new Set([...Object.keys(groups),...Object.keys(backlogCounts)]);
-        const rows=Array.from(allNames).map(name=>{const arr=groups[name]||[];const t=Math.round((proofOverrides[name]??proofTarget)*mult);return{_key:name,name,count:arr.length,backlog:backlogCounts[name]||0,target:t,status:arr.length>=t?"\u2713 Met":"\u2717 Below"};}).sort((a,b)=>b.count-a.count);
+        const rows=Array.from(allNames).map(name=>{const arr=groups[name]||[];const t=Math.round((proofOverrides[name]??proofTarget)*mult);return{_key:name,name,count:arr.length,backlog:backlogCounts[name]||0,target:t,status:perfLabel(perfState(arr.length,t))};}).sort((a,b)=>b.count-a.count);
         const detailMap={};rows.forEach(r=>{detailMap[r._key]=(groups[r._key]||[]).map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedProofreading)}));});
         return{rows,detailMap};
       },[standardDeals,gran,selectedBucket,proofTarget,proofOverrides]);
@@ -2144,6 +2245,47 @@
         const detailMap={};uniq.forEach(b=>{detailMap[b]=(comp[b]||[]).map(d=>({id:d.id,dealname:d.dealname,start:fmtDate(d.draftingStart),exit:fmtDate(d.exitedDrafting),days:d.draftingTurnaroundDays!=null?d.draftingTurnaroundDays.toFixed(0)+"d":"—"}));});
         return{rows,detailMap};
       },[standardDeals,gran]);
+
+      const c6bTable=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
+        const threshold=32*mult;
+        const aggregate=src=>{
+          const out={};
+          src.forEach(d=>{
+            if(!d.exitedDrafting)return;
+            if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+            const b=dateToBucket(d.exitedDrafting,gran);
+            if(!out[b])out[b]={};
+            out[b][d.drafterName]=(out[b][d.drafterName]||0)+1;
+          });
+          return out;
+        };
+        const stdBB=aggregate(standardDeals);
+        const urgBB=aggregate(urgentDeals);
+        const rows=uniq.map(bucket=>{
+          const std=stdBB[bucket]||{};
+          const stdQual=Object.entries(std).filter(([,c])=>c>threshold);
+          const stdSum=stdQual.reduce((a,[,c])=>a+c,0);
+          const stdAvg=stdQual.length?parseFloat((stdSum/stdQual.length).toFixed(1)):null;
+          const urg=urgBB[bucket]||{};
+          const urgCounts=Object.values(urg);
+          const urgSum=urgCounts.reduce((a,b)=>a+b,0);
+          const urgAvg=urgCounts.length?parseFloat((urgSum/urgCounts.length).toFixed(1)):null;
+          return{_key:bucket,label:bucketLabel(bucket,gran),stdAvg:stdAvg!=null?stdAvg:"—",stdDrafters:stdQual.length,urgAvg:urgAvg!=null?urgAvg:"—",urgDrafters:urgCounts.length};
+        });
+        const detailMap={};uniq.forEach(b=>{
+          const std=stdBB[b]||{};
+          const urg=urgBB[b]||{};
+          const rowsB=[];
+          Object.entries(std).filter(([,c])=>c>threshold).sort((a,b)=>b[1]-a[1]).forEach(([name,count])=>rowsB.push({id:`${b}-std-${name}`,dealname:name,drafter:name,type:"Standard",count}));
+          Object.entries(urg).sort((a,b)=>b[1]-a[1]).forEach(([name,count])=>rowsB.push({id:`${b}-urg-${name}`,dealname:name,drafter:name,type:"Urgent",count}));
+          detailMap[b]=rowsB;
+        });
+        return{rows,detailMap};
+      },[standardDeals,urgentDeals,gran]);
 
       const c7Table=useMemo(()=>{
         const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
@@ -2372,6 +2514,13 @@
             </ChartCard>
           </div>
 
+          {/* Row 2a: Avg Productivity per Drafter (Standard + Urgent) */}
+          <div style={{padding:"0 24px 16px"}}>
+            <ChartCard chartId="chart-6b" title={"Avg Productivity per Drafter (Standard & Urgent)"} infoText={INFO.chart6b} columns={T_COLS.c6b} rows={c6bTable.rows} detailMap={c6bTable.detailMap} detailCols={T_DCOLS.c6b} csvName={`avg_productivity_${gran}.csv`}>
+              <Chart6b standardDeals={standardDeals} urgentDeals={urgentDeals} gran={gran}/>
+            </ChartCard>
+          </div>
+
           {/* Row 2b: Drafting Pipeline Flow */}
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-12" title={"Drafting \u2014 Pipeline Flow (Entered / Exited / Backlog)"} infoText={INFO.chart12} columns={T_COLS.c12} rows={c12Table.rows} detailMap={c12Table.detailMap} detailCols={T_DCOLS.c12} csvName={`drafting_pipeline_flow_${gran}.csv`}>
@@ -2396,6 +2545,7 @@
               <Chart9 deals={urgentDeals} gran={gran} bucket={selectedBucket}/>
             </ChartCard>
           </div>
+
 
           {/* ── AMENDMENTS ── */}
           <div className="dash-row" style={S.row}>
