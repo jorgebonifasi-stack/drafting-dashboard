@@ -778,7 +778,7 @@
             }
           }
           // Post-cutover numerator (anchored on date_drafting_query)
-          if(d.firstQueryDate&&!d.queryExcluded){
+          if(d.firstQueryDate&&d.queryReasons.length>0&&!d.queryExcluded){
             const b=dateToBucket(d.firstQueryDate,gran);
             if(isNewLogic(b)){
               if(!periodData[b])periodData[b]={total:0,queried:0};
@@ -1077,7 +1077,7 @@
             }
           }
           // Post-cutover numerator (anchored on date_drafting_query)
-          if(d.firstQueryDate&&!d.queryExcluded){
+          if(d.firstQueryDate&&d.queryReasons.length>0&&!d.queryExcluded){
             const b=dateToBucket(d.firstQueryDate,gran);
             if(isNewLogic(b)){
               const key=`${b}|${d.drafterName}`;
@@ -2205,7 +2205,7 @@
             totals[b]=(totals[b]||0)+1;
             if(!isNewLogic(b)&&d.queryReasons.length&&!d.queryExcluded){(qd[b]=qd[b]||[]).push(d);}
           }
-          if(d.firstQueryDate&&!d.queryExcluded){
+          if(d.firstQueryDate&&d.queryReasons.length>0&&!d.queryExcluded){
             const b=dateToBucket(d.firstQueryDate,gran);
             if(isNewLogic(b)){(qd[b]=qd[b]||[]).push(d);}
           }
@@ -2304,7 +2304,7 @@
             byPD[key].allDeals.push(d);
             if(!isNewLogic(b)&&d.queryReasons.length&&!d.queryExcluded){byPD[key].queried++;byPD[key].queriedDeals.push(d);}
           }
-          if(d.firstQueryDate&&!d.queryExcluded){
+          if(d.firstQueryDate&&d.queryReasons.length>0&&!d.queryExcluded){
             const b=dateToBucket(d.firstQueryDate,gran);
             if(isNewLogic(b)){
               const key=`${b}|${d.drafterName}`;
@@ -2324,7 +2324,7 @@
           const allDealsForPeriod=[];
           activeDrafters.forEach(name=>{const pd=byPD[`${b}|${name}`];if(pd)pd.allDeals.forEach(d=>{
             const bucketIsNew=isNewLogic(b);
-            const isQueried=bucketIsNew?!!d.firstQueryDate&&dateToBucket(d.firstQueryDate,gran)===b&&!d.queryExcluded:d.queryReasons.length>0&&!d.queryExcluded;
+            const isQueried=bucketIsNew?!!d.firstQueryDate&&dateToBucket(d.firstQueryDate,gran)===b&&d.queryReasons.length>0&&!d.queryExcluded:d.queryReasons.length>0&&!d.queryExcluded;
             allDealsForPeriod.push({id:d.id,dealname:d.dealname,drafter:name,queried:isQueried?"Yes":"No",queryDate:fmtDate(d.firstQueryDate),reasons:d.queryExcluded?`(Excluded — ${d.queryExcludedOriginalDrafter||"original drafter deactivated"})`:d.queryReasons.join(", ")||"—"});
           });});
           // Sort: queried deals first, then by drafter name
