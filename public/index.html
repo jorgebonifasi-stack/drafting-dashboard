@@ -811,7 +811,7 @@
           <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
             <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
             <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
-            <YAxis yAxisId="left" domain={[0,max=>Math.min(Math.max(max*1.2,15),100)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} tickFormatter={v=>`${v}%`} label={{value:"Query Rate %",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="left" domain={[0,100]} ticks={[0,5,10,20,50,100]} allowDataOverflow={false} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} tickFormatter={v=>`${v}%`} label={{value:"Query Rate %",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
             <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Reason Count",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
             <Tooltip content={<StackedTooltip/>}/>
             <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:10,color:C.text,paddingBottom:4}}/>
