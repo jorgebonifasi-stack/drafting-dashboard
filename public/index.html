@@ -2001,6 +2001,105 @@
       );
     }
 
+    // ─── Standard SLA Table (28 calendar days from draftingStart) ──
+    function StandardSLATable({deals,stageLabels}){
+      const SLA_DAYS=28;
+      const normStage=s=>(s||"").toLowerCase().replace(/[\u2013\u2014-]+/g," ").replace(/\s+/g," ").trim();
+      const ALLOWED_STAGES=new Set([
+        "drafting instructions",
+        "drafting query",
+        "required proof reading",
+        "approved proof reading"
+      ]);
+      const rows=useMemo(()=>{
+        const today=new Date();today.setHours(0,0,0,0);
+        const out=[];
+        deals.forEach(d=>{
+          if(!d.draftingStart)return;
+          const stageLabel=stageLabels[d.dealstage]||d.dealstage||"";
+          if(!ALLOWED_STAGES.has(normStage(stageLabel)))return;
+          const start=new Date(d.draftingStart);start.setHours(0,0,0,0);
+          const deadline=new Date(start);deadline.setDate(deadline.getDate()+SLA_DAYS);
+          const calRemaining=Math.round((deadline-today)/86400000);
+          out.push({
+            id:d.id,
+            dealname:d.dealname,
+            drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
+            leadSources:(d.leadSources||[]).join(", ")||"—",
+            draftingStart:start,
+            deadline,
+            calRemaining,
+            stage:stageLabel||"—"
+          });
+        });
+        out.sort((a,b)=>(a.calRemaining??1e9)-(b.calRemaining??1e9));
+        return out;
+      },[deals,stageLabels]);
+
+      const rowColor=n=>n==null?C.text:n<0?C.red:n<=3?C.amber:n<=7?"#F1C40F":C.green;
+
+      const exportCSV=useCallback(()=>{
+        const hdr=["Deal ID","Deal Name","Drafter","Lead source(s)","Drafting Started","SLA Deadline","Calendar Days Remaining","Current Stage","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,r.leadSources,fmtDate(r.draftingStart),fmtDate(r.deadline),r.calRemaining==null?"":r.calRemaining,r.stage,HS_BASE+r.id])];
+        downloadCSV(`standard_sla_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows]);
+
+      return(
+        <div style={{padding:"16px 24px"}}>
+          <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
+              <div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA \u2014 Deals Nearing 28-day Deadline</div>
+                <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
+                  SLA = 28 calendar days from first entry into Drafting Instructions. All deals included. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <span style={{fontSize:12,color:C.text,opacity:0.7}}>{rows.length} deal{rows.length===1?"":"s"}</span>
+                <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"\u2B07"} CSV</button>
+              </div>
+            </div>
+            {rows.length===0?(
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No open deals with a drafting start date.</div>
+            ):(
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                  <thead>
+                    <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Lead source(s)</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Drafting Started</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Cal Days Remaining</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Current Stage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r=>(
+                      <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                        <td style={{padding:"10px 12px"}}>
+                          <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                        </td>
+                        <td style={{padding:"10px 12px"}}>{r.drafter}</td>
+                        <td style={{padding:"10px 12px"}}>{r.leadSources}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.draftingStart)}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
+                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calRemaining)}}>
+                          {r.calRemaining==null?"—":r.calRemaining<0?`${r.calRemaining}d (breached)`:`${r.calRemaining}d`}
+                        </td>
+                        <td style={{padding:"10px 12px"}}>{r.stage}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     function Dashboard(){
       const[loading,setLoading]=useState(true);
       const[error,setError]=useState(null);
@@ -2451,7 +2550,8 @@
               <h1 style={S.title}>Estate Planning &mdash; Drafting &amp; Proofreading</h1>
               <div style={{display:"flex",gap:4,padding:2,background:C.surface,borderRadius:8,border:`1px solid ${C.border}`}}>
                 <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="graphs"?C.accent:"transparent",color:view==="graphs"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("graphs")}>Graphs</button>
-                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="sla"?C.accent:"transparent",color:view==="sla"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("sla")}>Macmillan SLA</button>
+                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="sla"?C.accent:"transparent",color:view==="sla"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("sla")}>SLA</button>
+                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="macmillan-sla"?C.accent:"transparent",color:view==="macmillan-sla"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("macmillan-sla")}>Macmillan SLA</button>
               </div>
             </div>
             <div style={S.controls}>
@@ -2490,7 +2590,8 @@
             <div style={{margin:"16px 24px",padding:"12px 16px",background:"rgba(231,76,60,0.15)",border:`1px solid ${C.red}`,borderRadius:8,color:C.red,fontSize:13}}>{error}</div>
           )}
 
-          {view==="sla"&&<MacmillanSLATable deals={deals} stageLabels={stageLabels}/>}
+          {view==="sla"&&<StandardSLATable deals={deals} stageLabels={stageLabels}/>}
+          {view==="macmillan-sla"&&<MacmillanSLATable deals={deals} stageLabels={stageLabels}/>}
 
           {view==="graphs"&&<>
           {/* Row 1a: Drafts Completed — New vs Old metric */}
