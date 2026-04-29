@@ -226,6 +226,7 @@
         // Old metric: purely based on Date exited "Drafting Instructions" (for comparison chart)
         const exitedDraftingOld=anchorEntered?nativeExitedDrafting:null;
         const enteredAppointmentOutcome=parseHSDate(p.hs_v2_date_entered_1223751329);
+        const exitedAppointmentOutcome=parseHSDate(p.hs_v2_date_exited_1223751329);
         const enteredProofreading=parseHSDate(p.hs_v2_date_entered_1223620773);
         const exitedProofreading=parseHSDate(p.hs_v2_date_exited_1223620773);
         const enteredDraftingQuery=parseHSDate(p.hs_v2_date_entered_1223620772);
@@ -271,7 +272,7 @@
           queryExcluded:(()=>{const orig=dealExclusions&&dealExclusions[String(d.id)];return !!(orig&&drafterName.toLowerCase()!==String(orig).toLowerCase());})(),
           queryExcludedOriginalDrafter:(dealExclusions&&dealExclusions[String(d.id)])||null,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
-          enteredAppointmentOutcome,
+          enteredAppointmentOutcome,exitedAppointmentOutcome,
           origDraftsWithCustomer,origReadyForPrinting,enteredConsultantQuery,exitedApproved,
           enteredAmendment,exitedAmendment,amendmentSource,
           amendmentTurnaroundDays:enteredAmendment&&exitedAmendment?(exitedAmendment-enteredAmendment)/86400000:null,
@@ -412,7 +413,7 @@
       chart6b:'Average drafts per drafter per period. Two series on separate Y-axes. Standard (blue, left axis): total standard drafts from qualifying drafters \u00f7 count of qualifying drafters. A drafter qualifies if they completed more than a threshold scaling with granularity (>32/week, >6.4/day, >139/month). Urgent (amber, right axis): total urgent drafts \u00f7 count of drafters who did \u22651 urgent in the period (no minimum threshold).',
       chart7:'Query rate per drafter per period. Denominator: deals that exited "Required \u2014 Proof Reading" in the period, attributed to the drafter. Numerator (methodology split at 22/04/2026): before 22/04 \u2014 deals in the denominator with a drafting query reason populated. From 22/04 \u2014 deals whose workflow-stamped "Date Drafting Query" falls in the period. Rate capped at 100%. Green \u22645%, amber \u226410%, red >10%.',
       chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour. Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
-      chart13:'Count of deals entering "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
+      chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart12:'Drafting pipeline flow over time. Entered: uses original (workflow-stamped) entry date for stability. Exited & Backlog: uses native HubSpot dates (latest entry/exit) for accuracy. Current period backlog uses live dealstage count. Includes all deals (standard + urgent).',
       chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day.',
       chart9:'Average turnaround in business days (Mon\u2013Fri) for urgent drafts completed in the selected period, grouped by Drafting Owner. From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day. Green = met, red = breached.',
@@ -1597,7 +1598,7 @@
       );
     }
 
-    // ─── Chart 13: Appointment Outcome — Deals Entered ────────
+    // ─── Chart 13: Appointment Outcome — Deals Exited ─────────
     function Chart13({deals,gran}){
       const data=useMemo(()=>{
         const now=new Date();
@@ -1615,8 +1616,8 @@
 
         const counts={};
         deals.forEach(d=>{
-          if(!d.enteredAppointmentOutcome)return;
-          const b=dateToBucket(d.enteredAppointmentOutcome,gran);
+          if(!d.exitedAppointmentOutcome)return;
+          const b=dateToBucket(d.exitedAppointmentOutcome,gran);
           counts[b]=(counts[b]||0)+1;
         });
 
@@ -1640,7 +1641,7 @@
             <YAxis tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} domain={[0,Math.ceil(maxVal*1.15)]}/>
             <Tooltip content={<DarkTooltip/>}/>
             <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
-            <Bar dataKey="count" name="Deals Entered" fill="rgba(52,152,219,0.45)" stroke="#3498db" strokeWidth={0.5} barSize={30} radius={[4,4,0,0]}>
+            <Bar dataKey="count" name="Deals Exited" fill="rgba(52,152,219,0.45)" stroke="#3498db" strokeWidth={0.5} barSize={30} radius={[4,4,0,0]}>
               <LabelList dataKey="count" position="top" fill={C.text} fontSize={11} fontWeight={600}/>
             </Bar>
             <Line type="monotone" dataKey="ma" name="3-Period Avg" stroke={C.amber} strokeWidth={2.5} dot={{fill:C.amber,r:4}} activeDot={{r:6}} connectNulls/>
@@ -2650,9 +2651,9 @@
         for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
         const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
         const byB={};
-        deals.forEach(d=>{if(!d.enteredAppointmentOutcome)return;const b=dateToBucket(d.enteredAppointmentOutcome,gran);(byB[b]=byB[b]||[]).push(d);});
+        deals.forEach(d=>{if(!d.exitedAppointmentOutcome)return;const b=dateToBucket(d.exitedAppointmentOutcome,gran);(byB[b]=byB[b]||[]).push(d);});
         const rows=uniq.map(bucket=>({_key:bucket,label:bucketLabel(bucket,gran),count:(byB[bucket]||[]).length}));
-        const detailMap={};uniq.forEach(b=>{detailMap[b]=(byB[b]||[]).map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.enteredAppointmentOutcome)}));});
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(byB[b]||[]).map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedAppointmentOutcome)}));});
         return{rows,detailMap};
       },[deals,gran]);
 
@@ -2798,7 +2799,7 @@
 
           {/* ── APPOINTMENT OUTCOME ── */}
           <div className="dash-row" style={S.row}>
-            <ChartCard chartId="chart-13" title={"Appointment Outcome \u2014 Deals Entered"} infoText={INFO.chart13} columns={T_COLS.c13} rows={c13Table.rows} detailMap={c13Table.detailMap} detailCols={T_DCOLS.c13} csvName={`appointment_outcome_${gran}.csv`}>
+            <ChartCard chartId="chart-13" title={"Appointment Outcome \u2014 Deals Exited"} infoText={INFO.chart13} columns={T_COLS.c13} rows={c13Table.rows} detailMap={c13Table.detailMap} detailCols={T_DCOLS.c13} csvName={`appointment_outcome_${gran}.csv`}>
               <Chart13 deals={deals} gran={gran}/>
             </ChartCard>
           </div>

@@ -47,7 +47,7 @@ const PROPERTIES = [
   "amendment_source",
   "date_marked_urgent",
   "first_date_exited_drafting_instructions",
-  "hs_v2_date_entered_1223751329",
+  "hs_v2_date_entered_1223751329", "hs_v2_date_exited_1223751329",
   "hs_v2_date_entered_1223751330",
   "ep_lead_source", "date_of_appointment",
   "date_drafting_query"
