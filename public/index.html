@@ -1902,6 +1902,67 @@
     }
 
     // ─── Main Dashboard ─────────────────────────────────────────
+    // ─── Shared SLA backlog chart (used by both SLA tables) ────
+    // Rows are already filtered (drafter, etc.). For each row we bucket by
+    // its anchor date and tally counts split by SLA status.
+    function SLABacklogChart({rows,getBucketDate,getStatus,dateLabel}){
+      const[gran,setGran]=useState("WoW");
+      const data=useMemo(()=>{
+        const counts={};
+        rows.forEach(r=>{
+          const dt=getBucketDate(r);
+          if(!dt)return;
+          const b=dateToBucket(dt,gran);
+          if(!counts[b])counts[b]={bucket:b,label:bucketLabel(b,gran),breached:0,close:0,warning:0,comfortable:0};
+          counts[b][getStatus(r)]++;
+        });
+        return Object.values(counts).sort((a,b)=>a.bucket.localeCompare(b.bucket));
+      },[rows,gran,getBucketDate,getStatus]);
+
+      return(
+        <div style={{padding:"16px 24px 0"}}>
+          <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:12}}>
+              <div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Drafting Backlog by {dateLabel}</div>
+                <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
+                  Current backlog grouped by {dateLabel.toLowerCase()}, stacked by SLA status. Reflects the drafter filter below.
+                </div>
+              </div>
+              <div style={{display:"flex",gap:6}}>
+                {["DoD","WoW"].map(g=>(
+                  <button key={g} style={S.toggle(gran===g)} onClick={()=>setGran(g)}>{g}</button>
+                ))}
+              </div>
+            </div>
+            {data.length===0?(
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No backlog data.</div>
+            ):(
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={data} margin={{top:10,right:20,left:0,bottom:10}}>
+                  <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+                  <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+                  <YAxis tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Deals",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+                  <Tooltip content={<StackedTooltip/>} cursor={{fill:"rgba(255,255,255,0.04)"}}/>
+                  <Legend verticalAlign="top" height={24} wrapperStyle={{color:C.text,fontSize:11}}
+                    payload={[
+                      {value:"Breached",type:"square",color:C.red},
+                      {value:"Close",type:"square",color:C.amber},
+                      {value:"Warning",type:"square",color:"#F1C40F"},
+                      {value:"Comfortable",type:"square",color:C.green}
+                    ]}/>
+                  <Bar dataKey="breached" name="Breached" stackId="status" fill={C.red} barSize={28}/>
+                  <Bar dataKey="close" name="Close" stackId="status" fill={C.amber} barSize={28}/>
+                  <Bar dataKey="warning" name="Warning" stackId="status" fill="#F1C40F" barSize={28}/>
+                  <Bar dataKey="comfortable" name="Comfortable" stackId="status" fill={C.green} barSize={28} radius={[4,4,0,0]}/>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     // ─── Macmillan SLA Table ───────────────────────────────────
     function MacmillanSLATable({deals,stageLabels}){
       const SLA_DAYS=20;
@@ -1963,7 +2024,12 @@
         downloadCSV(`macmillan_sla${suffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,drafterFilter]);
 
+      const getBucketDate=useCallback(r=>r.appointment,[]);
+      const getStatus=useCallback(r=>r.bizRemaining==null?"comfortable":r.bizRemaining<0?"breached":r.bizRemaining<=2?"close":r.bizRemaining<=5?"warning":"comfortable",[]);
+
       return(
+        <React.Fragment>
+        <SLABacklogChart rows={rows} getBucketDate={getBucketDate} getStatus={getStatus} dateLabel="Appointment Date"/>
         <div style={{padding:"16px 24px"}}>
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
@@ -2021,6 +2087,7 @@
             )}
           </div>
         </div>
+        </React.Fragment>
       );
     }
 
@@ -2082,7 +2149,12 @@
         downloadCSV(`standard_sla${suffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,drafterFilter]);
 
+      const getBucketDate=useCallback(r=>r.draftingStart,[]);
+      const getStatus=useCallback(r=>r.calRemaining==null?"comfortable":r.calRemaining<0?"breached":r.calRemaining<=3?"close":r.calRemaining<=7?"warning":"comfortable",[]);
+
       return(
+        <React.Fragment>
+        <SLABacklogChart rows={rows} getBucketDate={getBucketDate} getStatus={getStatus} dateLabel="Drafting Start"/>
         <div style={{padding:"16px 24px"}}>
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
@@ -2140,6 +2212,7 @@
             )}
           </div>
         </div>
+        </React.Fragment>
       );
     }
 
