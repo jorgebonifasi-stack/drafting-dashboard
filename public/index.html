@@ -1914,7 +1914,8 @@
         "required proof reading",
         "approved proof reading"
       ]);
-      const rows=useMemo(()=>{
+      const[drafterFilter,setDrafterFilter]=useState("__all__");
+      const allRows=useMemo(()=>{
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
         deals.forEach(d=>{
@@ -1939,13 +1940,28 @@
         return out;
       },[deals,stageLabels]);
 
+      const drafterOptions=useMemo(()=>{
+        const set=new Set();
+        allRows.forEach(r=>set.add(r.drafter));
+        return Array.from(set).sort((a,b)=>{
+          if(a==="Unassigned")return 1;
+          if(b==="Unassigned")return -1;
+          return a.localeCompare(b);
+        });
+      },[allRows]);
+
+      const rows=useMemo(()=>(
+        drafterFilter==="__all__"?allRows:allRows.filter(r=>r.drafter===drafterFilter)
+      ),[allRows,drafterFilter]);
+
       const rowColor=n=>n==null?C.text:n<0?C.red:n<=2?C.amber:n<=5?"#F1C40F":C.green;
 
       const exportCSV=useCallback(()=>{
         const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Current Stage","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.stage,HS_BASE+r.id])];
-        downloadCSV(`macmillan_sla_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
-      },[rows]);
+        const suffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
+        downloadCSV(`macmillan_sla${suffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,drafterFilter]);
 
       return(
         <div style={{padding:"16px 24px"}}>
@@ -1957,13 +1973,20 @@
                   Lead source = Macmillan, SLA = 20 business days from Date of Appointment. Only deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, or Approved — Proof Reading.
                 </div>
               </div>
-              <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                <label style={{fontSize:12,color:C.text,opacity:0.7}}>Drafter</label>
+                <select style={S.select} value={drafterFilter} onChange={e=>setDrafterFilter(e.target.value)}>
+                  <option value="__all__">All ({allRows.length})</option>
+                  {drafterOptions.map(name=>(
+                    <option key={name} value={name}>{name} ({allRows.filter(r=>r.drafter===name).length})</option>
+                  ))}
+                </select>
                 <span style={{fontSize:12,color:C.text,opacity:0.7}}>{rows.length} deal{rows.length===1?"":"s"}</span>
                 <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"\u2B07"} CSV</button>
               </div>
             </div>
             {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No open Macmillan deals with an appointment date.</div>
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open Macmillan deals with an appointment date.":"No deals match this drafter filter."}</div>
             ):(
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
