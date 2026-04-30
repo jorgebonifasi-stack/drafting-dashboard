@@ -1906,8 +1906,7 @@
     // ─── Shared SLA backlog chart (used by both SLA tables) ────
     // Rows are already filtered (drafter, etc.). For each row we bucket by
     // its anchor date and tally counts split by SLA status.
-    function SLABacklogChart({rows,getBucketDate,getStatus,dateLabel}){
-      const[gran,setGran]=useState("WoW");
+    function SLABacklogChart({rows,getBucketDate,getStatus,dateLabel,gran,setGran,selectedBucket,setSelectedBucket}){
       const data=useMemo(()=>{
         const counts={};
         rows.forEach(r=>{
@@ -1920,6 +1919,18 @@
         return Object.values(counts).sort((a,b)=>a.bucket.localeCompare(b.bucket));
       },[rows,gran,getBucketDate,getStatus]);
 
+      const handleChartClick=useCallback(e=>{
+        const b=e&&e.activePayload&&e.activePayload[0]&&e.activePayload[0].payload&&e.activePayload[0].payload.bucket;
+        if(!b)return;
+        setSelectedBucket(prev=>prev===b?null:b);
+      },[setSelectedBucket]);
+
+      // Faded fill helpers — non-selected bars get reduced opacity when a bucket is picked
+      const fade=(active,colorActive,colorFaded)=>active?colorActive:colorFaded;
+      const cellsFor=(activeColor,fadedColor)=>data.map((d,i)=>(
+        <Cell key={i} fill={selectedBucket?fade(d.bucket===selectedBucket,activeColor,fadedColor):activeColor}/>
+      ));
+
       return(
         <div style={{padding:"16px 24px 0"}}>
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
@@ -1927,7 +1938,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Drafting Backlog by {dateLabel}</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Current backlog grouped by {dateLabel.toLowerCase()}, stacked by SLA status. Reflects the drafter filter below.
+                  Current backlog grouped by {dateLabel.toLowerCase()}, stacked by SLA status. Click a bar to filter the table; click again to clear.
                 </div>
               </div>
               <div style={{display:"flex",gap:6}}>
@@ -1940,7 +1951,7 @@
               <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No backlog data.</div>
             ):(
               <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={data} margin={{top:10,right:20,left:0,bottom:10}}>
+                <BarChart data={data} margin={{top:10,right:20,left:0,bottom:10}} onClick={handleChartClick} style={{cursor:"pointer"}}>
                   <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
                   <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
                   <YAxis tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Deals",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
@@ -1952,10 +1963,10 @@
                       {value:"Warning",type:"square",color:"#F1C40F"},
                       {value:"Comfortable",type:"square",color:C.green}
                     ]}/>
-                  <Bar dataKey="breached" name="Breached" stackId="status" fill={C.red} barSize={28}/>
-                  <Bar dataKey="close" name="Close" stackId="status" fill={C.amber} barSize={28}/>
-                  <Bar dataKey="warning" name="Warning" stackId="status" fill="#F1C40F" barSize={28}/>
-                  <Bar dataKey="comfortable" name="Comfortable" stackId="status" fill={C.green} barSize={28} radius={[4,4,0,0]}/>
+                  <Bar dataKey="breached" name="Breached" stackId="status" barSize={28}>{cellsFor(C.red,"rgba(231,76,60,0.25)")}</Bar>
+                  <Bar dataKey="close" name="Close" stackId="status" barSize={28}>{cellsFor(C.amber,"rgba(243,156,18,0.25)")}</Bar>
+                  <Bar dataKey="warning" name="Warning" stackId="status" barSize={28}>{cellsFor("#F1C40F","rgba(241,196,15,0.25)")}</Bar>
+                  <Bar dataKey="comfortable" name="Comfortable" stackId="status" barSize={28} radius={[4,4,0,0]}>{cellsFor(C.green,"rgba(39,174,96,0.25)")}</Bar>
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -2012,25 +2023,35 @@
         });
       },[allRows]);
 
-      const rows=useMemo(()=>(
+      const chartRows=useMemo(()=>(
         drafterFilter==="__all__"?allRows:allRows.filter(r=>r.drafter===drafterFilter)
       ),[allRows,drafterFilter]);
+
+      const[gran,setGran]=useState("WoW");
+      const[selectedBucket,setSelectedBucket]=useState(null);
+      // Reset selected bucket when granularity changes (bucket keys differ).
+      useEffect(()=>{setSelectedBucket(null);},[gran]);
+
+      const getBucketDate=useCallback(r=>r.appointment,[]);
+      const getStatus=useCallback(r=>r.bizRemaining==null?"comfortable":r.bizRemaining<0?"breached":r.bizRemaining<=2?"close":r.bizRemaining<=5?"warning":"comfortable",[]);
+
+      const rows=useMemo(()=>(
+        selectedBucket?chartRows.filter(r=>r.appointment&&dateToBucket(r.appointment,gran)===selectedBucket):chartRows
+      ),[chartRows,selectedBucket,gran]);
 
       const rowColor=n=>n==null?C.text:n<0?C.red:n<=2?C.amber:n<=5?"#F1C40F":C.green;
 
       const exportCSV=useCallback(()=>{
         const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Current Stage","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.stage,HS_BASE+r.id])];
-        const suffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
-        downloadCSV(`macmillan_sla${suffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
-      },[rows,drafterFilter]);
-
-      const getBucketDate=useCallback(r=>r.appointment,[]);
-      const getStatus=useCallback(r=>r.bizRemaining==null?"comfortable":r.bizRemaining<0?"breached":r.bizRemaining<=2?"close":r.bizRemaining<=5?"warning":"comfortable",[]);
+        const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
+        const bSuffix=selectedBucket?`_${selectedBucket}`:"";
+        downloadCSV(`macmillan_sla${drSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,drafterFilter,selectedBucket]);
 
       return(
         <React.Fragment>
-        <SLABacklogChart rows={rows} getBucketDate={getBucketDate} getStatus={getStatus} dateLabel="Appointment Date"/>
+        <SLABacklogChart rows={chartRows} getBucketDate={getBucketDate} getStatus={getStatus} dateLabel="Appointment Date" gran={gran} setGran={setGran} selectedBucket={selectedBucket} setSelectedBucket={setSelectedBucket}/>
         <div style={{padding:"16px 24px"}}>
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
@@ -2041,6 +2062,12 @@
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                {selectedBucket&&(
+                  <span style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,padding:"4px 10px",borderRadius:6,background:"rgba(52,152,219,0.15)",border:`1px solid ${C.accent}`,color:C.accent,fontWeight:600}}>
+                    {bucketLabel(selectedBucket,gran)}
+                    <button onClick={()=>setSelectedBucket(null)} style={{background:"transparent",border:"none",color:C.accent,cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>{"\u00D7"}</button>
+                  </span>
+                )}
                 <label style={{fontSize:12,color:C.text,opacity:0.7}}>Drafter</label>
                 <select style={S.select} value={drafterFilter} onChange={e=>setDrafterFilter(e.target.value)}>
                   <option value="__all__">All ({allRows.length})</option>
@@ -2053,7 +2080,7 @@
               </div>
             </div>
             {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open Macmillan deals with an appointment date.":"No deals match this drafter filter."}</div>
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open Macmillan deals with an appointment date.":selectedBucket?"No deals in the selected bucket for this drafter.":"No deals match this drafter filter."}</div>
             ):(
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -2137,25 +2164,34 @@
         });
       },[allRows]);
 
-      const rows=useMemo(()=>(
+      const chartRows=useMemo(()=>(
         drafterFilter==="__all__"?allRows:allRows.filter(r=>r.drafter===drafterFilter)
       ),[allRows,drafterFilter]);
+
+      const[gran,setGran]=useState("WoW");
+      const[selectedBucket,setSelectedBucket]=useState(null);
+      useEffect(()=>{setSelectedBucket(null);},[gran]);
+
+      const getBucketDate=useCallback(r=>r.draftingStart,[]);
+      const getStatus=useCallback(r=>r.calRemaining==null?"comfortable":r.calRemaining<0?"breached":r.calRemaining<=3?"close":r.calRemaining<=7?"warning":"comfortable",[]);
+
+      const rows=useMemo(()=>(
+        selectedBucket?chartRows.filter(r=>r.draftingStart&&dateToBucket(r.draftingStart,gran)===selectedBucket):chartRows
+      ),[chartRows,selectedBucket,gran]);
 
       const rowColor=n=>n==null?C.text:n<0?C.red:n<=3?C.amber:n<=7?"#F1C40F":C.green;
 
       const exportCSV=useCallback(()=>{
         const hdr=["Deal ID","Deal Name","Drafter","Drafting Started","SLA Deadline","Calendar Days Remaining","Current Stage","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.draftingStart),fmtDate(r.deadline),r.calRemaining==null?"":r.calRemaining,r.stage,HS_BASE+r.id])];
-        const suffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
-        downloadCSV(`standard_sla${suffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
-      },[rows,drafterFilter]);
-
-      const getBucketDate=useCallback(r=>r.draftingStart,[]);
-      const getStatus=useCallback(r=>r.calRemaining==null?"comfortable":r.calRemaining<0?"breached":r.calRemaining<=3?"close":r.calRemaining<=7?"warning":"comfortable",[]);
+        const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
+        const bSuffix=selectedBucket?`_${selectedBucket}`:"";
+        downloadCSV(`standard_sla${drSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,drafterFilter,selectedBucket]);
 
       return(
         <React.Fragment>
-        <SLABacklogChart rows={rows} getBucketDate={getBucketDate} getStatus={getStatus} dateLabel="Drafting Start"/>
+        <SLABacklogChart rows={chartRows} getBucketDate={getBucketDate} getStatus={getStatus} dateLabel="Drafting Start" gran={gran} setGran={setGran} selectedBucket={selectedBucket} setSelectedBucket={setSelectedBucket}/>
         <div style={{padding:"16px 24px"}}>
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
@@ -2166,6 +2202,12 @@
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                {selectedBucket&&(
+                  <span style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,padding:"4px 10px",borderRadius:6,background:"rgba(52,152,219,0.15)",border:`1px solid ${C.accent}`,color:C.accent,fontWeight:600}}>
+                    {bucketLabel(selectedBucket,gran)}
+                    <button onClick={()=>setSelectedBucket(null)} style={{background:"transparent",border:"none",color:C.accent,cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>{"\u00D7"}</button>
+                  </span>
+                )}
                 <label style={{fontSize:12,color:C.text,opacity:0.7}}>Drafter</label>
                 <select style={S.select} value={drafterFilter} onChange={e=>setDrafterFilter(e.target.value)}>
                   <option value="__all__">All ({allRows.length})</option>
@@ -2178,7 +2220,7 @@
               </div>
             </div>
             {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open deals with a drafting start date.":"No deals match this drafter filter."}</div>
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open deals with a drafting start date.":selectedBucket?"No deals in the selected bucket for this drafter.":"No deals match this drafter filter."}</div>
             ):(
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
