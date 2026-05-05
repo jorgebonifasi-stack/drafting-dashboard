@@ -50,7 +50,8 @@ const PROPERTIES = [
   "hs_v2_date_entered_1223751329", "hs_v2_date_exited_1223751329",
   "hs_v2_date_entered_1223751330",
   "ep_lead_source", "date_of_appointment",
-  "date_drafting_query"
+  "date_drafting_query",
+  "have_they_signed_the_14_day_waiver_"
 ];
 
 // ─── Deactivated drafter exclusion list ─────────────────────────

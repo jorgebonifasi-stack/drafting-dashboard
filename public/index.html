@@ -264,9 +264,12 @@
         const dateOfAppointment=parseHSDate(p.date_of_appointment);
         // Workflow-stamped date: when drafting_query_reason was first populated (from 22/04/2026)
         const firstQueryDate=parseHSDate(p.date_drafting_query);
+        // 14-day waiver — true if signed (Yes), false if not (No), null if unknown.
+        const rawWaiver=(p.have_they_signed_the_14_day_waiver_||"").toString().trim().toLowerCase();
+        const waiverSigned14d=rawWaiver==="yes"?true:rawWaiver==="no"?false:null;
         return{
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
-          leadSources,dateOfAppointment,firstQueryDate,
+          leadSources,dateOfAppointment,firstQueryDate,waiverSigned14d,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
           queryExcluded:(()=>{const orig=dealExclusions&&dealExclusions[String(d.id)];return !!(orig&&drafterName.toLowerCase()!==String(orig).toLowerCase());})(),
@@ -1997,7 +2000,11 @@
           // Only include deals currently in a pre-"Drafts with Customer" stage
           const stageLabel=stageLabels[d.dealstage]||d.dealstage||"";
           if(!ALLOWED_STAGES.has(normStage(stageLabel)))return;
-          const deadline=addBusinessDays(d.dateOfAppointment,SLA_DAYS);
+          const baseDeadline=addBusinessDays(d.dateOfAppointment,SLA_DAYS);
+          // If the customer has NOT signed the 14-day waiver, extend the SLA by 14 calendar days.
+          const waiverExtension=d.waiverSigned14d===false?14:0;
+          const deadline=new Date(baseDeadline);
+          if(waiverExtension)deadline.setDate(deadline.getDate()+waiverExtension);
           const bizRemaining=signedBusinessDays(today,deadline);
           out.push({
             id:d.id,
@@ -2006,6 +2013,7 @@
             appointment:d.dateOfAppointment,
             deadline,
             bizRemaining,
+            waiverExtension,
             stage:stageLabels[d.dealstage]||d.dealstage||"—"
           });
         });
@@ -2042,8 +2050,8 @@
       const rowColor=n=>n==null?C.text:n<0?C.red:n<=2?C.amber:n<=5?"#F1C40F":C.green;
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Current Stage","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.stage,HS_BASE+r.id])];
+        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Waiver Extension Days","Current Stage","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.waiverExtension||0,r.stage,HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
         downloadCSV(`macmillan_sla${drSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
@@ -2058,7 +2066,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan — Deals Nearing SLA</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Lead source = Macmillan, SLA = 20 business days from Date of Appointment. Only deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, or Approved — Proof Reading.
+                  Lead source = Macmillan, SLA = 20 business days from Date of Appointment. +14 calendar days when the customer has not signed the 14-day waiver. Only deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, or Approved — Proof Reading.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -2102,7 +2110,10 @@
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.drafter}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
-                        <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
+                        <td style={{padding:"10px 12px"}}>
+                          {fmtDate(r.deadline)}
+                          {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:6,padding:"2px 6px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:600}}>+{r.waiverExtension}d waiver</span>}
+                        </td>
                         <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.bizRemaining)}}>
                           {r.bizRemaining==null?"—":r.bizRemaining<0?`${r.bizRemaining}d (breached)`:`${r.bizRemaining}d`}
                         </td>
@@ -2146,7 +2157,10 @@
           if(d.enteredDrafting)candidates.push(new Date(d.enteredDrafting).getTime());
           if(!candidates.length)return; // no anchor available
           const anchor=new Date(Math.max(...candidates));anchor.setHours(0,0,0,0);
-          const deadline=new Date(anchor);deadline.setDate(deadline.getDate()+SLA_DAYS);
+          // If the customer has NOT signed the 14-day waiver, the SLA is extended by 14 calendar days.
+          const waiverExtension=d.waiverSigned14d===false?14:0;
+          const totalDays=SLA_DAYS+waiverExtension;
+          const deadline=new Date(anchor);deadline.setDate(deadline.getDate()+totalDays);
           const calRemaining=Math.round((deadline-today)/86400000);
           out.push({
             id:d.id,
@@ -2155,6 +2169,7 @@
             anchor,
             deadline,
             calRemaining,
+            waiverExtension,
             stage:stageLabel||"—"
           });
         });
@@ -2190,8 +2205,8 @@
       const rowColor=n=>n==null?C.text:n<0?C.red:n<=3?C.amber:n<=7?"#F1C40F":C.green;
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Calendar Days Remaining","Current Stage","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.anchor),fmtDate(r.deadline),r.calRemaining==null?"":r.calRemaining,r.stage,HS_BASE+r.id])];
+        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Calendar Days Remaining","Waiver Extension Days","Current Stage","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.anchor),fmtDate(r.deadline),r.calRemaining==null?"":r.calRemaining,r.waiverExtension||0,r.stage,HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
         downloadCSV(`standard_sla${drSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
@@ -2206,7 +2221,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA \u2014 Deals Nearing 28-day Deadline</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  SLA = 28 calendar days from the SLA anchor (latest of original drafting-instructions date, Date of Appointment, and latest Drafting Instructions stage entry). Deals are excluded only if all three are missing. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
+                  SLA = 28 calendar days from the SLA anchor (latest of original drafting-instructions date, Date of Appointment, and latest Drafting Instructions stage entry). +14 calendar days when the customer has not signed the 14-day waiver. Deals are excluded only if all three anchor candidates are missing. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -2250,7 +2265,10 @@
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.drafter}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.anchor)}</td>
-                        <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
+                        <td style={{padding:"10px 12px"}}>
+                          {fmtDate(r.deadline)}
+                          {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:6,padding:"2px 6px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:600}}>+{r.waiverExtension}d waiver</span>}
+                        </td>
                         <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calRemaining)}}>
                           {r.calRemaining==null?"—":r.calRemaining<0?`${r.calRemaining}d (breached)`:`${r.calRemaining}d`}
                         </td>
