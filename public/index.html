@@ -2120,8 +2120,10 @@
     }
 
     // ─── Standard SLA Table (28 calendar days from SLA anchor) ──
-    // Anchor = latest of Date of Appointment and original entry into Drafting Instructions.
-    // Deals without original_date_entered_drafting_instructions are dropped (strict).
+    // Anchor = latest of: original_date_entered_drafting_instructions,
+    //                     dateOfAppointment,
+    //                     hs_v2_date_entered_<DraftingInstructions> (latest entry).
+    // A deal is excluded only if all three are missing.
     function StandardSLATable({deals,stageLabels}){
       const SLA_DAYS=28;
       const normStage=s=>(s||"").toLowerCase().replace(/[\u2013\u2014-]+/g," ").replace(/\s+/g," ").trim();
@@ -2136,15 +2138,14 @@
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
         deals.forEach(d=>{
-          if(!d.origEnteredDrafting)return; // strict: must have original_date_entered_drafting_instructions
           const stageLabel=stageLabels[d.dealstage]||d.dealstage||"";
           if(!ALLOWED_STAGES.has(normStage(stageLabel)))return;
-          const orig=new Date(d.origEnteredDrafting);orig.setHours(0,0,0,0);
-          let anchor=orig;
-          if(d.dateOfAppointment){
-            const doa=new Date(d.dateOfAppointment);doa.setHours(0,0,0,0);
-            if(doa>orig)anchor=doa;
-          }
+          const candidates=[];
+          if(d.origEnteredDrafting)candidates.push(new Date(d.origEnteredDrafting).getTime());
+          if(d.dateOfAppointment)candidates.push(new Date(d.dateOfAppointment).getTime());
+          if(d.enteredDrafting)candidates.push(new Date(d.enteredDrafting).getTime());
+          if(!candidates.length)return; // no anchor available
+          const anchor=new Date(Math.max(...candidates));anchor.setHours(0,0,0,0);
           const deadline=new Date(anchor);deadline.setDate(deadline.getDate()+SLA_DAYS);
           const calRemaining=Math.round((deadline-today)/86400000);
           out.push({
@@ -2205,7 +2206,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA \u2014 Deals Nearing 28-day Deadline</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  SLA = 28 calendar days from the SLA anchor (latest of Date of Appointment and original entry into Drafting Instructions). Deals without an original drafting-instructions date are excluded. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
+                  SLA = 28 calendar days from the SLA anchor (latest of original drafting-instructions date, Date of Appointment, and latest Drafting Instructions stage entry). Deals are excluded only if all three are missing. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -2227,7 +2228,7 @@
               </div>
             </div>
             {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open deals with an original drafting-instructions date.":selectedBucket?"No deals in the selected bucket for this drafter.":"No deals match this drafter filter."}</div>
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open deals with a usable SLA anchor date.":selectedBucket?"No deals in the selected bucket for this drafter.":"No deals match this drafter filter."}</div>
             ):(
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
