@@ -2119,7 +2119,9 @@
       );
     }
 
-    // ─── Standard SLA Table (28 calendar days from draftingStart) ──
+    // ─── Standard SLA Table (28 calendar days from SLA anchor) ──
+    // Anchor = latest of Date of Appointment and original entry into Drafting Instructions.
+    // Deals without original_date_entered_drafting_instructions are dropped (strict).
     function StandardSLATable({deals,stageLabels}){
       const SLA_DAYS=28;
       const normStage=s=>(s||"").toLowerCase().replace(/[\u2013\u2014-]+/g," ").replace(/\s+/g," ").trim();
@@ -2134,17 +2136,22 @@
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
         deals.forEach(d=>{
-          if(!d.draftingStart)return;
+          if(!d.origEnteredDrafting)return; // strict: must have original_date_entered_drafting_instructions
           const stageLabel=stageLabels[d.dealstage]||d.dealstage||"";
           if(!ALLOWED_STAGES.has(normStage(stageLabel)))return;
-          const start=new Date(d.draftingStart);start.setHours(0,0,0,0);
-          const deadline=new Date(start);deadline.setDate(deadline.getDate()+SLA_DAYS);
+          const orig=new Date(d.origEnteredDrafting);orig.setHours(0,0,0,0);
+          let anchor=orig;
+          if(d.dateOfAppointment){
+            const doa=new Date(d.dateOfAppointment);doa.setHours(0,0,0,0);
+            if(doa>orig)anchor=doa;
+          }
+          const deadline=new Date(anchor);deadline.setDate(deadline.getDate()+SLA_DAYS);
           const calRemaining=Math.round((deadline-today)/86400000);
           out.push({
             id:d.id,
             dealname:d.dealname,
             drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
-            draftingStart:start,
+            anchor,
             deadline,
             calRemaining,
             stage:stageLabel||"—"
@@ -2172,18 +2179,18 @@
       const[selectedBucket,setSelectedBucket]=useState(null);
       useEffect(()=>{setSelectedBucket(null);},[gran]);
 
-      const getBucketDate=useCallback(r=>r.draftingStart,[]);
+      const getBucketDate=useCallback(r=>r.anchor,[]);
       const getStatus=useCallback(r=>r.calRemaining==null?"comfortable":r.calRemaining<0?"breached":r.calRemaining<=3?"close":r.calRemaining<=7?"warning":"comfortable",[]);
 
       const rows=useMemo(()=>(
-        selectedBucket?chartRows.filter(r=>r.draftingStart&&dateToBucket(r.draftingStart,gran)===selectedBucket):chartRows
+        selectedBucket?chartRows.filter(r=>r.anchor&&dateToBucket(r.anchor,gran)===selectedBucket):chartRows
       ),[chartRows,selectedBucket,gran]);
 
       const rowColor=n=>n==null?C.text:n<0?C.red:n<=3?C.amber:n<=7?"#F1C40F":C.green;
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Drafting Started","SLA Deadline","Calendar Days Remaining","Current Stage","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.draftingStart),fmtDate(r.deadline),r.calRemaining==null?"":r.calRemaining,r.stage,HS_BASE+r.id])];
+        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Calendar Days Remaining","Current Stage","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.anchor),fmtDate(r.deadline),r.calRemaining==null?"":r.calRemaining,r.stage,HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
         downloadCSV(`standard_sla${drSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
@@ -2191,14 +2198,14 @@
 
       return(
         <React.Fragment>
-        <SLABacklogChart rows={chartRows} getBucketDate={getBucketDate} getStatus={getStatus} dateLabel="Drafting Start" gran={gran} setGran={setGran} selectedBucket={selectedBucket} setSelectedBucket={setSelectedBucket}/>
+        <SLABacklogChart rows={chartRows} getBucketDate={getBucketDate} getStatus={getStatus} dateLabel="Appointment Date" gran={gran} setGran={setGran} selectedBucket={selectedBucket} setSelectedBucket={setSelectedBucket}/>
         <div style={{padding:"16px 24px"}}>
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA \u2014 Deals Nearing 28-day Deadline</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  SLA = 28 calendar days from first entry into Drafting Instructions. All deals included. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
+                  SLA = 28 calendar days from the SLA anchor (latest of Date of Appointment and original entry into Drafting Instructions). Deals without an original drafting-instructions date are excluded. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -2220,7 +2227,7 @@
               </div>
             </div>
             {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open deals with a drafting start date.":selectedBucket?"No deals in the selected bucket for this drafter.":"No deals match this drafter filter."}</div>
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open deals with an original drafting-instructions date.":selectedBucket?"No deals in the selected bucket for this drafter.":"No deals match this drafter filter."}</div>
             ):(
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -2228,7 +2235,7 @@
                     <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>Drafting Started</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
                       <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Cal Days Remaining</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Current Stage</th>
@@ -2241,7 +2248,7 @@
                           <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.drafter}</td>
-                        <td style={{padding:"10px 12px"}}>{fmtDate(r.draftingStart)}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.anchor)}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
                         <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calRemaining)}}>
                           {r.calRemaining==null?"—":r.calRemaining<0?`${r.calRemaining}d (breached)`:`${r.calRemaining}d`}
