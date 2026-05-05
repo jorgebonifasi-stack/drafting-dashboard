@@ -2131,10 +2131,8 @@
     }
 
     // ─── Standard SLA Table (28 calendar days from SLA anchor) ──
-    // Anchor = latest of: original_date_entered_drafting_instructions,
-    //                     dateOfAppointment,
-    //                     hs_v2_date_entered_<DraftingInstructions> (latest entry).
-    // A deal is excluded only if all three are missing.
+    // Anchor = latest of: original_date_entered_drafting_instructions, dateOfAppointment.
+    // A deal is excluded if both are missing.
     function StandardSLATable({deals,stageLabels}){
       const SLA_DAYS=28;
       const normStage=s=>(s||"").toLowerCase().replace(/[\u2013\u2014-]+/g," ").replace(/\s+/g," ").trim();
@@ -2154,7 +2152,6 @@
           const candidates=[];
           if(d.origEnteredDrafting)candidates.push(new Date(d.origEnteredDrafting).getTime());
           if(d.dateOfAppointment)candidates.push(new Date(d.dateOfAppointment).getTime());
-          if(d.enteredDrafting)candidates.push(new Date(d.enteredDrafting).getTime());
           if(!candidates.length)return; // no anchor available
           const anchor=new Date(Math.max(...candidates));anchor.setHours(0,0,0,0);
           // If the customer has NOT signed the 14-day waiver, the SLA is extended by 14 calendar days.
@@ -2221,7 +2218,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA \u2014 Deals Nearing 28-day Deadline</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  SLA = 28 calendar days from the SLA anchor (latest of original drafting-instructions date, Date of Appointment, and latest Drafting Instructions stage entry). +14 calendar days when the customer has not signed the 14-day waiver. Deals are excluded only if all three anchor candidates are missing. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
+                  SLA = 28 calendar days from the SLA anchor (latest of original drafting-instructions date and Date of Appointment). +14 calendar days when the customer has not signed the 14-day waiver. Deals are excluded if both anchor candidates are missing. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
