@@ -51,7 +51,8 @@ const PROPERTIES = [
   "hs_v2_date_entered_1223751330",
   "ep_lead_source", "date_of_appointment",
   "date_drafting_query",
-  "have_they_signed_the_14_day_waiver_"
+  "have_they_signed_the_14_day_waiver_",
+  "consultant_query_reason"
 ];
 
 // ─── Deactivated drafter exclusion list ─────────────────────────
@@ -398,7 +399,7 @@ async function fetchDealStageLabels() {
 
 // ─── Fetch all fresh data ──────────────────────────────────────
 async function fetchFreshData() {
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, stageLabels] =
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, stageLabels] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -408,6 +409,7 @@ async function fetchFreshData() {
       fetchPropertyOptions("urgent_request_reason").catch(() => ({})),
       fetchPropertyOptions("amendment_source").catch(() => ({})),
       fetchPropertyOptions("ep_lead_source").catch(() => ({})),
+      fetchPropertyOptions("consultant_query_reason").catch(() => ({})),
       fetchDealStageLabels().catch(() => ({}))
     ]);
 
@@ -420,6 +422,7 @@ async function fetchFreshData() {
     urgentReasonOptions,
     amendmentSourceOptions,
     leadSourceOptions,
+    consultantQueryReasonOptions,
     stageLabels,
     dealExclusions: DRAFTER_EXCLUSIONS
   };

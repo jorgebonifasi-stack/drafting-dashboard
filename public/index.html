@@ -195,7 +195,7 @@
     }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,dealExclusions){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,dealExclusions){
       return rawDeals.map(d=>{
         const p=d.properties||{};
         const enteredDrafting=parseHSDate(p.hs_v2_date_entered_1223620771);
@@ -240,6 +240,9 @@
         // Parse multi-select query reasons (semicolon-separated in HubSpot)
         const rawReasons=p.drafting_query_reason||"";
         const queryReasons=rawReasons?rawReasons.split(";").map(r=>queryReasonOptions[r.trim()]||r.trim()).filter(Boolean):[];
+        // Consultant query reason (single-select in HubSpot, but split anyway for safety)
+        const rawConsultReasons=p.consultant_query_reason||"";
+        const consultantQueryReasons=rawConsultReasons?rawConsultReasons.split(";").map(r=>(consultantQueryReasonOptions||{})[r.trim()]||r.trim()).filter(Boolean):[];
         // Priority and urgent reason
         const priority=(p.hs_priority||"").toLowerCase();
         const rawUrgentReason=p.urgent_request_reason||"";
@@ -271,7 +274,7 @@
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
           leadSources,dateOfAppointment,firstQueryDate,waiverSigned14d,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
-          enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,
+          enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
           queryExcluded:(()=>{const orig=dealExclusions&&dealExclusions[String(d.id)];return !!(orig&&drafterName.toLowerCase()!==String(orig).toLowerCase());})(),
           queryExcludedOriginalDrafter:(dealExclusions&&dealExclusions[String(d.id)])||null,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
@@ -416,6 +419,7 @@
       chart7:'Query rate per drafter per period. Denominator: deals that exited "Required \u2014 Proof Reading" in the period, attributed to the drafter. Numerator (methodology split at 22/04/2026): before 22/04 \u2014 deals in the denominator with a drafting query reason populated. From 22/04 \u2014 deals whose workflow-stamped "Date Drafting Query" falls in the period. Rate capped at 100%. Green \u22645%, amber \u226410%, red >10%.',
       chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour. Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
       chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
+      chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
       chart12:'Drafting pipeline flow over time. Entered: uses original (workflow-stamped) entry date for stability. Exited & Backlog: uses native HubSpot dates (latest entry/exit) for accuracy. Current period backlog uses live dealstage count. Includes all deals (standard + urgent).',
       chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day.',
       chart9:'Average turnaround in business days (Mon\u2013Fri) for urgent drafts completed in the selected period, grouped by Drafting Owner. From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day. Green = met, red = breached.',
@@ -447,6 +451,7 @@
       c11:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Days"},{key:"count",label:"Deals"}],
       c12:[{key:"label",label:"Period"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"net",label:"Net"},{key:"backlog",label:"Backlog"}],
       c13:[{key:"label",label:"Period"},{key:"count",label:"Deals"}],
+      c15:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
     };
     const T_DCOLS={
       c1:[{key:"date",label:"Completed"}],
@@ -462,6 +467,7 @@
       c11:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"},{key:"source",label:"Source"}],
       c12:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered DI"},{key:"exited",label:"Exited DI"}],
       c13:[{key:"dealname",label:"Deal"},{key:"date",label:"Date Entered"}],
+      c15:[{key:"dealname",label:"Deal"},{key:"reasons",label:"Consultant Query Reason"}],
     };
 
     // ─── ChartCard: wraps each chart with data table + CSV ──────
@@ -1575,6 +1581,76 @@
       );
     }
 
+    // ─── Chart 15: Consultant Query Rate — Trend ──────────────
+    // Cohort: deals that exited "Appointment Outcome" in the period.
+    // Numerator: deals in the cohort with a consultant_query_reason populated.
+    function Chart15({deals,gran}){
+      const{data,allReasons}=useMemo(()=>{
+        const now=new Date();
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        const periodData={};
+        const reasonSet=new Set();
+        const reasonData={};
+        deals.forEach(d=>{
+          if(!d.exitedAppointmentOutcome)return;
+          const b=dateToBucket(d.exitedAppointmentOutcome,gran);
+          if(!periodData[b])periodData[b]={total:0,queried:0};
+          periodData[b].total++;
+          if(d.consultantQueryReasons&&d.consultantQueryReasons.length){
+            periodData[b].queried++;
+            if(!reasonData[b])reasonData[b]={};
+            d.consultantQueryReasons.forEach(r=>{reasonSet.add(r);reasonData[b][r]=(reasonData[b][r]||0)+1;});
+          }
+        });
+
+        const totals={};
+        [...reasonSet].forEach(r=>{totals[r]=0;Object.values(reasonData).forEach(w=>{totals[r]+=(w[r]||0);});});
+        const allReasons=[...reasonSet].sort((a,b)=>totals[b]-totals[a]);
+
+        const data=uniq.map(bucket=>{
+          const wd=periodData[bucket]||{total:0,queried:0};
+          const rate=wd.total>0?parseFloat(Math.min((wd.queried/wd.total)*100,100).toFixed(0)):null;
+          const row={bucket,label:bucketLabel(bucket,gran),rate,total:wd.total,queried:wd.queried};
+          allReasons.forEach(r=>{row[r]=reasonData[bucket]?.[r]||0;});
+          return row;
+        });
+        return{data,allReasons};
+      },[deals,gran]);
+
+      return(
+        <ResponsiveContainer width="100%" height={380}>
+          <ComposedChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis yAxisId="left" domain={[0,100]} ticks={[0,5,10,20,50,100]} allowDataOverflow={false} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} tickFormatter={v=>`${v}%`} label={{value:"Query Rate %",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="right" orientation="right" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Reason Count",angle:90,position:"insideRight",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<StackedTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:10,color:C.text,paddingBottom:4}}/>
+            <ReferenceArea yAxisId="left" y1={0} y2={5} fill={C.green} fillOpacity={0.08}/>
+            <ReferenceLine yAxisId="left" y={5} stroke={C.green} strokeDasharray="8 4" strokeWidth={2} label={{value:"5%",position:"insideBottomRight",fill:C.green,fontSize:12,fontWeight:700}}/>
+            <ReferenceLine yAxisId="left" y={10} stroke={C.amber} strokeDasharray="8 4" strokeWidth={2} label={{value:"10%",position:"insideBottomRight",fill:C.amber,fontSize:12,fontWeight:700}}/>
+            {allReasons.map((reason,i)=>(
+              <Bar key={reason} yAxisId="right" dataKey={reason} stackId="reasons" fill={REASON_COLORS_C4[i%REASON_COLORS_C4.length]} stroke={REASON_STROKES_C4[i%REASON_STROKES_C4.length]} strokeWidth={0.5} barSize={28} radius={i===0?[4,4,0,0]:[0,0,0,0]}/>
+            ))}
+            <Line yAxisId="left" type="linear" dataKey="rate" name="Query Rate %" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:5,color:C.green},{max:10,color:C.amber},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
+              <LabelList dataKey="rate" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}%`:""} offset={14}/>
+            </Line>
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
     // ─── Chart 14: Drafter Activity Heatmap ────────────────────
     function ActivityHeatmap({drafterNames:drafterNamesProp,onTableData,deals:allDeals}){
       const[activityData,setActivityData]=useState(null);
@@ -2288,13 +2364,14 @@
           const urgentReasonOpts=result.urgentReasonOptions||{};
           const amendmentSourceOpts=result.amendmentSourceOptions||{};
           const leadSourceOpts=result.leadSourceOptions||{};
+          const consultantQueryReasonOpts=result.consultantQueryReasonOptions||{};
           const stageLbls=result.stageLabels||{};
           const exclusions=result.dealExclusions||{};
           setDealExclusions(exclusions);
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
           setStageLabels(stageLbls);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,exclusions));
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,exclusions));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -2603,6 +2680,23 @@
         return{rows,detailMap};
       },[deals,gran]);
 
+      const c15Table=useMemo(()=>{
+        const now=new Date();const pb=gran==="DoD"?25:gran==="WoW"?10:8;const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const totals={};const qd={};
+        deals.forEach(d=>{
+          if(!d.exitedAppointmentOutcome)return;
+          const b=dateToBucket(d.exitedAppointmentOutcome,gran);
+          totals[b]=(totals[b]||0)+1;
+          if(d.consultantQueryReasons&&d.consultantQueryReasons.length){(qd[b]=qd[b]||[]).push(d);}
+        });
+        const rows=uniq.map(bucket=>{const total=totals[bucket]||0;const queriedArr=qd[bucket]||[];const queried=queriedArr.length;const rate=total>0?parseFloat(Math.min((queried/total)*100,100).toFixed(0)):null;
+          return{_key:bucket,label:bucketLabel(bucket,gran),rate:rate!=null?rate+"%":"—",total,queried};});
+        const detailMap={};uniq.forEach(b=>{detailMap[b]=(qd[b]||[]).map(d=>({id:d.id,dealname:d.dealname,reasons:d.consultantQueryReasons.join(", ")||"—"}));});
+        return{rows,detailMap};
+      },[deals,gran]);
+
       if(loading&&!deals.length)return<SkeletonUI/>;
 
       return(
@@ -2740,6 +2834,12 @@
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-13" title={"Appointment Outcome \u2014 Deals Exited"} infoText={INFO.chart13} columns={T_COLS.c13} rows={c13Table.rows} detailMap={c13Table.detailMap} detailCols={T_DCOLS.c13} csvName={`appointment_outcome_${gran}.csv`}>
               <Chart13 deals={deals} gran={gran}/>
+            </ChartCard>
+          </div>
+
+          <div style={{padding:"0 24px 16px"}}>
+            <ChartCard chartId="chart-15" title={"Consultant Query Rate \u2014 Trend"} infoText={INFO.chart15} columns={T_COLS.c15} rows={c15Table.rows} detailMap={c15Table.detailMap} detailCols={T_DCOLS.c15} csvName={`consultant_query_rate_${gran}.csv`}>
+              <Chart15 deals={deals} gran={gran}/>
             </ChartCard>
           </div>
 
