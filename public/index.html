@@ -195,7 +195,7 @@
     }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,dealExclusions){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,dealExclusions){
       return rawDeals.map(d=>{
         const p=d.properties||{};
         const enteredDrafting=parseHSDate(p.hs_v2_date_entered_1223620771);
@@ -243,6 +243,12 @@
         // Consultant query reason (single-select in HubSpot, but split anyway for safety)
         const rawConsultReasons=p.consultant_query_reason||"";
         const consultantQueryReasons=rawConsultReasons?rawConsultReasons.split(";").map(r=>(consultantQueryReasonOptions||{})[r.trim()]||r.trim()).filter(Boolean):[];
+        // Legacy advisor (HubSpot owner-type field) + Replied — Drafts With Customer stage dates
+        const rawLegacyAdvisor=p.legacy_advisor__owner||"";
+        const legacyAdvisor=rawLegacyAdvisor?((legacyAdvisorOptions||{})[rawLegacyAdvisor.trim()]||ownerMap[rawLegacyAdvisor.trim()]||rawLegacyAdvisor.trim()):"";
+        const enteredRDWC=parseHSDate(p.hs_v2_date_entered_1223620776);
+        const exitedRDWC=parseHSDate(p.hs_v2_date_exited_1223620776);
+        const rdwcTurnaroundBizDays=calcBusinessDays(enteredRDWC,exitedRDWC);
         // Priority and urgent reason
         const priority=(p.hs_priority||"").toLowerCase();
         const rawUrgentReason=p.urgent_request_reason||"";
@@ -275,6 +281,7 @@
           leadSources,dateOfAppointment,firstQueryDate,waiverSigned14d,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
+          legacyAdvisor,enteredRDWC,exitedRDWC,rdwcTurnaroundBizDays,
           queryExcluded:(()=>{const orig=dealExclusions&&dealExclusions[String(d.id)];return !!(orig&&drafterName.toLowerCase()!==String(orig).toLowerCase());})(),
           queryExcludedOriginalDrafter:(dealExclusions&&dealExclusions[String(d.id)])||null,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
@@ -420,6 +427,9 @@
       chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour. Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
       chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
+      la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
+      la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
+      la3:'Average business-day turnover per Legacy Advisor for deals that exited "Replied — Drafts With Customer" in the selected period. Turnover = business days from entering the stage to exiting it.',
       chart12:'Drafting pipeline flow over time. Entered: uses original (workflow-stamped) entry date for stability. Exited & Backlog: uses native HubSpot dates (latest entry/exit) for accuracy. Current period backlog uses live dealstage count. Includes all deals (standard + urgent).',
       chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day.',
       chart9:'Average turnaround in business days (Mon\u2013Fri) for urgent drafts completed in the selected period, grouped by Drafting Owner. From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day. Green = met, red = breached.',
@@ -452,6 +462,9 @@
       c12:[{key:"label",label:"Period"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"net",label:"Net"},{key:"backlog",label:"Backlog"}],
       c13:[{key:"label",label:"Period"},{key:"count",label:"Deals"}],
       c15:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
+      la1:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Active in RDWC"}],
+      la2:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Exited RDWC"}],
+      la3:[{key:"name",label:"Legacy Advisor"},{key:"avg",label:"Avg Biz Days"},{key:"count",label:"Deals"}],
     };
     const T_DCOLS={
       c1:[{key:"date",label:"Completed"}],
@@ -468,6 +481,9 @@
       c12:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered DI"},{key:"exited",label:"Exited DI"}],
       c13:[{key:"dealname",label:"Deal"},{key:"date",label:"Date Entered"}],
       c15:[{key:"dealname",label:"Deal"},{key:"reasons",label:"Consultant Query Reason"}],
+      la1:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered RDWC"}],
+      la2:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Biz Days"}],
+      la3:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Biz Days"}],
     };
 
     // ─── ChartCard: wraps each chart with data table + CSV ──────
@@ -1976,6 +1992,106 @@
       );
     }
 
+    // ─── Legacy Advisor charts ────────────────────────────────
+    // Snapshot: deals currently in stage 1223620776 ("Replied — Drafts With Customer"),
+    // grouped by Legacy Advisor. Period-independent.
+    function ChartLA1({deals}){
+      const data=useMemo(()=>{
+        const counts={};
+        deals.forEach(d=>{
+          if(d.dealstage!=="1223620776")return;
+          const advisor=d.legacyAdvisor||"Unassigned";
+          if(/^\d+$/.test(advisor))return; // skip raw owner ids
+          counts[advisor]=(counts[advisor]||0)+1;
+        });
+        return Object.entries(counts).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count);
+      },[deals]);
+
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No deals currently in Replied — Drafts With Customer.</div>;
+      const maxVal=Math.max(...data.map(d=>d.count),5);
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:20,right:60,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
+            <YAxis type="category" dataKey="name" width={150} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <Bar dataKey="count" name="Active in RDWC" fill={C.blueFaded} stroke={C.blue} strokeWidth={0.5} barSize={22} radius={[0,6,6,0]}>
+              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Productivity: deals that exited Replied — Drafts With Customer in the selected period,
+    // grouped by Legacy Advisor. Plain bars, no target.
+    function ChartLA2({deals,gran,bucket}){
+      const data=useMemo(()=>{
+        if(!bucket)return[];
+        const counts={};
+        deals.forEach(d=>{
+          if(!d.exitedRDWC)return;
+          if(dateToBucket(d.exitedRDWC,gran)!==bucket)return;
+          const advisor=d.legacyAdvisor||"Unassigned";
+          if(/^\d+$/.test(advisor))return;
+          counts[advisor]=(counts[advisor]||0)+1;
+        });
+        return Object.entries(counts).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count);
+      },[deals,gran,bucket]);
+
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No deals exited Replied — Drafts With Customer in this period.</div>;
+      const maxVal=Math.max(...data.map(d=>d.count),5);
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:20,right:60,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
+            <YAxis type="category" dataKey="name" width={150} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <Bar dataKey="count" name="Exited RDWC" fill={C.blueFaded} stroke={C.blue} strokeWidth={0.5} barSize={22} radius={[0,6,6,0]}>
+              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Average business-day turnover (entered → exited RDWC) per Legacy Advisor for selected period.
+    function ChartLA3({deals,gran,bucket}){
+      const data=useMemo(()=>{
+        if(!bucket)return[];
+        const groups={};
+        deals.forEach(d=>{
+          if(!d.exitedRDWC||d.rdwcTurnaroundBizDays==null)return;
+          if(dateToBucket(d.exitedRDWC,gran)!==bucket)return;
+          const advisor=d.legacyAdvisor||"Unassigned";
+          if(/^\d+$/.test(advisor))return;
+          (groups[advisor]=groups[advisor]||[]).push(d.rdwcTurnaroundBizDays);
+        });
+        return Object.entries(groups).map(([name,arr])=>{
+          const avg=arr.reduce((s,v)=>s+v,0)/arr.length;
+          return{name,avg:parseFloat(avg.toFixed(1)),count:arr.length};
+        }).sort((a,b)=>b.avg-a.avg);
+      },[deals,gran,bucket]);
+
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No turnaround data in this period.</div>;
+      const maxVal=Math.max(...data.map(d=>d.avg),3);
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:20,right:80,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.2)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}}/>
+            <YAxis type="category" dataKey="name" width={150} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <Bar dataKey="avg" name="Avg biz days" fill={C.blueFaded} stroke={C.blue} strokeWidth={0.5} barSize={22} radius={[0,6,6,0]}>
+              <LabelList dataKey="avg" position="right" fill={C.white} fontSize={12} fontWeight={600} formatter={v=>`${v}d`}/>
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
     // ─── Macmillan SLA Table ───────────────────────────────────
     function MacmillanSLATable({deals,stageLabels}){
       const SLA_DAYS=20;
@@ -2365,13 +2481,14 @@
           const amendmentSourceOpts=result.amendmentSourceOptions||{};
           const leadSourceOpts=result.leadSourceOptions||{};
           const consultantQueryReasonOpts=result.consultantQueryReasonOptions||{};
+          const legacyAdvisorOpts=result.legacyAdvisorOptions||{};
           const stageLbls=result.stageLabels||{};
           const exclusions=result.dealExclusions||{};
           setDealExclusions(exclusions);
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
           setStageLabels(stageLbls);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,exclusions));
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,exclusions));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -2697,6 +2814,46 @@
         return{rows,detailMap};
       },[deals,gran]);
 
+      // ── Legacy Advisor data tables ─────────────────────────────
+      const la1Table=useMemo(()=>{
+        const groups={};
+        deals.forEach(d=>{
+          if(d.dealstage!=="1223620776")return;
+          const advisor=d.legacyAdvisor||"Unassigned";
+          if(/^\d+$/.test(advisor))return;
+          (groups[advisor]=groups[advisor]||[]).push(d);
+        });
+        const rows=Object.entries(groups).map(([name,arr])=>({_key:name,name,count:arr.length})).sort((a,b)=>b.count-a.count);
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredRDWC)}));});
+        return{rows,detailMap};
+      },[deals]);
+
+      const la2Table=useMemo(()=>{
+        const groups={};
+        deals.forEach(d=>{
+          if(!d.exitedRDWC||dateToBucket(d.exitedRDWC,gran)!==selectedBucket)return;
+          const advisor=d.legacyAdvisor||"Unassigned";
+          if(/^\d+$/.test(advisor))return;
+          (groups[advisor]=groups[advisor]||[]).push(d);
+        });
+        const rows=Object.entries(groups).map(([name,arr])=>({_key:name,name,count:arr.length})).sort((a,b)=>b.count-a.count);
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredRDWC),exited:fmtDate(d.exitedRDWC),days:d.rdwcTurnaroundBizDays!=null?d.rdwcTurnaroundBizDays+"d":"—"}));});
+        return{rows,detailMap};
+      },[deals,gran,selectedBucket]);
+
+      const la3Table=useMemo(()=>{
+        const groups={};
+        deals.forEach(d=>{
+          if(!d.exitedRDWC||d.rdwcTurnaroundBizDays==null||dateToBucket(d.exitedRDWC,gran)!==selectedBucket)return;
+          const advisor=d.legacyAdvisor||"Unassigned";
+          if(/^\d+$/.test(advisor))return;
+          (groups[advisor]=groups[advisor]||[]).push(d);
+        });
+        const rows=Object.entries(groups).map(([name,arr])=>{const avg=parseFloat((arr.reduce((s,d)=>s+d.rdwcTurnaroundBizDays,0)/arr.length).toFixed(1));return{_key:name,name,avg:avg+"d",count:arr.length};}).sort((a,b)=>parseFloat(b.avg)-parseFloat(a.avg));
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredRDWC),exited:fmtDate(d.exitedRDWC),days:d.rdwcTurnaroundBizDays!=null?d.rdwcTurnaroundBizDays+"d":"—"}));});
+        return{rows,detailMap};
+      },[deals,gran,selectedBucket]);
+
       if(loading&&!deals.length)return<SkeletonUI/>;
 
       return(
@@ -2706,16 +2863,17 @@
             <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
               <h1 style={S.title}>Estate Planning &mdash; Drafting &amp; Proofreading</h1>
               <div style={{display:"flex",gap:4,padding:2,background:C.surface,borderRadius:8,border:`1px solid ${C.border}`}}>
-                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="graphs"?C.accent:"transparent",color:view==="graphs"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("graphs")}>Graphs</button>
+                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="graphs"?C.accent:"transparent",color:view==="graphs"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("graphs")}>Drafting/Proofreading Metrics</button>
+                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="legacy-advisor"?C.accent:"transparent",color:view==="legacy-advisor"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("legacy-advisor")}>Legacy Advisor Metrics</button>
                 <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="sla"?C.accent:"transparent",color:view==="sla"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("sla")}>SLA</button>
                 <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="macmillan-sla"?C.accent:"transparent",color:view==="macmillan-sla"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("macmillan-sla")}>Macmillan SLA</button>
               </div>
             </div>
             <div style={S.controls}>
-              {view==="graphs"&&["DoD","WoW","MoM"].map(g=>(
+              {(view==="graphs"||view==="legacy-advisor")&&["DoD","WoW","MoM"].map(g=>(
                 <button key={g} style={S.toggle(gran===g)} onClick={()=>setGran(g)}>{g}</button>
               ))}
-              {view==="graphs"&&(
+              {(view==="graphs"||view==="legacy-advisor")&&(
                 <select style={S.select} value={selectedBucket||""} onChange={e=>setSelectedBucket(e.target.value)}>
                   {availableBuckets.map(b=>(<option key={b} value={b}>{bucketLabel(b,gran)}</option>))}
                 </select>
@@ -2749,6 +2907,22 @@
 
           {view==="sla"&&<StandardSLATable deals={deals} stageLabels={stageLabels}/>}
           {view==="macmillan-sla"&&<MacmillanSLATable deals={deals} stageLabels={stageLabels}/>}
+
+          {view==="legacy-advisor"&&<>
+            <div className="dash-row" style={S.row}>
+              <ChartCard chartId="chart-la1" title={"Active in Replied — Drafts With Customer (per Legacy Advisor)"} infoText={INFO.la1} columns={T_COLS.la1} rows={la1Table.rows} detailMap={la1Table.detailMap} detailCols={T_DCOLS.la1} csvName={`legacy_advisor_active_${new Date().toISOString().slice(0,10)}.csv`}>
+                <ChartLA1 deals={deals}/>
+              </ChartCard>
+              <ChartCard chartId="chart-la2" title={"Productivity per Legacy Advisor (Exited RDWC)"} infoText={INFO.la2} columns={T_COLS.la2} rows={la2Table.rows} detailMap={la2Table.detailMap} detailCols={T_DCOLS.la2} csvName={`legacy_advisor_productivity_${gran}_${selectedBucket}.csv`}>
+                <ChartLA2 deals={deals} gran={gran} bucket={selectedBucket}/>
+              </ChartCard>
+            </div>
+            <div className="dash-row" style={S.row}>
+              <ChartCard chartId="chart-la3" title={"Avg Turnaround per Legacy Advisor (Biz Days)"} infoText={INFO.la3} columns={T_COLS.la3} rows={la3Table.rows} detailMap={la3Table.detailMap} detailCols={T_DCOLS.la3} csvName={`legacy_advisor_turnaround_${gran}_${selectedBucket}.csv`}>
+                <ChartLA3 deals={deals} gran={gran} bucket={selectedBucket}/>
+              </ChartCard>
+            </div>
+          </>}
 
           {view==="graphs"&&<>
           {/* Row 1a: Drafts Completed — New vs Old metric */}

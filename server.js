@@ -52,7 +52,9 @@ const PROPERTIES = [
   "ep_lead_source", "date_of_appointment",
   "date_drafting_query",
   "have_they_signed_the_14_day_waiver_",
-  "consultant_query_reason"
+  "consultant_query_reason",
+  "legacy_advisor__owner",
+  "hs_v2_date_entered_1223620776", "hs_v2_date_exited_1223620776"
 ];
 
 // ─── Deactivated drafter exclusion list ─────────────────────────
@@ -399,7 +401,7 @@ async function fetchDealStageLabels() {
 
 // ─── Fetch all fresh data ──────────────────────────────────────
 async function fetchFreshData() {
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, stageLabels] =
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, stageLabels] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -410,6 +412,7 @@ async function fetchFreshData() {
       fetchPropertyOptions("amendment_source").catch(() => ({})),
       fetchPropertyOptions("ep_lead_source").catch(() => ({})),
       fetchPropertyOptions("consultant_query_reason").catch(() => ({})),
+      fetchPropertyOptions("legacy_advisor__owner").catch(() => ({})),
       fetchDealStageLabels().catch(() => ({}))
     ]);
 
@@ -423,6 +426,7 @@ async function fetchFreshData() {
     amendmentSourceOptions,
     leadSourceOptions,
     consultantQueryReasonOptions,
+    legacyAdvisorOptions,
     stageLabels,
     dealExclusions: DRAFTER_EXCLUSIONS
   };
