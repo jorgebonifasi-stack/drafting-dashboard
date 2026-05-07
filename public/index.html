@@ -3033,7 +3033,119 @@
       );
     }
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<Dashboard/>);
+    // ─── TV Dashboard (read-only, unauth, fixed 5-chart grid) ──
+    // Rendered when the URL path is /tv. Polls /api/tv-deals every 5 min.
+    // Always WoW with the current week selected. No interactivity.
+    function TVDashboard(){
+      const[deals,setDeals]=useState([]);
+      const[lastRefresh,setLastRefresh]=useState(null);
+      const[loading,setLoading]=useState(true);
+      const[error,setError]=useState(null);
+      const[draftingOpts,setDraftingOpts]=useState({});
+
+      const loadData=useCallback(async()=>{
+        try{
+          const res=await fetch("/api/tv-deals");
+          if(!res.ok)throw new Error("Request failed");
+          const result=await res.json();
+          const rawDeals=result.deals||[];
+          const ownerMap=result.ownerMap||{};
+          const dOpts=result.draftingOwnerOptions||{};
+          setDraftingOpts(dOpts);
+          setDeals(processDeals(
+            rawDeals,ownerMap,dOpts,
+            result.proofOwnerOptions||{},
+            result.queryReasonOptions||{},
+            result.urgentReasonOptions||{},
+            result.amendmentSourceOptions||{},
+            result.leadSourceOptions||{},
+            result.consultantQueryReasonOptions||{},
+            result.legacyAdvisorOptions||{},
+            result.dealExclusions||{}
+          ));
+          setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
+          setError(null);
+        }catch(e){setError(e.message||String(e));}
+        finally{setLoading(false);}
+      },[]);
+
+      useEffect(()=>{
+        loadData();
+        const id=setInterval(loadData,5*60*1000);
+        return()=>clearInterval(id);
+      },[loadData]);
+
+      // Always WoW with the current ISO week selected.
+      const gran="WoW";
+      const today=new Date();
+      const currentBucket=dateToBucket(today,gran);
+
+      // Split deals by priority
+      const standardDeals=useMemo(()=>deals.filter(d=>!d.isUrgent),[deals]);
+      const urgentDeals=useMemo(()=>deals.filter(d=>d.isUrgent),[deals]);
+
+      const cardStyle={background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 16px 12px",display:"flex",flexDirection:"column",minHeight:0};
+      const titleStyle={color:C.white,fontSize:14,fontWeight:700,marginBottom:8,letterSpacing:0.2};
+
+      if(loading)return<div style={{minHeight:"100vh",background:C.bg,color:C.text,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>Loading…</div>;
+
+      return(
+        <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'Inter','Segoe UI',system-ui,sans-serif",padding:14,boxSizing:"border-box",display:"flex",flexDirection:"column",gap:10}}>
+          {/* Top header */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"4px 8px"}}>
+            <div style={{color:C.white,fontSize:18,fontWeight:700,letterSpacing:0.3}}>Estate Planning — Drafting Live</div>
+            <div style={{fontSize:12,color:C.text,opacity:0.6}}>
+              {currentBucket?bucketLabel(currentBucket,gran):""} {error?<span style={{color:C.red,marginLeft:8}}>• {error}</span>:lastRefresh?<span style={{marginLeft:8}}>• Updated {lastRefresh.toLocaleTimeString()}</span>:""}
+            </div>
+          </div>
+
+          {/* Row 1: Chart 1 | Chart 6 */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,flex:1,minHeight:0}}>
+            <div style={cardStyle}>
+              <div style={titleStyle}>Total Drafts Completed per Drafter — {bucketLabel(currentBucket,gran)}</div>
+              <div style={{flex:1,minHeight:0}}>
+                <Chart1 deals={standardDeals} gran={gran} bucket={currentBucket} standardTarget={DEFAULT_STANDARD_TARGET} overrides={DEFAULT_OVERRIDES}/>
+              </div>
+            </div>
+            <div style={cardStyle}>
+              <div style={titleStyle}>Drafting — Productivity & Avg Turnaround (Standard)</div>
+              <div style={{flex:1,minHeight:0}}>
+                <Chart6 deals={standardDeals} gran={gran}/>
+              </div>
+            </div>
+          </div>
+
+          {/* Row 2: Chart 8 | Chart 4 */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,flex:1,minHeight:0}}>
+            <div style={cardStyle}>
+              <div style={titleStyle}>Productivity & Avg Turnaround (Urgent)</div>
+              <div style={{flex:1,minHeight:0}}>
+                <Chart8 deals={urgentDeals} gran={gran}/>
+              </div>
+            </div>
+            <div style={cardStyle}>
+              <div style={titleStyle}>Drafting Query Rate — Trend</div>
+              <div style={{flex:1,minHeight:0}}>
+                <Chart4 deals={deals} gran={gran}/>
+              </div>
+            </div>
+          </div>
+
+          {/* Row 3: Chart 10 (full width) */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr",gap:10,flex:1,minHeight:0}}>
+            <div style={cardStyle}>
+              <div style={titleStyle}>Productivity & Avg Turnaround (Amendments)</div>
+              <div style={{flex:1,minHeight:0}}>
+                <Chart10 deals={deals} gran={gran}/>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const __isTV=typeof window!=="undefined"&&window.location&&window.location.pathname.replace(/\/$/,"")==="/tv";
+    ReactDOM.createRoot(document.getElementById("root")).render(__isTV?<TVDashboard/>:<Dashboard/>);
   </script>
 </body>
 </html>

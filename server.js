@@ -565,6 +565,30 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// ─── TV display mode (unauth) ───────────────────────────────────
+// Public-by-design read-only view at /tv showing a fixed set of charts
+// for an office TV. No auth — anyone with the URL can view.
+// Data exposed is the same as the authenticated /api/deals payload.
+app.get("/tv", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.get("/api/tv-deals", async (req, res) => {
+  try {
+    if (!HUBSPOT_TOKEN) return res.status(500).json({ error: "HUBSPOT_API_KEY not set" });
+    const now = Date.now();
+    if (cache.data && (now - cache.timestamp) < CACHE_TTL_MS) {
+      return res.json({ ...cache.data, _cachedAt: String(cache.timestamp) });
+    }
+    const data = await fetchFreshData();
+    cache = { data, timestamp: now };
+    res.json({ ...data, _cachedAt: String(now) });
+  } catch (err) {
+    console.error("/api/tv-deals error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Serve static files — protected
 app.use(requireAuth, express.static(path.join(__dirname, "public")));
 
