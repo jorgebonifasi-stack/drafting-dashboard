@@ -2105,6 +2105,7 @@
         "approved proof reading"
       ]);
       const[drafterFilter,setDrafterFilter]=useState("__all__");
+      const[stageFilter,setStageFilter]=useState("__all__");
       const allRows=useMemo(()=>{
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
@@ -2145,9 +2146,18 @@
         });
       },[allRows]);
 
-      const chartRows=useMemo(()=>(
-        drafterFilter==="__all__"?allRows:allRows.filter(r=>r.drafter===drafterFilter)
-      ),[allRows,drafterFilter]);
+      const stageOptions=useMemo(()=>{
+        const set=new Set();
+        allRows.forEach(r=>set.add(r.stage));
+        return Array.from(set).sort();
+      },[allRows]);
+
+      const chartRows=useMemo(()=>{
+        let arr=allRows;
+        if(drafterFilter!=="__all__")arr=arr.filter(r=>r.drafter===drafterFilter);
+        if(stageFilter!=="__all__")arr=arr.filter(r=>r.stage===stageFilter);
+        return arr;
+      },[allRows,drafterFilter,stageFilter]);
 
       const[gran,setGran]=useState("WoW");
       const[selectedBucket,setSelectedBucket]=useState(null);
@@ -2167,9 +2177,10 @@
         const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Waiver Extension Days","Current Stage","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.waiverExtension||0,r.stage,HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
+        const stSuffix=stageFilter==="__all__"?"":`_${stageFilter.replace(/[^A-Za-z0-9]+/g,"_")}`;
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
-        downloadCSV(`macmillan_sla${drSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
-      },[rows,drafterFilter,selectedBucket]);
+        downloadCSV(`macmillan_sla${drSuffix}${stSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,drafterFilter,stageFilter,selectedBucket]);
 
       return(
         <React.Fragment>
@@ -2197,12 +2208,19 @@
                     <option key={name} value={name}>{name} ({allRows.filter(r=>r.drafter===name).length})</option>
                   ))}
                 </select>
+                <label style={{fontSize:12,color:C.text,opacity:0.7}}>Stage</label>
+                <select style={S.select} value={stageFilter} onChange={e=>setStageFilter(e.target.value)}>
+                  <option value="__all__">All ({allRows.length})</option>
+                  {stageOptions.map(name=>(
+                    <option key={name} value={name}>{name} ({allRows.filter(r=>r.stage===name).length})</option>
+                  ))}
+                </select>
                 <span style={{fontSize:12,color:C.text,opacity:0.7}}>{rows.length} deal{rows.length===1?"":"s"}</span>
                 <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"\u2B07"} CSV</button>
               </div>
             </div>
             {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open Macmillan deals with an appointment date.":selectedBucket?"No deals in the selected bucket for this drafter.":"No deals match this drafter filter."}</div>
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open Macmillan deals with an appointment date.":selectedBucket?"No deals in the selected bucket for the active filters.":"No deals match the active filters."}</div>
             ):(
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -2257,6 +2275,7 @@
         "approved proof reading"
       ]);
       const[drafterFilter,setDrafterFilter]=useState("__all__");
+      const[stageFilter,setStageFilter]=useState("__all__");
       const allRows=useMemo(()=>{
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
@@ -2298,9 +2317,18 @@
         });
       },[allRows]);
 
-      const chartRows=useMemo(()=>(
-        drafterFilter==="__all__"?allRows:allRows.filter(r=>r.drafter===drafterFilter)
-      ),[allRows,drafterFilter]);
+      const stageOptions=useMemo(()=>{
+        const set=new Set();
+        allRows.forEach(r=>set.add(r.stage));
+        return Array.from(set).sort();
+      },[allRows]);
+
+      const chartRows=useMemo(()=>{
+        let arr=allRows;
+        if(drafterFilter!=="__all__")arr=arr.filter(r=>r.drafter===drafterFilter);
+        if(stageFilter!=="__all__")arr=arr.filter(r=>r.stage===stageFilter);
+        return arr;
+      },[allRows,drafterFilter,stageFilter]);
 
       const[gran,setGran]=useState("WoW");
       const[selectedBucket,setSelectedBucket]=useState(null);
@@ -2319,9 +2347,10 @@
         const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Calendar Days Remaining","Waiver Extension Days","Current Stage","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.anchor),fmtDate(r.deadline),r.calRemaining==null?"":r.calRemaining,r.waiverExtension||0,r.stage,HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
+        const stSuffix=stageFilter==="__all__"?"":`_${stageFilter.replace(/[^A-Za-z0-9]+/g,"_")}`;
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
-        downloadCSV(`standard_sla${drSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
-      },[rows,drafterFilter,selectedBucket]);
+        downloadCSV(`standard_sla${drSuffix}${stSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,drafterFilter,stageFilter,selectedBucket]);
 
       return(
         <React.Fragment>
@@ -2349,12 +2378,19 @@
                     <option key={name} value={name}>{name} ({allRows.filter(r=>r.drafter===name).length})</option>
                   ))}
                 </select>
+                <label style={{fontSize:12,color:C.text,opacity:0.7}}>Stage</label>
+                <select style={S.select} value={stageFilter} onChange={e=>setStageFilter(e.target.value)}>
+                  <option value="__all__">All ({allRows.length})</option>
+                  {stageOptions.map(name=>(
+                    <option key={name} value={name}>{name} ({allRows.filter(r=>r.stage===name).length})</option>
+                  ))}
+                </select>
                 <span style={{fontSize:12,color:C.text,opacity:0.7}}>{rows.length} deal{rows.length===1?"":"s"}</span>
                 <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"\u2B07"} CSV</button>
               </div>
             </div>
             {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open deals with a usable SLA anchor date.":selectedBucket?"No deals in the selected bucket for this drafter.":"No deals match this drafter filter."}</div>
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open deals with a usable SLA anchor date.":selectedBucket?"No deals in the selected bucket for the active filters.":"No deals match the active filters."}</div>
             ):(
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
