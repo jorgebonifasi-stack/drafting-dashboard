@@ -2452,10 +2452,15 @@
             advisor:d.legacyAdvisor||"Unassigned",
             entered,
             bizDaysInStage,
+            isUrgent:!!d.isUrgent,
             stage:stageLabels[d.dealstage]||d.dealstage||"—"
           });
         });
-        out.sort((a,b)=>b.bizDaysInStage-a.bizDaysInStage);
+        // Urgent (Priority = High) deals first, each group sorted by Biz Days In Stage desc.
+        out.sort((a,b)=>{
+          if(a.isUrgent!==b.isUrgent)return a.isUrgent?-1:1;
+          return b.bizDaysInStage-a.bizDaysInStage;
+        });
         return out;
       },[deals,stageLabels]);
 
@@ -2588,6 +2593,7 @@
                       <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
                         <td style={{padding:"10px 12px"}}>
                           <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                          {r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.advisor}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.entered)}</td>
