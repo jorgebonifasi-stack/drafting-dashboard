@@ -2432,6 +2432,178 @@
       );
     }
 
+    // ─── Legacy Advisor SLA Table ──────────────────────────────
+    // Tracks deals currently in "Replied — Drafts With Customer" (stage 1223620776).
+    // No SLA target — just measures business days the deal has been in the stage.
+    function LegacyAdvisorSLATable({deals,stageLabels}){
+      const RDWC_STAGE="1223620776";
+      const[advisorFilter,setAdvisorFilter]=useState("__all__");
+      const allRows=useMemo(()=>{
+        const today=new Date();today.setHours(0,0,0,0);
+        const out=[];
+        deals.forEach(d=>{
+          if(d.dealstage!==RDWC_STAGE)return;
+          if(!d.enteredRDWC)return;
+          const entered=new Date(d.enteredRDWC);entered.setHours(0,0,0,0);
+          const bizDaysInStage=calcBusinessDays(entered,today)||0;
+          out.push({
+            id:d.id,
+            dealname:d.dealname,
+            advisor:d.legacyAdvisor||"Unassigned",
+            entered,
+            bizDaysInStage,
+            stage:stageLabels[d.dealstage]||d.dealstage||"—"
+          });
+        });
+        out.sort((a,b)=>b.bizDaysInStage-a.bizDaysInStage);
+        return out;
+      },[deals,stageLabels]);
+
+      const advisorOptions=useMemo(()=>{
+        const set=new Set();
+        allRows.forEach(r=>set.add(r.advisor));
+        return Array.from(set).sort((a,b)=>{
+          if(a==="Unassigned")return 1;
+          if(b==="Unassigned")return -1;
+          return a.localeCompare(b);
+        });
+      },[allRows]);
+
+      const chartRows=useMemo(()=>(
+        advisorFilter==="__all__"?allRows:allRows.filter(r=>r.advisor===advisorFilter)
+      ),[allRows,advisorFilter]);
+
+      const[gran,setGran]=useState("WoW");
+      const[selectedBucket,setSelectedBucket]=useState(null);
+      useEffect(()=>{setSelectedBucket(null);},[gran]);
+
+      const rows=useMemo(()=>(
+        selectedBucket?chartRows.filter(r=>r.entered&&dateToBucket(r.entered,gran)===selectedBucket):chartRows
+      ),[chartRows,selectedBucket,gran]);
+
+      const exportCSV=useCallback(()=>{
+        const hdr=["Deal ID","Deal Name","Legacy Advisor","Entered RDWC","Business Days In Stage","Current Stage","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.advisor,fmtDate(r.entered),r.bizDaysInStage,r.stage,HS_BASE+r.id])];
+        const adSuffix=advisorFilter==="__all__"?"":`_${advisorFilter.replace(/\s+/g,"_")}`;
+        const bSuffix=selectedBucket?`_${selectedBucket}`:"";
+        downloadCSV(`legacy_advisor_rdwc${adSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,advisorFilter,selectedBucket]);
+
+      // Single-series backlog chart (no SLA status colouring)
+      const chartData=useMemo(()=>{
+        const counts={};
+        chartRows.forEach(r=>{
+          if(!r.entered)return;
+          const b=dateToBucket(r.entered,gran);
+          if(!counts[b])counts[b]={bucket:b,label:bucketLabel(b,gran),count:0};
+          counts[b].count++;
+        });
+        return Object.values(counts).sort((a,b)=>a.bucket.localeCompare(b.bucket));
+      },[chartRows,gran]);
+
+      const handleChartClick=useCallback(e=>{
+        const b=e&&e.activePayload&&e.activePayload[0]&&e.activePayload[0].payload&&e.activePayload[0].payload.bucket;
+        if(!b)return;
+        setSelectedBucket(prev=>prev===b?null:b);
+      },[]);
+
+      return(
+        <React.Fragment>
+        <div style={{padding:"16px 24px 0"}}>
+          <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:12}}>
+              <div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Replied — Drafts With Customer Backlog</div>
+                <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
+                  Deals currently in the "Replied — Drafts With Customer" stage, bucketed by entry date. Click a bar to filter the table.
+                </div>
+              </div>
+              <div style={{display:"flex",gap:6}}>
+                {["DoD","WoW"].map(g=>(
+                  <button key={g} style={S.toggle(gran===g)} onClick={()=>setGran(g)}>{g}</button>
+                ))}
+              </div>
+            </div>
+            {chartData.length===0?(
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No deals currently in Replied — Drafts With Customer.</div>
+            ):(
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={chartData} margin={{top:10,right:20,left:0,bottom:10}} onClick={handleChartClick} style={{cursor:"pointer"}}>
+                  <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+                  <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+                  <YAxis tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false} label={{value:"Deals",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+                  <Tooltip content={<DarkTooltip/>} cursor={{fill:"rgba(255,255,255,0.04)"}}/>
+                  <Bar dataKey="count" name="Deals entered RDWC" barSize={28} radius={[4,4,0,0]}>
+                    {chartData.map((d,i)=>(
+                      <Cell key={i} fill={selectedBucket?(d.bucket===selectedBucket?C.blue:"rgba(93,173,226,0.25)"):C.blue}/>
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+        <div style={{padding:"16px 24px"}}>
+          <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
+              <div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Legacy Advisor — Replied — Drafts With Customer</div>
+                <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
+                  Deals currently in "Replied — Drafts With Customer", showing business days spent in stage. No target — measurement only.
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                {selectedBucket&&(
+                  <span style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,padding:"4px 10px",borderRadius:6,background:"rgba(52,152,219,0.15)",border:`1px solid ${C.accent}`,color:C.accent,fontWeight:600}}>
+                    {bucketLabel(selectedBucket,gran)}
+                    <button onClick={()=>setSelectedBucket(null)} style={{background:"transparent",border:"none",color:C.accent,cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>{"×"}</button>
+                  </span>
+                )}
+                <label style={{fontSize:12,color:C.text,opacity:0.7}}>Legacy Advisor</label>
+                <select style={S.select} value={advisorFilter} onChange={e=>setAdvisorFilter(e.target.value)}>
+                  <option value="__all__">All ({allRows.length})</option>
+                  {advisorOptions.map(name=>(
+                    <option key={name} value={name}>{name} ({allRows.filter(r=>r.advisor===name).length})</option>
+                  ))}
+                </select>
+                <span style={{fontSize:12,color:C.text,opacity:0.7}}>{rows.length} deal{rows.length===1?"":"s"}</span>
+                <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"⬇"} CSV</button>
+              </div>
+            </div>
+            {rows.length===0?(
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No deals currently in Replied — Drafts With Customer.":"No deals match the active filters."}</div>
+            ):(
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                  <thead>
+                    <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Legacy Advisor</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Entered RDWC</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Biz Days In Stage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r=>(
+                      <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                        <td style={{padding:"10px 12px"}}>
+                          <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                        </td>
+                        <td style={{padding:"10px 12px"}}>{r.advisor}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.entered)}</td>
+                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:C.white}}>{r.bizDaysInStage}d</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+        </React.Fragment>
+      );
+    }
+
     function Dashboard(){
       const[loading,setLoading]=useState(true);
       const[error,setError]=useState(null);
@@ -2898,12 +3070,42 @@
           <div style={S.topBar}>
             <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
               <h1 style={S.title}>Estate Planning &mdash; Drafting &amp; Proofreading</h1>
-              <div style={{display:"flex",gap:4,padding:2,background:C.surface,borderRadius:8,border:`1px solid ${C.border}`}}>
-                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="graphs"?C.accent:"transparent",color:view==="graphs"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("graphs")}>Drafting/Proofreading Metrics</button>
-                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="legacy-advisor"?C.accent:"transparent",color:view==="legacy-advisor"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("legacy-advisor")}>Legacy Advisor Metrics</button>
-                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="sla"?C.accent:"transparent",color:view==="sla"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("sla")}>SLA</button>
-                <button style={{padding:"6px 14px",borderRadius:6,border:"none",background:view==="macmillan-sla"?C.accent:"transparent",color:view==="macmillan-sla"?C.white:C.text,cursor:"pointer",fontSize:13,fontWeight:600}} onClick={()=>setView("macmillan-sla")}>Macmillan SLA</button>
-              </div>
+              {/* Two-level nav: top section + sub-tabs */}
+              {(()=>{
+                const SECTIONS={
+                  drafting:{label:"Drafting",defaultView:"graphs",subs:[
+                    {key:"graphs",label:"Metrics"},
+                    {key:"sla",label:"Standard SLA"},
+                    {key:"macmillan-sla",label:"Macmillan SLA"}
+                  ]},
+                  "legacy-advisor":{label:"Legacy Advisor",defaultView:"legacy-advisor",subs:[
+                    {key:"legacy-advisor",label:"Metrics"},
+                    {key:"legacy-advisor-sla",label:"SLA"}
+                  ]}
+                };
+                const VIEW_TO_SECTION={
+                  graphs:"drafting",sla:"drafting","macmillan-sla":"drafting",
+                  "legacy-advisor":"legacy-advisor","legacy-advisor-sla":"legacy-advisor"
+                };
+                const activeSection=VIEW_TO_SECTION[view]||"drafting";
+                const subTabs=SECTIONS[activeSection].subs;
+                const sectionPill=(key)=>({padding:"5px 12px",borderRadius:6,border:"none",background:activeSection===key?C.accent:"transparent",color:activeSection===key?C.white:C.text,cursor:"pointer",fontSize:12,fontWeight:700,letterSpacing:0.3,textTransform:"uppercase"});
+                const subPill=(active)=>({padding:"6px 12px",borderRadius:6,border:"none",background:active?"rgba(52,152,219,0.18)":"transparent",color:active?C.accent:C.text,cursor:"pointer",fontSize:12,fontWeight:600});
+                return(
+                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    <div style={{display:"flex",gap:4,padding:2,background:C.surface,borderRadius:8,border:`1px solid ${C.border}`}}>
+                      {Object.entries(SECTIONS).map(([key,s])=>(
+                        <button key={key} style={sectionPill(key)} onClick={()=>setView(s.defaultView)}>{s.label}</button>
+                      ))}
+                    </div>
+                    <div style={{display:"flex",gap:2,paddingLeft:4}}>
+                      {subTabs.map(t=>(
+                        <button key={t.key} style={subPill(view===t.key)} onClick={()=>setView(t.key)}>{t.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
             <div style={S.controls}>
               {(view==="graphs"||view==="legacy-advisor")&&["DoD","WoW","MoM"].map(g=>(
@@ -2943,6 +3145,7 @@
 
           {view==="sla"&&<StandardSLATable deals={deals} stageLabels={stageLabels}/>}
           {view==="macmillan-sla"&&<MacmillanSLATable deals={deals} stageLabels={stageLabels}/>}
+          {view==="legacy-advisor-sla"&&<LegacyAdvisorSLATable deals={deals} stageLabels={stageLabels}/>}
 
           {view==="legacy-advisor"&&<>
             <div className="dash-row" style={S.row}>
