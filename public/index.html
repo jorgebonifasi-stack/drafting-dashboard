@@ -2243,13 +2243,11 @@
                       <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
                         <td style={{padding:"10px 12px"}}>
                           <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                          {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+{r.waiverExtension}d waiver</span>}
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.drafter}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
-                        <td style={{padding:"10px 12px"}}>
-                          {fmtDate(r.deadline)}
-                          {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:6,padding:"2px 6px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:600}}>+{r.waiverExtension}d waiver</span>}
-                        </td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
                         <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.bizRemaining)}}>
                           {r.bizRemaining==null?"—":r.bizRemaining<0?`${r.bizRemaining}d (breached)`:`${r.bizRemaining}d`}
                         </td>
@@ -2413,13 +2411,11 @@
                       <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
                         <td style={{padding:"10px 12px"}}>
                           <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                          {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+{r.waiverExtension}d waiver</span>}
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.drafter}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.anchor)}</td>
-                        <td style={{padding:"10px 12px"}}>
-                          {fmtDate(r.deadline)}
-                          {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:6,padding:"2px 6px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:600}}>+{r.waiverExtension}d waiver</span>}
-                        </td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
                         <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calRemaining)}}>
                           {r.calRemaining==null?"—":r.calRemaining<0?`${r.calRemaining}d (breached)`:`${r.calRemaining}d`}
                         </td>
