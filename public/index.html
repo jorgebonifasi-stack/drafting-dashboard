@@ -195,7 +195,7 @@
     }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,dealExclusions){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,waiverOptions,dealExclusions){
       return rawDeals.map(d=>{
         const p=d.properties||{};
         const enteredDrafting=parseHSDate(p.hs_v2_date_entered_1223620771);
@@ -274,8 +274,12 @@
         // Workflow-stamped date: when drafting_query_reason was first populated (from 22/04/2026)
         const firstQueryDate=parseHSDate(p.date_drafting_query);
         // 14-day waiver — true if signed (Yes), false if not (No), null if unknown.
-        const rawWaiver=(p.have_they_signed_the_14_day_waiver_||"").toString().trim().toLowerCase();
-        const waiverSigned14d=rawWaiver==="yes"?true:rawWaiver==="no"?false:null;
+        // 14-day waiver: HubSpot returns the enum option's internal value (e.g. "Yes"/"No",
+        // but sometimes lower-case or a coded value). Resolve via the property options so we
+        // match the displayed label, then check for yes/no in a case-insensitive way.
+        const rawWaiver=(p.have_they_signed_the_14_day_waiver_||"").toString().trim();
+        const waiverLabel=((waiverOptions||{})[rawWaiver]||rawWaiver).toString().trim().toLowerCase();
+        const waiverSigned14d=waiverLabel==="yes"||waiverLabel==="true"?true:(waiverLabel==="no"||waiverLabel==="false"?false:null);
         return{
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
           leadSources,dateOfAppointment,firstQueryDate,waiverSigned14d,
@@ -2696,13 +2700,14 @@
           const leadSourceOpts=result.leadSourceOptions||{};
           const consultantQueryReasonOpts=result.consultantQueryReasonOptions||{};
           const legacyAdvisorOpts=result.legacyAdvisorOptions||{};
+          const waiverOpts=result.waiverOptions||{};
           const stageLbls=result.stageLabels||{};
           const exclusions=result.dealExclusions||{};
           setDealExclusions(exclusions);
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
           setStageLabels(stageLbls);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,exclusions));
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,waiverOpts,exclusions));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -3306,6 +3311,7 @@
             result.leadSourceOptions||{},
             result.consultantQueryReasonOptions||{},
             result.legacyAdvisorOptions||{},
+            result.waiverOptions||{},
             result.dealExclusions||{}
           ));
           setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());

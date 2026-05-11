@@ -401,7 +401,7 @@ async function fetchDealStageLabels() {
 
 // ─── Fetch all fresh data ──────────────────────────────────────
 async function fetchFreshData() {
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, stageLabels] =
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, stageLabels] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -413,6 +413,7 @@ async function fetchFreshData() {
       fetchPropertyOptions("ep_lead_source").catch(() => ({})),
       fetchPropertyOptions("consultant_query_reason").catch(() => ({})),
       fetchPropertyOptions("legacy_advisor__owner").catch(() => ({})),
+      fetchPropertyOptions("have_they_signed_the_14_day_waiver_").catch(() => ({})),
       fetchDealStageLabels().catch(() => ({}))
     ]);
 
@@ -427,6 +428,7 @@ async function fetchFreshData() {
     leadSourceOptions,
     consultantQueryReasonOptions,
     legacyAdvisorOptions,
+    waiverOptions,
     stageLabels,
     dealExclusions: DRAFTER_EXCLUSIONS
   };
