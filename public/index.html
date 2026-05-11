@@ -2264,17 +2264,22 @@
       );
     }
 
-    // ─── Standard SLA Table (28 calendar days from SLA anchor) ──
-    // Anchor = latest of: original_date_entered_drafting_instructions, dateOfAppointment.
-    // A deal is excluded if both are missing.
+    // ─── Standard SLA Table (mixed drafting + amendment cohorts) ──
+    // Drafting deals: 28 calendar days from latest of (original_date_entered_drafting_instructions,
+    //   dateOfAppointment); excluded if both anchors missing; +14 cal day extension when the
+    //   14-day waiver is not signed.
+    // Amendment deals (stage 1338772492): business-day SLA from enteredAmendment -- 10 biz days
+    //   when amendment_source = "Client amendment", otherwise 1 biz day. No waiver extension.
     function StandardSLATable({deals,stageLabels}){
       const SLA_DAYS=28;
+      const AMEND_STAGE="1338772492";
       const normStage=s=>(s||"").toLowerCase().replace(/[\u2013\u2014-]+/g," ").replace(/\s+/g," ").trim();
       const ALLOWED_STAGES=new Set([
         "drafting instructions",
         "drafting query",
         "required proof reading",
-        "approved proof reading"
+        "approved proof reading",
+        "amendment requested"
       ]);
       const[drafterFilter,setDrafterFilter]=useState("__all__");
       const[stageFilter,setStageFilter]=useState("__all__");
@@ -2284,28 +2289,61 @@
         deals.forEach(d=>{
           const stageLabel=stageLabels[d.dealstage]||d.dealstage||"";
           if(!ALLOWED_STAGES.has(normStage(stageLabel)))return;
-          const candidates=[];
-          if(d.origEnteredDrafting)candidates.push(new Date(d.origEnteredDrafting).getTime());
-          if(d.dateOfAppointment)candidates.push(new Date(d.dateOfAppointment).getTime());
-          if(!candidates.length)return; // no anchor available
-          const anchor=new Date(Math.max(...candidates));anchor.setHours(0,0,0,0);
-          // If the customer has NOT signed the 14-day waiver, the SLA is extended by 14 calendar days.
-          const waiverExtension=d.waiverSigned14d===false?14:0;
-          const totalDays=SLA_DAYS+waiverExtension;
-          const deadline=new Date(anchor);deadline.setDate(deadline.getDate()+totalDays);
-          const calRemaining=Math.round((deadline-today)/86400000);
+
+          const isAmendment=d.dealstage===AMEND_STAGE;
+          let anchor,deadline,daysRemaining,unit,state,slaTargetDays,waiverExtension=0;
+          let amendmentSource="";
+
+          if(isAmendment){
+            if(!d.enteredAmendment)return;
+            anchor=new Date(d.enteredAmendment);anchor.setHours(0,0,0,0);
+            amendmentSource=d.amendmentSource||"";
+            const isClientAmend=amendmentSource.trim().toLowerCase()==="client amendment";
+            slaTargetDays=isClientAmend?10:1;
+            deadline=addBusinessDays(anchor,slaTargetDays);
+            daysRemaining=signedBusinessDays(today,deadline);
+            unit="biz";
+            if(daysRemaining==null)state="comfortable";
+            else if(daysRemaining<0)state="breached";
+            else if(isClientAmend){
+              state=daysRemaining<=1?"close":daysRemaining<=3?"warning":"comfortable";
+            }else{
+              state=daysRemaining===0?"close":"comfortable";
+            }
+          }else{
+            const candidates=[];
+            if(d.origEnteredDrafting)candidates.push(new Date(d.origEnteredDrafting).getTime());
+            if(d.dateOfAppointment)candidates.push(new Date(d.dateOfAppointment).getTime());
+            if(!candidates.length)return; // no anchor available
+            anchor=new Date(Math.max(...candidates));anchor.setHours(0,0,0,0);
+            waiverExtension=d.waiverSigned14d===false?14:0;
+            const totalDays=SLA_DAYS+waiverExtension;
+            slaTargetDays=totalDays;
+            deadline=new Date(anchor);deadline.setDate(deadline.getDate()+totalDays);
+            daysRemaining=Math.round((deadline-today)/86400000);
+            unit="cal";
+            state=daysRemaining<0?"breached":daysRemaining<=3?"close":daysRemaining<=7?"warning":"comfortable";
+          }
+
           out.push({
             id:d.id,
             dealname:d.dealname,
             drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
             anchor,
             deadline,
-            calRemaining,
+            daysRemaining,
+            unit,
+            state,
+            isAmendment,
+            amendmentSource,
+            slaTargetDays,
             waiverExtension,
-            stage:stageLabel||"—"
+            stage:stageLabel||"\u2014"
           });
         });
-        out.sort((a,b)=>(a.calRemaining??1e9)-(b.calRemaining??1e9));
+        // Sort by raw daysRemaining ascending (most-breached first). Cross-unit comparison is
+        // a rough heuristic but fine for "what needs attention now".
+        out.sort((a,b)=>(a.daysRemaining??1e9)-(b.daysRemaining??1e9));
         return out;
       },[deals,stageLabels]);
 
@@ -2337,17 +2375,18 @@
       useEffect(()=>{setSelectedBucket(null);},[gran]);
 
       const getBucketDate=useCallback(r=>r.anchor,[]);
-      const getStatus=useCallback(r=>r.calRemaining==null?"comfortable":r.calRemaining<0?"breached":r.calRemaining<=3?"close":r.calRemaining<=7?"warning":"comfortable",[]);
+      // State already computed per row (drafting vs amendment thresholds differ).
+      const getStatus=useCallback(r=>r.state||"comfortable",[]);
 
       const rows=useMemo(()=>(
         selectedBucket?chartRows.filter(r=>r.anchor&&dateToBucket(r.anchor,gran)===selectedBucket):chartRows
       ),[chartRows,selectedBucket,gran]);
 
-      const rowColor=n=>n==null?C.text:n<0?C.red:n<=3?C.amber:n<=7?"#F1C40F":C.green;
+      const stateColor=s=>s==="breached"?C.red:s==="close"?C.amber:s==="warning"?"#F1C40F":C.green;
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Calendar Days Remaining","Waiver Extension Days","Current Stage","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.anchor),fmtDate(r.deadline),r.calRemaining==null?"":r.calRemaining,r.waiverExtension||0,r.stage,HS_BASE+r.id])];
+        const hdr=["Deal ID","Deal Name","Drafter","Anchor Date","SLA Deadline","Days Remaining","Days Unit","Waiver Extension Days","SLA Type","Amendment Source","Current Stage","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.anchor),fmtDate(r.deadline),r.daysRemaining==null?"":r.daysRemaining,r.unit,r.waiverExtension||0,r.isAmendment?"Amendment":"Drafting",r.amendmentSource||"",r.stage,HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
         const stSuffix=stageFilter==="__all__"?"":`_${stageFilter.replace(/[^A-Za-z0-9]+/g,"_")}`;
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
@@ -2361,9 +2400,9 @@
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
               <div>
-                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA \u2014 Deals Nearing 28-day Deadline</div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA \u2014 Deals Nearing SLA</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  SLA = 28 calendar days from the SLA anchor (latest of original drafting-instructions date and Date of Appointment). +14 calendar days when the customer has not signed the 14-day waiver. Deals are excluded if both anchor candidates are missing. Only deals currently in Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, or Approved \u2014 Proof Reading.
+                  Two streams in one table. Drafting deals: 28 calendar days from the SLA anchor (latest of original drafting-instructions date and Date of Appointment); +14 calendar days when the 14-day waiver is not signed. Amendment Requested deals: 10 business days from entered-amendment when amendment_source = "Client amendment", otherwise 1 business day. Drafting deals are excluded if both anchor candidates are missing. Stages included: Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, Approved \u2014 Proof Reading, Amendment Requested.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -2400,9 +2439,9 @@
                     <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Anchor Date</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
-                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Cal Days Remaining</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Days Remaining</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Current Stage</th>
                     </tr>
                   </thead>
@@ -2411,13 +2450,14 @@
                       <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
                         <td style={{padding:"10px 12px"}}>
                           <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                          {r.isAmendment&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(127,140,141,0.22)",color:"#95A5A6",fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>Amend</span>}
                           {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+{r.waiverExtension}d waiver</span>}
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.drafter}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.anchor)}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
-                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calRemaining)}}>
-                          {r.calRemaining==null?"—":r.calRemaining<0?`${r.calRemaining}d (breached)`:`${r.calRemaining}d`}
+                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:stateColor(r.state)}}>
+                          {r.daysRemaining==null?"—":r.daysRemaining<0?`${r.daysRemaining}d ${r.unit} (breached)`:`${r.daysRemaining}d ${r.unit}`}
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.stage}</td>
                       </tr>
