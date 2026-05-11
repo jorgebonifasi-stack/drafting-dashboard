@@ -431,6 +431,7 @@
       chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour. Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
       chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
+      chart16:'Total amendments completed per drafter in the selected period. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner. Plain bars, no target.',
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
       la3:'Average business-day turnover per Legacy Advisor for deals that exited "Replied — Drafts With Customer" in the selected period. Turnover = business days from entering the stage to exiting it.',
@@ -466,6 +467,7 @@
       c12:[{key:"label",label:"Period"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"net",label:"Net"},{key:"backlog",label:"Backlog"}],
       c13:[{key:"label",label:"Period"},{key:"count",label:"Deals"}],
       c15:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
+      c16:[{key:"name",label:"Drafter"},{key:"count",label:"Amendments"}],
       la1:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Active in RDWC"}],
       la2:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Exited RDWC"}],
       la3:[{key:"name",label:"Legacy Advisor"},{key:"avg",label:"Avg Biz Days"},{key:"count",label:"Deals"}],
@@ -485,6 +487,7 @@
       c12:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered DI"},{key:"exited",label:"Exited DI"}],
       c13:[{key:"dealname",label:"Deal"},{key:"date",label:"Date Entered"}],
       c15:[{key:"dealname",label:"Deal"},{key:"reasons",label:"Consultant Query Reason"}],
+      c16:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered Amendment"},{key:"exited",label:"Exited Amendment"},{key:"source",label:"Source"}],
       la1:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered RDWC"}],
       la2:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Biz Days"}],
       la3:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Biz Days"}],
@@ -654,6 +657,41 @@
             <Bar dataKey="count" radius={[0,6,6,0]} barSize={22}>
               <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
               {data.map((entry,i)=>(<Cell key={i} fill={perfColor(entry.state)}/>))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 16: Amendments Completed per Drafter ──────────
+    // Count of deals that exited stage 1338772492 ("Amendment Requested") in the
+    // selected period, grouped by current drafter. No target — plain bars.
+    function Chart16({deals,gran,bucket}){
+      const data=useMemo(()=>{
+        if(!bucket)return[];
+        const counts={};
+        deals.forEach(d=>{
+          if(!d.exitedAmendment)return;
+          if(dateToBucket(d.exitedAmendment,gran)!==bucket)return;
+          counts[d.drafterName]=(counts[d.drafterName]||0)+1;
+        });
+        return Object.entries(counts)
+          .filter(([n,c])=>c>=1&&!/^\d+$/.test(n)&&n!=="Unknown")
+          .map(([name,count])=>({name,count}))
+          .sort((a,b)=>b.count-a.count);
+      },[deals,gran,bucket]);
+
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No amendments completed in this period</div>;
+      const maxVal=Math.max(...data.map(d=>d.count),5);
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:20,right:60,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
+            <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <Bar dataKey="count" name="Amendments" fill={C.blueFaded} stroke={C.blue} strokeWidth={0.5} barSize={22} radius={[0,6,6,0]}>
+              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -3069,6 +3107,18 @@
         return{rows,detailMap};
       },[deals,gran]);
 
+      const c16Table=useMemo(()=>{
+        const groups={};
+        deals.forEach(d=>{
+          if(!d.exitedAmendment||dateToBucket(d.exitedAmendment,gran)!==selectedBucket)return;
+          if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+          (groups[d.drafterName]=groups[d.drafterName]||[]).push(d);
+        });
+        const rows=Object.entries(groups).map(([name,arr])=>({_key:name,name,count:arr.length})).sort((a,b)=>b.count-a.count);
+        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,entered:fmtDate(d.enteredAmendment),exited:fmtDate(d.exitedAmendment),source:d.amendmentSource||"—"}));});
+        return{rows,detailMap};
+      },[deals,gran,selectedBucket]);
+
       // ── Legacy Advisor data tables ─────────────────────────────
       const la1Table=useMemo(()=>{
         const groups={};
@@ -3211,30 +3261,33 @@
           </>}
 
           {view==="graphs"&&<>
-          {/* Row 1: Per-drafter bars */}
+          {/* Row 1: Per-drafter completion bars */}
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-1" title="Total Drafts Completed per Drafter" infoText={INFO.chart1} columns={T_COLS.c1} rows={c1Table.rows} detailMap={c1Table.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_${gran}_${selectedBucket}.csv`}>
               <Chart1 deals={standardDeals} gran={gran} bucket={selectedBucket} standardTarget={standardTarget} overrides={overrides}/>
             </ChartCard>
-            <ChartCard chartId="chart-2" title="Average Turnaround Days per Drafter (Standard)" infoText={INFO.chart2} columns={T_COLS.c2} rows={c2Table.rows} detailMap={c2Table.detailMap} detailCols={T_DCOLS.c2} csvName={`turnaround_days_${gran}_${selectedBucket}.csv`}>
-              <Chart2 deals={standardDeals} gran={gran} bucket={selectedBucket}/>
+            <ChartCard chartId="chart-16" title="Total Amendments Completed per Drafter" infoText={INFO.chart16} columns={T_COLS.c16} rows={c16Table.rows} detailMap={c16Table.detailMap} detailCols={T_DCOLS.c16} csvName={`amendments_completed_per_drafter_${gran}_${selectedBucket}.csv`}>
+              <Chart16 deals={deals} gran={gran} bucket={selectedBucket}/>
             </ChartCard>
           </div>
 
-          {/* Row 2: Drafting trends (time series) */}
+          {/* Row 2: Avg turnaround per drafter + pipeline flow */}
+          <div className="dash-row" style={S.row}>
+            <ChartCard chartId="chart-2" title="Average Turnaround Days per Drafter (Standard)" infoText={INFO.chart2} columns={T_COLS.c2} rows={c2Table.rows} detailMap={c2Table.detailMap} detailCols={T_DCOLS.c2} csvName={`turnaround_days_${gran}_${selectedBucket}.csv`}>
+              <Chart2 deals={standardDeals} gran={gran} bucket={selectedBucket}/>
+            </ChartCard>
+            <ChartCard chartId="chart-12" title={"Drafting \u2014 Pipeline Flow (Entered / Exited / Backlog)"} infoText={INFO.chart12} columns={T_COLS.c12} rows={c12Table.rows} detailMap={c12Table.detailMap} detailCols={T_DCOLS.c12} csvName={`drafting_pipeline_flow_${gran}.csv`}>
+              <Chart12 deals={deals} gran={gran}/>
+            </ChartCard>
+          </div>
+
+          {/* Row 3: Drafting trends (time series) */}
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-6" title={"Drafting \u2014 Productivity & Avg Turnaround (Standard)"} infoText={INFO.chart6} columns={T_COLS.c6} rows={c6Table.rows} detailMap={c6Table.detailMap} detailCols={T_DCOLS.c6} csvName={`drafting_productivity_${gran}.csv`}>
               <Chart6 deals={standardDeals} gran={gran}/>
             </ChartCard>
             <ChartCard chartId="chart-4" title={"Drafting Query Rate \u2014 Trend"} infoText={INFO.chart4} columns={T_COLS.c4} rows={c4Table.rows} detailMap={c4Table.detailMap} detailCols={T_DCOLS.c4} csvName={`query_rate_${gran}.csv`}>
               <Chart4 deals={deals} gran={gran}/>
-            </ChartCard>
-          </div>
-
-          {/* Row 3: Pipeline flow (full width — wide multi-series chart) */}
-          <div style={{padding:"0 24px 16px"}}>
-            <ChartCard chartId="chart-12" title={"Drafting \u2014 Pipeline Flow (Entered / Exited / Backlog)"} infoText={INFO.chart12} columns={T_COLS.c12} rows={c12Table.rows} detailMap={c12Table.detailMap} detailCols={T_DCOLS.c12} csvName={`drafting_pipeline_flow_${gran}.csv`}>
-              <Chart12 deals={deals} gran={gran}/>
             </ChartCard>
           </div>
 
