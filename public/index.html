@@ -3211,15 +3211,11 @@
           </>}
 
           {view==="graphs"&&<>
-          {/* Row 1a: Drafts Completed */}
-          <div style={{padding:"0 24px 16px"}}>
+          {/* Row 1: Per-drafter bars */}
+          <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-1" title="Total Drafts Completed per Drafter" infoText={INFO.chart1} columns={T_COLS.c1} rows={c1Table.rows} detailMap={c1Table.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_${gran}_${selectedBucket}.csv`}>
               <Chart1 deals={standardDeals} gran={gran} bucket={selectedBucket} standardTarget={standardTarget} overrides={overrides}/>
             </ChartCard>
-          </div>
-
-          {/* Row 1b: Avg Turnaround */}
-          <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-2" title="Average Turnaround Days per Drafter (Standard)" infoText={INFO.chart2} columns={T_COLS.c2} rows={c2Table.rows} detailMap={c2Table.detailMap} detailCols={T_DCOLS.c2} csvName={`turnaround_days_${gran}_${selectedBucket}.csv`}>
               <Chart2 deals={standardDeals} gran={gran} bucket={selectedBucket}/>
             </ChartCard>
@@ -3235,14 +3231,14 @@
             </ChartCard>
           </div>
 
-          {/* Row 2b: Drafting Pipeline Flow */}
-          <div className="dash-row" style={S.row}>
+          {/* Row 3: Pipeline flow (full width — wide multi-series chart) */}
+          <div style={{padding:"0 24px 16px"}}>
             <ChartCard chartId="chart-12" title={"Drafting \u2014 Pipeline Flow (Entered / Exited / Backlog)"} infoText={INFO.chart12} columns={T_COLS.c12} rows={c12Table.rows} detailMap={c12Table.detailMap} detailCols={T_DCOLS.c12} csvName={`drafting_pipeline_flow_${gran}.csv`}>
               <Chart12 deals={deals} gran={gran}/>
             </ChartCard>
           </div>
 
-          {/* Row 3: Drafting query heatmap (full width) */}
+          {/* Row 4: Drafting query heatmap (full width — wide grid) */}
           <div style={{padding:"0 24px 16px"}}>
             <ChartCard chartId="chart-7" title={"Drafting Query Rate per Drafter"} infoText={INFO.chart7} columns={c7Table.cols||T_COLS.c7} rows={c7Table.rows} detailMap={c7Table.detailMap} detailCols={T_DCOLS.c7} csvName={`query_rate_per_drafter_${gran}.csv`} csvBuilder={c7CsvBuilder}>
               <Chart7 deals={standardDeals} gran={gran}/>
@@ -3250,7 +3246,6 @@
           </div>
 
           {/* ── URGENT DRAFTING ── */}
-
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-8" title={"Productivity & Avg Turnaround (Urgent)"} infoText={INFO.chart8} columns={T_COLS.c8} rows={c8Table.rows} detailMap={c8Table.detailMap} detailCols={T_DCOLS.c8} csvName={`urgent_productivity_${gran}.csv`}>
               <Chart8 deals={urgentDeals} gran={gran}/>
@@ -3259,7 +3254,6 @@
               <Chart9 deals={urgentDeals} gran={gran} bucket={selectedBucket}/>
             </ChartCard>
           </div>
-
 
           {/* ── AMENDMENTS ── */}
           <div className="dash-row" style={S.row}>
@@ -3272,16 +3266,10 @@
           </div>
 
           {/* ── PROOFREADING ── */}
-
-          {/* Row 5a: Proofreading snapshot */}
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-5" title="Proofread Completed & Backlog per Proofreader" infoText={INFO.chart5} columns={T_COLS.c5} rows={c5Table.rows} detailMap={c5Table.detailMap} detailCols={T_DCOLS.c5} csvName={`proofread_snapshot_${gran}_${selectedBucket}.csv`}>
               <Chart5 deals={standardDeals} gran={gran} bucket={selectedBucket} proofTarget={proofTarget} proofOverrides={proofOverrides}/>
             </ChartCard>
-          </div>
-
-          {/* Row 5b: Proofreading trends */}
-          <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-3" title={"Proofreading \u2014 Productivity & Avg Turnaround"} infoText={INFO.chart3} columns={T_COLS.c3} rows={c3Table.rows} detailMap={c3Table.detailMap} detailCols={T_DCOLS.c3} csvName={`proof_productivity_${gran}.csv`}>
               <Chart3 deals={standardDeals} gran={gran}/>
             </ChartCard>
