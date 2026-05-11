@@ -3136,16 +3136,16 @@
                 };
                 const activeSection=VIEW_TO_SECTION[view]||"drafting";
                 const subTabs=SECTIONS[activeSection].subs;
-                const sectionPill=(key)=>({padding:"5px 12px",borderRadius:6,border:"none",background:activeSection===key?C.accent:"transparent",color:activeSection===key?C.white:C.text,cursor:"pointer",fontSize:12,fontWeight:700,letterSpacing:0.3,textTransform:"uppercase"});
-                const subPill=(active)=>({padding:"6px 12px",borderRadius:6,border:"none",background:active?"rgba(52,152,219,0.18)":"transparent",color:active?C.accent:C.text,cursor:"pointer",fontSize:12,fontWeight:600});
+                const sectionPill=(key)=>({padding:"6px 16px",borderRadius:6,border:"none",background:activeSection===key?C.accent:"transparent",color:activeSection===key?C.white:C.text,cursor:"pointer",fontSize:11,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",transition:"all .15s"});
+                const subPill=(active)=>({padding:"6px 14px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.surface,color:active?C.accent:C.text,cursor:"pointer",fontSize:12,fontWeight:600,transition:"all .15s"});
                 return(
-                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    <div style={{display:"flex",gap:4,padding:2,background:C.surface,borderRadius:8,border:`1px solid ${C.border}`}}>
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    <div style={{display:"flex",gap:4,padding:3,background:C.surface,borderRadius:8,border:`1px solid ${C.border}`,alignSelf:"flex-start"}}>
                       {Object.entries(SECTIONS).map(([key,s])=>(
                         <button key={key} style={sectionPill(key)} onClick={()=>setView(s.defaultView)}>{s.label}</button>
                       ))}
                     </div>
-                    <div style={{display:"flex",gap:2,paddingLeft:4}}>
+                    <div style={{display:"flex",gap:6,paddingLeft:2}}>
                       {subTabs.map(t=>(
                         <button key={t.key} style={subPill(view===t.key)} onClick={()=>setView(t.key)}>{t.label}</button>
                       ))}
@@ -3211,13 +3211,10 @@
           </>}
 
           {view==="graphs"&&<>
-          {/* Row 1a: Drafts Completed — New vs Old metric */}
-          <div className="dash-row" style={S.row}>
-            <ChartCard chartId="chart-1" title="Total Drafts Completed per Drafter (New Metric)" infoText={INFO.chart1} columns={T_COLS.c1} rows={c1Table.rows} detailMap={c1Table.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_new_${gran}_${selectedBucket}.csv`}>
+          {/* Row 1a: Drafts Completed */}
+          <div style={{padding:"0 24px 16px"}}>
+            <ChartCard chartId="chart-1" title="Total Drafts Completed per Drafter" infoText={INFO.chart1} columns={T_COLS.c1} rows={c1Table.rows} detailMap={c1Table.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_${gran}_${selectedBucket}.csv`}>
               <Chart1 deals={standardDeals} gran={gran} bucket={selectedBucket} standardTarget={standardTarget} overrides={overrides}/>
-            </ChartCard>
-            <ChartCard chartId="chart-1b" title="Total Drafts Completed per Drafter (Old Metric)" infoText={INFO.chart1b} columns={T_COLS.c1} rows={c1bTable.rows} detailMap={c1bTable.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_old_${gran}_${selectedBucket}.csv`}>
-              <Chart1b deals={standardDeals} gran={gran} bucket={selectedBucket} standardTarget={standardTarget} overrides={overrides}/>
             </ChartCard>
           </div>
 
@@ -3295,9 +3292,6 @@
             <ChartCard chartId="chart-13" title={"Appointment Outcome \u2014 Deals Exited"} infoText={INFO.chart13} columns={T_COLS.c13} rows={c13Table.rows} detailMap={c13Table.detailMap} detailCols={T_DCOLS.c13} csvName={`appointment_outcome_${gran}.csv`}>
               <Chart13 deals={deals} gran={gran}/>
             </ChartCard>
-          </div>
-
-          <div style={{padding:"0 24px 16px"}}>
             <ChartCard chartId="chart-15" title={"Consultant Query Rate \u2014 Trend"} infoText={INFO.chart15} columns={T_COLS.c15} rows={c15Table.rows} detailMap={c15Table.detailMap} detailCols={T_DCOLS.c15} csvName={`consultant_query_rate_${gran}.csv`}>
               <Chart15 deals={deals} gran={gran}/>
             </ChartCard>
