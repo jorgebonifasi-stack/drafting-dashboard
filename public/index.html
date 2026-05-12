@@ -2147,7 +2147,8 @@
         "approved proof reading"
       ]);
       const[drafterFilter,setDrafterFilter]=useState("__all__");
-      const[stageFilter,setStageFilter]=useState("__all__");
+      const[stageFilter,setStageFilter]=useState(()=>new Set());
+      const toggleStage=name=>{setStageFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
       const allRows=useMemo(()=>{
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
@@ -2197,7 +2198,7 @@
       const chartRows=useMemo(()=>{
         let arr=allRows;
         if(drafterFilter!=="__all__")arr=arr.filter(r=>r.drafter===drafterFilter);
-        if(stageFilter!=="__all__")arr=arr.filter(r=>r.stage===stageFilter);
+        if(stageFilter.size>0)arr=arr.filter(r=>stageFilter.has(r.stage));
         return arr;
       },[allRows,drafterFilter,stageFilter]);
 
@@ -2219,7 +2220,7 @@
         const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Waiver Extension Days","Current Stage","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.waiverExtension||0,r.stage,HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
-        const stSuffix=stageFilter==="__all__"?"":`_${stageFilter.replace(/[^A-Za-z0-9]+/g,"_")}`;
+        const stSuffix=stageFilter.size===0?"":(stageFilter.size===1?`_${[...stageFilter][0].replace(/[^A-Za-z0-9]+/g,"_")}`:`_${stageFilter.size}stages`);
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
         downloadCSV(`macmillan_sla${drSuffix}${stSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,drafterFilter,stageFilter,selectedBucket]);
@@ -2251,12 +2252,16 @@
                   ))}
                 </select>
                 <label style={{fontSize:12,color:C.text,opacity:0.7}}>Stage</label>
-                <select style={S.select} value={stageFilter} onChange={e=>setStageFilter(e.target.value)}>
-                  <option value="__all__">All ({allRows.length})</option>
-                  {stageOptions.map(name=>(
-                    <option key={name} value={name}>{name} ({allRows.filter(r=>r.stage===name).length})</option>
-                  ))}
-                </select>
+                <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+                  {stageOptions.map(name=>{
+                    const active=stageFilter.has(name);
+                    const count=allRows.filter(r=>r.stage===name).length;
+                    return(
+                      <button key={name} onClick={()=>toggleStage(name)} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.bg,color:active?C.accent:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{name} ({count})</button>
+                    );
+                  })}
+                  {stageFilter.size>0&&<button onClick={()=>setStageFilter(new Set())} style={{padding:"4px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.text,cursor:"pointer",fontSize:11,fontWeight:500}}>Clear</button>}
+                </div>
                 <span style={{fontSize:12,color:C.text,opacity:0.7}}>{rows.length} deal{rows.length===1?"":"s"}</span>
                 <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"\u2B07"} CSV</button>
               </div>
@@ -2320,7 +2325,8 @@
         "amendment requested"
       ]);
       const[drafterFilter,setDrafterFilter]=useState("__all__");
-      const[stageFilter,setStageFilter]=useState("__all__");
+      const[stageFilter,setStageFilter]=useState(()=>new Set());
+      const toggleStage=name=>{setStageFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
       const allRows=useMemo(()=>{
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
@@ -2404,7 +2410,7 @@
       const chartRows=useMemo(()=>{
         let arr=allRows;
         if(drafterFilter!=="__all__")arr=arr.filter(r=>r.drafter===drafterFilter);
-        if(stageFilter!=="__all__")arr=arr.filter(r=>r.stage===stageFilter);
+        if(stageFilter.size>0)arr=arr.filter(r=>stageFilter.has(r.stage));
         return arr;
       },[allRows,drafterFilter,stageFilter]);
 
@@ -2426,7 +2432,7 @@
         const hdr=["Deal ID","Deal Name","Drafter","Anchor Date","SLA Deadline","Days Remaining","Days Unit","Waiver Extension Days","SLA Type","Amendment Source","Current Stage","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.anchor),fmtDate(r.deadline),r.daysRemaining==null?"":r.daysRemaining,r.unit,r.waiverExtension||0,r.isAmendment?"Amendment":"Drafting",r.amendmentSource||"",r.stage,HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
-        const stSuffix=stageFilter==="__all__"?"":`_${stageFilter.replace(/[^A-Za-z0-9]+/g,"_")}`;
+        const stSuffix=stageFilter.size===0?"":(stageFilter.size===1?`_${[...stageFilter][0].replace(/[^A-Za-z0-9]+/g,"_")}`:`_${stageFilter.size}stages`);
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
         downloadCSV(`standard_sla${drSuffix}${stSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,drafterFilter,stageFilter,selectedBucket]);
@@ -2438,7 +2444,7 @@
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
               <div>
-                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA \u2014 Deals Nearing SLA</div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA — Deals Nearing SLA</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
                   Two streams in one table. Drafting deals: 28 calendar days from the SLA anchor (latest of original drafting-instructions date and Date of Appointment); +14 calendar days when the 14-day waiver is not signed. Amendment Requested deals: 10 business days from entered-amendment when amendment_source = "Client amendment", otherwise 1 business day. Drafting deals are excluded if both anchor candidates are missing. Stages included: Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, Approved \u2014 Proof Reading, Amendment Requested.
                 </div>
@@ -2458,12 +2464,16 @@
                   ))}
                 </select>
                 <label style={{fontSize:12,color:C.text,opacity:0.7}}>Stage</label>
-                <select style={S.select} value={stageFilter} onChange={e=>setStageFilter(e.target.value)}>
-                  <option value="__all__">All ({allRows.length})</option>
-                  {stageOptions.map(name=>(
-                    <option key={name} value={name}>{name} ({allRows.filter(r=>r.stage===name).length})</option>
-                  ))}
-                </select>
+                <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+                  {stageOptions.map(name=>{
+                    const active=stageFilter.has(name);
+                    const count=allRows.filter(r=>r.stage===name).length;
+                    return(
+                      <button key={name} onClick={()=>toggleStage(name)} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.bg,color:active?C.accent:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{name} ({count})</button>
+                    );
+                  })}
+                  {stageFilter.size>0&&<button onClick={()=>setStageFilter(new Set())} style={{padding:"4px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.text,cursor:"pointer",fontSize:11,fontWeight:500}}>Clear</button>}
+                </div>
                 <span style={{fontSize:12,color:C.text,opacity:0.7}}>{rows.length} deal{rows.length===1?"":"s"}</span>
                 <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"\u2B07"} CSV</button>
               </div>
