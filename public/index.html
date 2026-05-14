@@ -432,6 +432,7 @@
       chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
       chart16:'Total amendments completed per drafter in the selected period. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner. Plain bars, no target.',
+      cWorkload:'Open deals per drafter, broken down by SLA status. Counts deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, Approved — Proof Reading, or Amendment Requested. SLA evaluated per deal: drafting deals use 28 calendar days from the latest of Date of Appointment / original drafting-instructions date (+14 cal days if the 14-day waiver is not signed); amendment deals use 10 business days for Client amendments or 1 business day otherwise. Sorted by Breached count descending, then total descending.',
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
       la3:'Average business-day turnover per Legacy Advisor for deals that exited "Replied — Drafts With Customer" in the selected period. Turnover = business days from entering the stage to exiting it.',
@@ -468,6 +469,7 @@
       c13:[{key:"label",label:"Period"},{key:"count",label:"Deals"}],
       c15:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
       c16:[{key:"name",label:"Drafter"},{key:"count",label:"Amendments"}],
+      cWorkload:[{key:"name",label:"Drafter"},{key:"breached",label:"Breached"},{key:"close",label:"Close"},{key:"warning",label:"Warning"},{key:"comfortable",label:"Comfortable"},{key:"total",label:"Total"}],
       la1:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Active in RDWC"}],
       la2:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Exited RDWC"}],
       la3:[{key:"name",label:"Legacy Advisor"},{key:"avg",label:"Avg Biz Days"},{key:"count",label:"Deals"}],
@@ -488,6 +490,7 @@
       c13:[{key:"dealname",label:"Deal"},{key:"date",label:"Date Entered"}],
       c15:[{key:"dealname",label:"Deal"},{key:"reasons",label:"Consultant Query Reason"}],
       c16:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered Amendment"},{key:"exited",label:"Exited Amendment"},{key:"source",label:"Source"}],
+      cWorkload:[{key:"dealname",label:"Deal"},{key:"stage",label:"Stage"},{key:"state",label:"SLA State"},{key:"daysRemaining",label:"Days Remaining"}],
       la1:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered RDWC"}],
       la2:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Biz Days"}],
       la3:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Biz Days"}],
@@ -692,6 +695,85 @@
             <Tooltip content={<DarkTooltip/>}/>
             <Bar dataKey="count" name="Amendments" fill={C.blueFaded} stroke={C.blue} strokeWidth={0.5} barSize={22} radius={[0,6,6,0]}>
               <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Drafter Workload — open deals per drafter, broken down by SLA status ──
+    // Snapshot of deals currently in the five working stages, evaluated per-row using
+    // the same SLA logic as the Standard SLA table (drafting branch: 28 cal days from
+    // latest of original DI / DOA, +14d if waiver not signed; amendment branch: 10 biz
+    // days for "Client amendment", else 1 biz day). Sorted by Breached desc then total.
+    function ChartDrafterWorkload({deals,stageLabels}){
+      const data=useMemo(()=>{
+        const today=new Date();today.setHours(0,0,0,0);
+        const normStage=s=>(s||"").toLowerCase().replace(/[–—-]+/g," ").replace(/\s+/g," ").trim();
+        const ALLOWED=new Set([
+          "drafting instructions","drafting query","required proof reading",
+          "approved proof reading","amendment requested"
+        ]);
+        const AMEND_STAGE="1338772492";
+        const SLA_DAYS=28;
+        const byDrafter={};
+        deals.forEach(d=>{
+          const stageLabel=stageLabels[d.dealstage]||d.dealstage||"";
+          if(!ALLOWED.has(normStage(stageLabel)))return;
+          const isAmend=d.dealstage===AMEND_STAGE;
+          let state;
+          if(isAmend){
+            if(!d.enteredAmendment)return;
+            const anchor=new Date(d.enteredAmendment);anchor.setHours(0,0,0,0);
+            const isClient=(d.amendmentSource||"").trim().toLowerCase()==="client amendment";
+            const target=isClient?10:1;
+            const deadline=addBusinessDays(anchor,target);
+            const remaining=signedBusinessDays(today,deadline);
+            if(remaining==null)state="comfortable";
+            else if(remaining<0)state="breached";
+            else if(isClient)state=remaining<=1?"close":remaining<=3?"warning":"comfortable";
+            else state=remaining===0?"close":"comfortable";
+          }else{
+            const candidates=[];
+            if(d.origEnteredDrafting)candidates.push(new Date(d.origEnteredDrafting).getTime());
+            if(d.dateOfAppointment)candidates.push(new Date(d.dateOfAppointment).getTime());
+            if(!candidates.length)return;
+            const anchor=new Date(Math.max(...candidates));anchor.setHours(0,0,0,0);
+            const waiverExt=d.waiverSigned14d===false?14:0;
+            const deadline=new Date(anchor);deadline.setDate(deadline.getDate()+SLA_DAYS+waiverExt);
+            const remaining=Math.round((deadline-today)/86400000);
+            state=remaining<0?"breached":remaining<=3?"close":remaining<=7?"warning":"comfortable";
+          }
+          const drafter=d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned";
+          if(/^\d+$/.test(drafter))return;
+          if(!byDrafter[drafter])byDrafter[drafter]={name:drafter,breached:0,close:0,warning:0,comfortable:0,total:0};
+          byDrafter[drafter][state]++;
+          byDrafter[drafter].total++;
+        });
+        return Object.values(byDrafter).sort((a,b)=>(b.breached-a.breached)||(b.total-a.total));
+      },[deals,stageLabels]);
+
+      if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No open deals in the working stages.</div>;
+      const maxVal=Math.max(...data.map(d=>d.total),5);
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(300,data.length*36+80)}>
+          <BarChart data={data} layout="vertical" margin={{top:20,right:80,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.1)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
+            <YAxis type="category" dataKey="name" width={150} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<StackedTooltip/>}/>
+            <Legend verticalAlign="top" height={28} wrapperStyle={{color:C.text,fontSize:12}}
+              payload={[
+                {value:"Breached",type:"square",color:C.red},
+                {value:"Close",type:"square",color:C.amber},
+                {value:"Warning",type:"square",color:"#F1C40F"},
+                {value:"Comfortable",type:"square",color:C.green}
+              ]}/>
+            <Bar dataKey="breached" name="Breached" stackId="status" fill={C.red} barSize={20}/>
+            <Bar dataKey="close" name="Close" stackId="status" fill={C.amber} barSize={20}/>
+            <Bar dataKey="warning" name="Warning" stackId="status" fill="#F1C40F" barSize={20}/>
+            <Bar dataKey="comfortable" name="Comfortable" stackId="status" fill={C.green} barSize={20} radius={[0,6,6,0]}>
+              <LabelList dataKey="total" position="right" fill={C.white} fontSize={12} fontWeight={700}/>
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -3129,6 +3211,60 @@
         return{rows,detailMap};
       },[deals,gran,selectedBucket]);
 
+      const cWorkloadTable=useMemo(()=>{
+        const today=new Date();today.setHours(0,0,0,0);
+        const normStage=s=>(s||"").toLowerCase().replace(/[–—-]+/g," ").replace(/\s+/g," ").trim();
+        const ALLOWED=new Set(["drafting instructions","drafting query","required proof reading","approved proof reading","amendment requested"]);
+        const AMEND_STAGE="1338772492";
+        const SLA_DAYS=28;
+        const byDrafter={};
+        deals.forEach(d=>{
+          const stageLabel=stageLabels[d.dealstage]||d.dealstage||"";
+          if(!ALLOWED.has(normStage(stageLabel)))return;
+          const isAmend=d.dealstage===AMEND_STAGE;
+          let state,daysRemaining,unit;
+          if(isAmend){
+            if(!d.enteredAmendment)return;
+            const anchor=new Date(d.enteredAmendment);anchor.setHours(0,0,0,0);
+            const isClient=(d.amendmentSource||"").trim().toLowerCase()==="client amendment";
+            const target=isClient?10:1;
+            const deadline=addBusinessDays(anchor,target);
+            daysRemaining=signedBusinessDays(today,deadline);
+            unit="biz";
+            if(daysRemaining==null)state="comfortable";
+            else if(daysRemaining<0)state="breached";
+            else if(isClient)state=daysRemaining<=1?"close":daysRemaining<=3?"warning":"comfortable";
+            else state=daysRemaining===0?"close":"comfortable";
+          }else{
+            const cs=[];
+            if(d.origEnteredDrafting)cs.push(new Date(d.origEnteredDrafting).getTime());
+            if(d.dateOfAppointment)cs.push(new Date(d.dateOfAppointment).getTime());
+            if(!cs.length)return;
+            const anchor=new Date(Math.max(...cs));anchor.setHours(0,0,0,0);
+            const waiverExt=d.waiverSigned14d===false?14:0;
+            const deadline=new Date(anchor);deadline.setDate(deadline.getDate()+SLA_DAYS+waiverExt);
+            daysRemaining=Math.round((deadline-today)/86400000);
+            unit="cal";
+            state=daysRemaining<0?"breached":daysRemaining<=3?"close":daysRemaining<=7?"warning":"comfortable";
+          }
+          const drafter=d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned";
+          if(/^\d+$/.test(drafter))return;
+          if(!byDrafter[drafter])byDrafter[drafter]={name:drafter,breached:0,close:0,warning:0,comfortable:0,total:0,deals:[]};
+          byDrafter[drafter][state]++;
+          byDrafter[drafter].total++;
+          byDrafter[drafter].deals.push({id:d.id,dealname:d.dealname,stage:stageLabel,state,daysRemaining:daysRemaining==null?"—":`${daysRemaining}d ${unit}`});
+        });
+        const sorted=Object.values(byDrafter).sort((a,b)=>(b.breached-a.breached)||(b.total-a.total));
+        const rows=sorted.map(d=>({_key:d.name,name:d.name,breached:d.breached,close:d.close,warning:d.warning,comfortable:d.comfortable,total:d.total}));
+        const detailMap={};
+        sorted.forEach(d=>{
+          // Sort drill-down deals by state severity, then days remaining ascending
+          const order={breached:0,close:1,warning:2,comfortable:3};
+          detailMap[d.name]=[...d.deals].sort((a,b)=>(order[a.state]-order[b.state]));
+        });
+        return{rows,detailMap};
+      },[deals,stageLabels]);
+
       // ── Legacy Advisor data tables ─────────────────────────────
       const la1Table=useMemo(()=>{
         const groups={};
@@ -3278,6 +3414,13 @@
             </ChartCard>
             <ChartCard chartId="chart-16" title="Total Amendments Completed per Drafter" infoText={INFO.chart16} columns={T_COLS.c16} rows={c16Table.rows} detailMap={c16Table.detailMap} detailCols={T_DCOLS.c16} csvName={`amendments_completed_per_drafter_${gran}_${selectedBucket}.csv`}>
               <Chart16 deals={deals} gran={gran} bucket={selectedBucket}/>
+            </ChartCard>
+          </div>
+
+          {/* Row 1b: Drafter workload — SLA breakdown (full width) */}
+          <div style={{padding:"0 24px 16px"}}>
+            <ChartCard chartId="chart-workload" title="Drafter Workload — SLA Breakdown" infoText={INFO.cWorkload} columns={T_COLS.cWorkload} rows={cWorkloadTable.rows} detailMap={cWorkloadTable.detailMap} detailCols={T_DCOLS.cWorkload} csvName={`drafter_workload_${new Date().toISOString().slice(0,10)}.csv`}>
+              <ChartDrafterWorkload deals={deals} stageLabels={stageLabels}/>
             </ChartCard>
           </div>
 
