@@ -3729,14 +3729,19 @@
       const[error,setError]=useState(null);
       const[lastRefresh,setLastRefresh]=useState(null);
 
-      // Default range: previous calendar month
+      // Default: previous calendar month (single-month range by default).
       const today=new Date();
-      const defaultFrom=new Date(today.getFullYear(),today.getMonth()-1,1);
-      const defaultTo=new Date(today.getFullYear(),today.getMonth(),0); // last day of previous month
-      const toIsoDate=d=>d.toISOString().slice(0,10);
-      const[fromDate,setFromDate]=useState(toIsoDate(defaultFrom));
-      const[toDate,setToDate]=useState(toIsoDate(defaultTo));
+      const prevMonth=new Date(today.getFullYear(),today.getMonth()-1,1);
+      const toYearMonth=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+      const defaultMonth=toYearMonth(prevMonth);
+      const[fromMonth,setFromMonth]=useState(defaultMonth);
+      const[toMonth,setToMonth]=useState(defaultMonth);
       const[leadFilter,setLeadFilter]=useState(()=>new Set());
+
+      // Convert "YYYY-MM" to first / last instant of the month for inclusive
+      // range comparison.
+      const monthStart=ym=>{const[y,m]=ym.split("-").map(Number);return new Date(y,m-1,1,0,0,0,0);};
+      const monthEnd=ym=>{const[y,m]=ym.split("-").map(Number);return new Date(y,m,0,23,59,59,999);};
 
       const loadData=useCallback(async()=>{
         setLoading(true);setError(null);
@@ -3767,10 +3772,11 @@
       useEffect(()=>{loadData();},[loadData]);
 
       // Build audit rows: deals that have completed (reached DWC or RFP)
-      // and whose End date falls in [fromDate, toDate].
+      // and whose End date falls in [fromMonth, toMonth] (inclusive of both
+      // full months — first instant of fromMonth → last instant of toMonth).
       const allRows=useMemo(()=>{
-        const start=fromDate?new Date(fromDate+"T00:00:00"):null;
-        const end=toDate?new Date(toDate+"T23:59:59.999"):null;
+        const start=fromMonth?monthStart(fromMonth):null;
+        const end=toMonth?monthEnd(toMonth):null;
         const out=[];
         deals.forEach(d=>{
           if(!d.dateOfAppointment)return;
@@ -3833,7 +3839,7 @@
         });
         out.sort((a,b)=>b.endDate-a.endDate);
         return out;
-      },[deals,fromDate,toDate]);
+      },[deals,fromMonth,toMonth]);
 
       // Allowlist of lead sources that get surfaced as filter pills. Keeps
       // the audit focused on cohorts that have their own SLA (Macmillan).
@@ -3860,7 +3866,7 @@
         const urgMet=urgent.filter(r=>r.met).length;
         const stdPct=standard.length>0?Math.round((stdMet/standard.length)*100):null;
         const urgPct=urgent.length>0?Math.round((urgMet/urgent.length)*100):null;
-        return{total,met,breached,stdPct,urgPct,stdCount:standard.length,urgCount:urgent.length};
+        return{total,met,breached,stdPct,urgPct,stdMet,urgMet,stdCount:standard.length,urgCount:urgent.length};
       },[rows]);
 
       const toggleLead=name=>{setLeadFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
@@ -3868,8 +3874,8 @@
       const exportCSV=useCallback(()=>{
         const hdr=["Deal ID","Deal Name","Drafter","Lead Source(s)","Priority","Date of Appointment","End Date","Working Days Taken","Base SLA (days)","Waiver Extension (days)","SLA Target (days)","Status","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,r.leadSourceLabel,r.isUrgent?"Urgent":"Standard",fmtDate(r.appointment),fmtDate(r.endDate),r.workingDays,r.baseTarget,r.waiverExtension||0,r.target,r.status,HS_BASE+r.id])];
-        downloadCSV(`sla_audit_${fromDate}_to_${toDate}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
-      },[rows,fromDate,toDate]);
+        downloadCSV(`sla_audit_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,fromMonth,toMonth]);
 
       const statusColor=met=>met?C.green:C.red;
       const card={background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"18px 20px"};
@@ -3895,10 +3901,10 @@
             {/* Filters */}
             <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px",marginBottom:20}}>
               <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:14,marginBottom:12}}>
-                <label style={{fontSize:12,color:C.text,opacity:0.7}}>End SLA Date</label>
-                <input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)} style={{...S.input,width:160,padding:"6px 10px",fontSize:13}}/>
+                <label style={{fontSize:12,color:C.text,opacity:0.7}}>End SLA Month</label>
+                <input type="month" value={fromMonth} onChange={e=>setFromMonth(e.target.value)} style={{...S.input,width:170,padding:"6px 10px",fontSize:13}}/>
                 <span style={{color:C.text,opacity:0.6}}>{"→"}</span>
-                <input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} style={{...S.input,width:160,padding:"6px 10px",fontSize:13}}/>
+                <input type="month" value={toMonth} onChange={e=>setToMonth(e.target.value)} style={{...S.input,width:170,padding:"6px 10px",fontSize:13}}/>
                 <span style={{flex:1}}/>
                 <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"⬇"} CSV ({rows.length})</button>
               </div>
@@ -3923,12 +3929,12 @@
               <div style={card}>
                 <div style={cardLabel}>Standard Compliance %</div>
                 <div style={{...cardValue,color:stats.stdPct==null?C.text:stats.stdPct>=90?C.green:stats.stdPct>=75?C.amber:C.red}}>{stats.stdPct==null?"—":`${stats.stdPct}%`}</div>
-                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.stdCount} deal{stats.stdCount===1?"":"s"}</div>
+                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.stdCount===0?"No standard deals":`${stats.stdMet} of ${stats.stdCount} met`}</div>
               </div>
               <div style={card}>
                 <div style={cardLabel}>Urgent Compliance %</div>
                 <div style={{...cardValue,color:stats.urgPct==null?C.text:stats.urgPct>=90?C.green:stats.urgPct>=75?C.amber:C.red}}>{stats.urgPct==null?"—":`${stats.urgPct}%`}</div>
-                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgCount} deal{stats.urgCount===1?"":"s"}</div>
+                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgCount===0?"No urgent deals":`${stats.urgMet} of ${stats.urgCount} met`}</div>
               </div>
             </div>
 
