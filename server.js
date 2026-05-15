@@ -54,7 +54,12 @@ const PROPERTIES = [
   "have_they_signed_the_14_day_waiver_",
   "consultant_query_reason",
   "legacy_advisor__owner",
-  "hs_v2_date_entered_1223620776", "hs_v2_date_exited_1223620776"
+  "hs_v2_date_entered_1223620776", "hs_v2_date_exited_1223620776",
+  // Cumulative time in completion stages (used by audit heuristic when
+  // original_date_entered_<stage> isn't populated — see processDeals).
+  "hs_v2_cumulative_time_in_1223620775",
+  "hs_v2_cumulative_time_in_1223620777",
+  "hs_v2_cumulative_time_in_1223620778"
 ];
 
 // ─── Deactivated drafter exclusion list ─────────────────────────

@@ -202,6 +202,27 @@
         const nativeExitedDrafting=parseHSDate(p.hs_v2_date_exited_1223620771);
         const origDraftsWithCustomer=parseHSDate(p.original_date_entered_drafts_with_customer);
         const origReadyForPrinting=parseHSDate(p.original_date_entered_ready_for_printing);
+        const origSentToCustomer=parseHSDate(p.original_date_entered_sent_to_customer);
+        // Heuristic for FIRST entry into completion stages when the workflow-stamped
+        // original_* date is missing or has been overwritten: use the LATEST
+        // hs_v2_date_entered minus the hs_v2_cumulative_time_in (an upper bound on
+        // first-entry, ignoring gaps between stage sessions). Then take the earlier
+        // of the original_* and the heuristic, since either may exist alone.
+        const enteredDWC_v2=parseHSDate(p.hs_v2_date_entered_1223620775);
+        const enteredRFP_v2=parseHSDate(p.hs_v2_date_entered_1223620777);
+        const enteredSTC_v2=parseHSDate(p.hs_v2_date_entered_1223620778);
+        const cumDWC=parseFloat(p.hs_v2_cumulative_time_in_1223620775)||0;
+        const cumRFP=parseFloat(p.hs_v2_cumulative_time_in_1223620777)||0;
+        const cumSTC=parseFloat(p.hs_v2_cumulative_time_in_1223620778)||0;
+        const estimateFirstEntry=(orig,entered,cumulative)=>{
+          const heuristic=(entered&&cumulative>0)?new Date(entered.getTime()-cumulative):null;
+          const candidates=[orig,heuristic].filter(Boolean);
+          if(!candidates.length)return null;
+          return new Date(Math.min(...candidates.map(d=>d.getTime())));
+        };
+        const firstDWC=estimateFirstEntry(origDraftsWithCustomer,enteredDWC_v2,cumDWC);
+        const firstRFP=estimateFirstEntry(origReadyForPrinting,enteredRFP_v2,cumRFP);
+        const firstSentToCustomer=estimateFirstEntry(origSentToCustomer,enteredSTC_v2,cumSTC);
         const CUTOVER=new Date("2026-04-12T00:00:00");
         // Anchor: when did the deal first enter Drafting Instructions?
         const anchorEntered=parseHSDate(p.original_date_entered_drafting_instructions)||enteredDrafting;
@@ -290,7 +311,9 @@
           queryExcludedOriginalDrafter:(dealExclusions&&dealExclusions[String(d.id)])||null,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
           enteredAppointmentOutcome,exitedAppointmentOutcome,
-          origDraftsWithCustomer,origReadyForPrinting,enteredConsultantQuery,exitedApproved,
+          origDraftsWithCustomer,origReadyForPrinting,origSentToCustomer,
+          firstDWC,firstRFP,firstSentToCustomer,
+          enteredConsultantQuery,exitedApproved,
           enteredAmendment,exitedAmendment,amendmentSource,
           amendmentTurnaroundDays:enteredAmendment&&exitedAmendment?(exitedAmendment-enteredAmendment)/86400000:null,
           draftingTurnaroundDays:draftingStart&&exitedDrafting?(exitedDrafting-draftingStart)/86400000:null,
@@ -3677,8 +3700,14 @@
           if(!d.dateOfAppointment)return;
           // End = earliest of origDraftsWithCustomer and origReadyForPrinting
           const candidates=[];
-          if(d.origDraftsWithCustomer)candidates.push(d.origDraftsWithCustomer.getTime());
-          if(d.origReadyForPrinting)candidates.push(d.origReadyForPrinting.getTime());
+          // Use the earliest of FIRST-entry estimates across the three completion stages.
+          // firstDWC / firstRFP / firstSentToCustomer prefer the workflow-stamped
+          // original_date_entered_<stage> when populated, and fall back to
+          // (latest hs_v2_date_entered − cumulative_time_in) as an upper-bound
+          // estimate when the original_* property is missing.
+          if(d.firstDWC)candidates.push(d.firstDWC.getTime());
+          if(d.firstRFP)candidates.push(d.firstRFP.getTime());
+          if(d.firstSentToCustomer)candidates.push(d.firstSentToCustomer.getTime());
           if(!candidates.length)return;
           const endDate=new Date(Math.min(...candidates));
           if(start&&endDate<start)return;
