@@ -38,7 +38,7 @@
     const { useState, useEffect, useCallback, useMemo, useRef } = React;
     const {
       BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-      ComposedChart, Line, ReferenceLine, ReferenceArea, Legend, Cell,
+      ComposedChart, LineChart, Line, ReferenceLine, ReferenceArea, Legend, Cell,
       CartesianGrid, LabelList, Label
     } = Recharts;
 
@@ -4003,6 +4003,90 @@
       const toggleLead=name=>{setLeadFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
       const toggleProduct=name=>{setProductFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
 
+      // SLA progression — line chart data. Last 12 months rolling, with the
+      // current (partial) month included as the rightmost point. Lines map
+      // 1:1 to the summary cards: Standard / Urgent in standard mode, Wills /
+      // LPAs in Coral mode. The Lead Source + Product filters apply (we
+      // re-derive the cohort from allRows, ignoring the End-SLA-Month picker
+      // since the chart's purpose is trend context, not table cohort).
+      const slaTrend=useMemo(()=>{
+        const now=new Date();
+        const currentMonthKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+        const buckets=[];
+        for(let i=11;i>=0;i--){
+          const d=new Date(now.getFullYear(),now.getMonth()-i,1);
+          const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+          const label=d.toLocaleDateString("en-GB",{month:"short",year:"2-digit"});
+          buckets.push({key,label,start:new Date(d.getFullYear(),d.getMonth(),1,0,0,0,0),end:new Date(d.getFullYear(),d.getMonth()+1,0,23,59,59,999),isPartial:key===currentMonthKey});
+        }
+        // Same cohort filtering as the table, minus the month-range filter
+        // (which is the audit table's narrowing — the trend is monthly anyway).
+        let pool=allRows;
+        if(leadFilter.size>0){
+          pool=pool.filter(r=>(r.cohorts||[]).some(c=>leadFilter.has(c)));
+        }
+        if(filterMode==="coral"&&productFilter.size>0){
+          pool=pool.filter(r=>
+            (productFilter.has("Will")&&r.hasWillProduct)||
+            (productFilter.has("LPA")&&r.hasLpaProduct)
+          );
+        }
+        return buckets.map(b=>{
+          const inMonth=pool.filter(r=>r.endDate>=b.start&&r.endDate<=b.end);
+          // Pre-compute the relevant `met` flag per row for this mode. In Coral
+          // mode the displayMet might not be set yet on allRows entries (rows
+          // useMemo decorates filtered rows, not allRows), so read coralMet /
+          // met directly to ensure correctness.
+          if(filterMode==="coral"){
+            const wills=inMonth.filter(r=>r.hasWillProduct);
+            const lpas=inMonth.filter(r=>r.hasLpaProduct);
+            const willsMet=wills.filter(r=>r.coralMet).length;
+            const lpasMet=lpas.filter(r=>r.coralMet).length;
+            return{
+              ...b,
+              willsPct:wills.length>0?Math.round((willsMet/wills.length)*100):null,
+              willsMet,willsCount:wills.length,
+              lpasPct:lpas.length>0?Math.round((lpasMet/lpas.length)*100):null,
+              lpasMet,lpasCount:lpas.length
+            };
+          }
+          const standard=inMonth.filter(r=>!r.isUrgent);
+          const urgent=inMonth.filter(r=>r.isUrgent);
+          const stdMet=standard.filter(r=>r.met).length;
+          const urgMet=urgent.filter(r=>r.met).length;
+          return{
+            ...b,
+            stdPct:standard.length>0?Math.round((stdMet/standard.length)*100):null,
+            stdMet,stdCount:standard.length,
+            urgPct:urgent.length>0?Math.round((urgMet/urgent.length)*100):null,
+            urgMet,urgCount:urgent.length
+          };
+        });
+      },[allRows,leadFilter,filterMode,productFilter]);
+
+      // Tooltip for the SLA progression chart — matches the dark theme.
+      const SLATooltip=({active,payload,label})=>{
+        if(!active||!payload||!payload.length)return null;
+        const row=payload[0]&&payload[0].payload;
+        return(
+          <div style={{background:"#222",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",fontSize:12,color:C.text,minWidth:180}}>
+            <div style={{color:C.white,fontWeight:600,marginBottom:6}}>{label}{row&&row.isPartial?" (partial)":""}</div>
+            {payload.map(p=>{
+              const pct=p.value;
+              const k=p.dataKey;
+              const met=row?row[k.replace("Pct","Met")]:null;
+              const tot=row?row[k.replace("Pct","Count")]:null;
+              return(
+                <div key={k} style={{display:"flex",justifyContent:"space-between",gap:14,color:p.color,marginBottom:2}}>
+                  <span>{p.name}</span>
+                  <span style={{fontWeight:600}}>{pct==null?"—":`${pct}%`}{met!=null&&tot!=null?` (${met}/${tot})`:""}</span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      };
+
       const exportCSV=useCallback(()=>{
         const isCoral=filterMode==="coral";
         const daysCol=isCoral?"Calendar Days Taken":"Working Days Taken";
@@ -4108,6 +4192,37 @@
                   </div>
                 </React.Fragment>
               )}
+            </div>
+
+            {/* SLA progression line chart */}
+            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px",marginBottom:20}}>
+              <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>
+                <div style={{color:C.white,fontSize:14,fontWeight:600}}>SLA Progression</div>
+                <div style={{fontSize:11,color:C.text,opacity:0.6}}>Last 12 months · compliance % per month · 90% target reference</div>
+              </div>
+              <div style={{height:260,marginTop:8}}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={slaTrend} margin={{top:10,right:18,left:0,bottom:0}}>
+                    <CartesianGrid stroke={C.border} strokeDasharray="3 3" vertical={false}/>
+                    <XAxis dataKey="label" tick={{fill:C.text,opacity:0.7,fontSize:11}} axisLine={{stroke:C.border}} tickLine={false}/>
+                    <YAxis domain={[0,100]} tick={{fill:C.text,opacity:0.7,fontSize:11}} axisLine={{stroke:C.border}} tickLine={false} tickFormatter={v=>`${v}%`} width={42}/>
+                    <Tooltip content={<SLATooltip/>} cursor={{stroke:C.border,strokeDasharray:"3 3"}}/>
+                    <ReferenceLine y={90} stroke={C.green} strokeDasharray="4 4" strokeOpacity={0.5} label={{value:"90%",fill:C.green,fontSize:10,position:"right"}}/>
+                    <Legend verticalAlign="top" height={28} iconType="circle" wrapperStyle={{fontSize:12,color:C.text}}/>
+                    {filterMode==="coral"?(
+                      <React.Fragment>
+                        <Line type="monotone" dataKey="willsPct" name="Wills" stroke={C.accent} strokeWidth={2} dot={{r:3}} activeDot={{r:5}} connectNulls/>
+                        <Line type="monotone" dataKey="lpasPct" name="LPAs" stroke="#9b59b6" strokeWidth={2} dot={{r:3}} activeDot={{r:5}} connectNulls/>
+                      </React.Fragment>
+                    ):(
+                      <React.Fragment>
+                        <Line type="monotone" dataKey="stdPct" name="Standard" stroke={C.accent} strokeWidth={2} dot={{r:3}} activeDot={{r:5}} connectNulls/>
+                        <Line type="monotone" dataKey="urgPct" name="Urgent" stroke={C.red} strokeWidth={2} dot={{r:3}} activeDot={{r:5}} connectNulls/>
+                      </React.Fragment>
+                    )}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
             </div>
 
             {/* Table */}
