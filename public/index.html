@@ -504,7 +504,7 @@
       chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour. Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
       chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
-      chart16:'Total amendments completed per drafter in the selected period. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner. Plain bars, no target.',
+      chart16:'Total amendments completed per drafter in the selected period, with each bar split by Amendment Type. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner and stacked by amendment_source. Amendments with no source set show in grey as "Not specified".',
       cWorkload:'Open deals per drafter, broken down by SLA status. Counts deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, Approved — Proof Reading, or Amendment Requested. SLA evaluated per deal: drafting deals use 28 calendar days from the latest of Date of Appointment / original drafting-instructions date (+14 cal days if the 14-day waiver is not signed); amendment deals use 10 business days for Client amendments or 1 business day otherwise. Sorted by Breached count descending, then total descending.',
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
@@ -743,32 +743,56 @@
     // Count of deals that exited stage 1338772492 ("Amendment Requested") in the
     // selected period, grouped by current drafter. No target — plain bars.
     function Chart16({deals,gran,bucket}){
-      const data=useMemo(()=>{
-        if(!bucket)return[];
-        const counts={};
+      const {data,sources,sourceColor,sourceStroke}=useMemo(()=>{
+        if(!bucket)return{data:[],sources:[],sourceColor:{},sourceStroke:{}};
+        const byDrafter={}; // drafter → { name, total, bySource: {src→count} }
+        const sourceTotals={}; // src → period-wide count, used to order segments
         deals.forEach(d=>{
           if(!d.exitedAmendment)return;
           if(dateToBucket(d.exitedAmendment,gran)!==bucket)return;
-          counts[d.drafterName]=(counts[d.drafterName]||0)+1;
+          const drafter=d.drafterName;
+          if(!drafter||/^\d+$/.test(drafter)||drafter==="Unknown")return;
+          const src=d.amendmentSource||"Not specified";
+          if(!byDrafter[drafter])byDrafter[drafter]={name:drafter,total:0,bySource:{}};
+          byDrafter[drafter].total++;
+          byDrafter[drafter].bySource[src]=(byDrafter[drafter].bySource[src]||0)+1;
+          sourceTotals[src]=(sourceTotals[src]||0)+1;
         });
-        return Object.entries(counts)
-          .filter(([n,c])=>c>=1&&!/^\d+$/.test(n)&&n!=="Unknown")
-          .map(([name,count])=>({name,count}))
-          .sort((a,b)=>b.count-a.count);
+        // Drafters sorted by total amendments descending (as before).
+        const rowsRaw=Object.values(byDrafter).filter(r=>r.total>=1).sort((a,b)=>b.total-a.total);
+        // Stack segment order: most common real source first (leftmost), then by
+        // frequency desc, with "Not specified" always pinned last (rightmost).
+        const realSources=Object.keys(sourceTotals).filter(s=>s!=="Not specified").sort((a,b)=>sourceTotals[b]-sourceTotals[a]);
+        const srcs=sourceTotals["Not specified"]?[...realSources,"Not specified"]:realSources;
+        const rows=rowsRaw.map(r=>{
+          const row={name:r.name,total:r.total};
+          srcs.forEach(s=>{row[s]=r.bySource[s]||0;});
+          return row;
+        });
+        const colorMap={},strokeMap={};
+        srcs.forEach((s,i)=>{
+          if(s==="Not specified"){colorMap[s]="rgba(150,150,150,0.30)";strokeMap[s]="#999";}
+          else{colorMap[s]=AMEND_COLORS[i%AMEND_COLORS.length];strokeMap[s]=AMEND_STROKES[i%AMEND_STROKES.length];}
+        });
+        return{data:rows,sources:srcs,sourceColor:colorMap,sourceStroke:strokeMap};
       },[deals,gran,bucket]);
 
       if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No amendments completed in this period</div>;
-      const maxVal=Math.max(...data.map(d=>d.count),5);
+      const maxVal=Math.max(...data.map(d=>d.total),5);
+      const lastIdx=sources.length-1;
       return(
-        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+80)}>
           <BarChart data={data} layout="vertical" margin={{top:20,right:60,left:10,bottom:10}}>
             <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
             <XAxis type="number" domain={[0,Math.ceil(maxVal*1.15)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
             <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
-            <Tooltip content={<DarkTooltip/>}/>
-            <Bar dataKey="count" name="Amendments" fill={C.blueFaded} stroke={C.blue} strokeWidth={0.5} barSize={22} radius={[0,6,6,0]}>
-              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
-            </Bar>
+            <Tooltip content={<StackedTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
+            {sources.map((s,i)=>(
+              <Bar key={s} dataKey={s} name={s} stackId="src" fill={sourceColor[s]} stroke={sourceStroke[s]} strokeWidth={0.5} barSize={22} radius={i===lastIdx?[0,6,6,0]:[0,0,0,0]}>
+                {i===lastIdx&&<LabelList dataKey="total" position="right" fill={C.white} fontSize={12} fontWeight={600}/>}
+              </Bar>
+            ))}
           </BarChart>
         </ResponsiveContainer>
       );
