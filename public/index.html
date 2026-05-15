@@ -4060,7 +4060,6 @@
                       <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
                         <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
                         <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
-                        <th style={{padding:"10px 12px",fontWeight:600}}>Lead Source(s)</th>
                         {filterMode!=="coral"&&<th style={{padding:"10px 12px",fontWeight:600}}>Priority</th>}
                         <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
                         <th style={{padding:"10px 12px",fontWeight:600}}>End Date</th>
@@ -4079,7 +4078,6 @@
                             {(filterMode==="coral"?r.coralWaiverExtension>0:r.waiverExtension>0)&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
                           </td>
                           <td style={{padding:"10px 12px"}}>{r.drafter}</td>
-                          <td style={{padding:"10px 12px"}}>{r.leadSourceLabel}</td>
                           {filterMode!=="coral"&&<td style={{padding:"10px 12px"}}>{r.isUrgent?"Urgent":"Standard"}</td>}
                           <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
                           <td style={{padding:"10px 12px"}}>{fmtDate(r.endDate)}</td>
