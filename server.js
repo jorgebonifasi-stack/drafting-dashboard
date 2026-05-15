@@ -50,6 +50,9 @@ const PROPERTIES = [
   "hs_v2_date_entered_1223751329", "hs_v2_date_exited_1223751329",
   "hs_v2_date_entered_1223751330",
   "ep_lead_source", "date_of_appointment",
+  // Coral SLA tab: lead source tier 3 ("Coral Insurance" / similar) plus
+  // ep_products to split deals into Wills vs LPAs.
+  "lead_source_tier_3", "ep_products",
   "date_drafting_query",
   "have_they_signed_the_14_day_waiver_",
   "consultant_query_reason",
@@ -453,7 +456,7 @@ async function fetchFreshData() {
     console.log(`[Pipelines] Discovered ${DO_NOT_USE_STAGE_IDS.length} DO NOT USE stage(s) — will check history per deal`);
   }
 
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions] =
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, productOptions] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -465,7 +468,9 @@ async function fetchFreshData() {
       fetchPropertyOptions("ep_lead_source").catch(() => ({})),
       fetchPropertyOptions("consultant_query_reason").catch(() => ({})),
       fetchPropertyOptions("legacy_advisor__owner").catch(() => ({})),
-      fetchPropertyOptions("have_they_signed_the_14_day_waiver_").catch(() => ({}))
+      fetchPropertyOptions("have_they_signed_the_14_day_waiver_").catch(() => ({})),
+      fetchPropertyOptions("lead_source_tier_3").catch(() => ({})),
+      fetchPropertyOptions("ep_products").catch(() => ({}))
     ]);
 
   return {
@@ -480,6 +485,8 @@ async function fetchFreshData() {
     consultantQueryReasonOptions,
     legacyAdvisorOptions,
     waiverOptions,
+    leadSourceTier3Options,
+    productOptions,
     stageLabels: stageData.labels || {},
     doNotUseStageIds: DO_NOT_USE_STAGE_IDS,
     dealExclusions: DRAFTER_EXCLUSIONS

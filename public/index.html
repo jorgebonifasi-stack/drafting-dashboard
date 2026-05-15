@@ -237,7 +237,7 @@
     }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,waiverOptions,dealExclusions,doNotUseStageIds){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,waiverOptions,dealExclusions,doNotUseStageIds,leadSourceTier3Options,productOptions){
       // Pre-compute the property keys to check for any "DO NOT USE" stage entry.
       // If any of these are populated on a deal, the deal has historically lived
       // in an archive pipeline (e.g. "DO NOT USE - Will Appointments") and the
@@ -340,6 +340,19 @@
         // Lead source (multi-select checkbox, ;-separated) + appointment date
         const rawLeadSource=p.ep_lead_source||"";
         const leadSources=rawLeadSource?rawLeadSource.split(";").map(v=>(leadSourceOptions||{})[v.trim()]||v.trim()).filter(Boolean):[];
+        // Lead source tier 3 (Coral SLA tab uses this to filter). Treated as
+        // ;-separated for safety even if usually single-valued; resolve labels
+        // via options when the raw value is an enum internal name.
+        const rawLeadTier3=p.lead_source_tier_3||"";
+        const leadSourceTier3List=rawLeadTier3?rawLeadTier3.split(";").map(v=>(leadSourceTier3Options||{})[v.trim()]||v.trim()).filter(Boolean):[];
+        const leadSourceTier3=leadSourceTier3List.join(", ");
+        // ep_products is a multi-select checkbox; expose label array so the
+        // Coral tab can split deals into Will / LPA buckets via substring match.
+        const rawProducts=p.ep_products||"";
+        const products=rawProducts?rawProducts.split(";").map(v=>(productOptions||{})[v.trim()]||v.trim()).filter(Boolean):[];
+        const productsLc=products.map(v=>v.toLowerCase());
+        const hasWillProduct=productsLc.some(v=>v.includes("will"));
+        const hasLpaProduct=productsLc.some(v=>v.includes("lpa")||v.includes("lasting power of attorney"));
         const dateOfAppointment=parseHSDate(p.date_of_appointment);
         // Workflow-stamped date: when drafting_query_reason was first populated (from 22/04/2026)
         const firstQueryDate=parseHSDate(p.date_drafting_query);
@@ -353,7 +366,8 @@
         return{
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
           wasInDoNotUse,
-          leadSources,dateOfAppointment,firstQueryDate,waiverSigned14d,
+          leadSources,leadSourceTier3,leadSourceTier3List,products,hasWillProduct,hasLpaProduct,
+          dateOfAppointment,firstQueryDate,waiverSigned14d,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
           legacyAdvisor,enteredRDWC,exitedRDWC,rdwcTurnaroundBizDays,
@@ -2486,6 +2500,203 @@
       );
     }
 
+    // ─── Coral SLA Table (audit-style report for Coral lead-source-tier-3) ──
+    // Retrospective compliance view. Filters deals to lead_source_tier_3 ⊇ "Coral",
+    // anchored on Drafts With Customer completion date in the selected month range.
+    // SLA = 42 calendar days from Date of Appointment to first entry into "Drafts
+    // With Customer" (per the source dbt model: sla_threshold_days = 42, sla_end_point
+    // = drafts_with_customer_at). Deals are split into Will / LPA buckets via
+    // case-insensitive substring on ep_products labels; a deal with both products
+    // counts in both. Excludes deals that have ever sat in a DO NOT USE stage.
+    function CoralSLATable({deals}){
+      const SLA_CAL_DAYS=42;
+      // Default: previous calendar month, single-month range.
+      const today=new Date();
+      const prevMonth=new Date(today.getFullYear(),today.getMonth()-1,1);
+      const toYearMonth=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+      const defaultMonth=toYearMonth(prevMonth);
+      const[fromMonth,setFromMonth]=useState(defaultMonth);
+      const[toMonth,setToMonth]=useState(defaultMonth);
+      const[productFilter,setProductFilter]=useState(()=>new Set());
+      const monthStart=ym=>{const[y,m]=ym.split("-").map(Number);return new Date(y,m-1,1,0,0,0,0);};
+      const monthEnd=ym=>{const[y,m]=ym.split("-").map(Number);return new Date(y,m,0,23,59,59,999);};
+
+      const allRows=useMemo(()=>{
+        const start=fromMonth?monthStart(fromMonth):null;
+        const end=toMonth?monthEnd(toMonth):null;
+        const out=[];
+        deals.forEach(d=>{
+          if(d.wasInDoNotUse)return;
+          const tier3=(d.leadSourceTier3||"").toLowerCase();
+          if(!tier3.includes("coral"))return;
+          if(!d.dateOfAppointment)return;
+          if(!d.firstDWC)return;
+          if(start&&d.firstDWC<start)return;
+          if(end&&d.firstDWC>end)return;
+          const startDay=new Date(d.dateOfAppointment);startDay.setHours(0,0,0,0);
+          const endDay=new Date(d.firstDWC);endDay.setHours(0,0,0,0);
+          const calendarDays=Math.round((endDay-startDay)/86400000);
+          if(calendarDays<0)return;
+          const met=calendarDays<=SLA_CAL_DAYS;
+          const buckets=[];
+          if(d.hasWillProduct)buckets.push("Will");
+          if(d.hasLpaProduct)buckets.push("LPA");
+          if(!buckets.length)buckets.push("Other");
+          out.push({
+            id:d.id,
+            dealname:d.dealname,
+            drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
+            products:d.products||[],
+            buckets,
+            bucketLabel:buckets.join(" + "),
+            appointment:d.dateOfAppointment,
+            endDate:d.firstDWC,
+            calendarDays,
+            target:SLA_CAL_DAYS,
+            met,
+            status:met?"Met":"Breached"
+          });
+        });
+        out.sort((a,b)=>b.endDate-a.endDate);
+        return out;
+      },[deals,fromMonth,toMonth]);
+
+      const productOptions=useMemo(()=>{
+        const set=new Set();
+        allRows.forEach(r=>r.buckets.forEach(b=>set.add(b)));
+        return Array.from(set).sort();
+      },[allRows]);
+
+      const rows=useMemo(()=>{
+        if(productFilter.size===0)return allRows;
+        return allRows.filter(r=>r.buckets.some(b=>productFilter.has(b)));
+      },[allRows,productFilter]);
+
+      // Cohort stats: Wills and LPAs are independent cohorts. A deal in both
+      // counts in both — matches the SQL's product_type LIKE '%Will%' and
+      // LIKE '%LPA%' behaviour for "Will & LPA" rows.
+      const stats=useMemo(()=>{
+        const wills=allRows.filter(r=>r.buckets.includes("Will"));
+        const lpas=allRows.filter(r=>r.buckets.includes("LPA"));
+        const willsMet=wills.filter(r=>r.met).length;
+        const lpasMet=lpas.filter(r=>r.met).length;
+        const willsPct=wills.length>0?Math.round((willsMet/wills.length)*100):null;
+        const lpasPct=lpas.length>0?Math.round((lpasMet/lpas.length)*100):null;
+        return{
+          willsTotal:wills.length,willsMet,willsBreached:wills.length-willsMet,willsPct,
+          lpasTotal:lpas.length,lpasMet,lpasBreached:lpas.length-lpasMet,lpasPct
+        };
+      },[allRows]);
+
+      const toggleProduct=name=>{setProductFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
+
+      const exportCSV=useCallback(()=>{
+        const hdr=["Deal ID","Deal Name","Drafter","Products","Bucket","Date of Appointment","First Drafts With Customer","Calendar Days","SLA Target","Status","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,r.products.join(", "),r.bucketLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.target,r.status,HS_BASE+r.id])];
+        downloadCSV(`coral_sla_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,fromMonth,toMonth]);
+
+      const statusColor=met=>met?C.green:C.red;
+      const pctColor=p=>p==null?C.text:p>=90?C.green:p>=75?C.amber:C.red;
+      const card={background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"18px 20px"};
+      const cardLabel={fontSize:11,letterSpacing:1,textTransform:"uppercase",color:C.text,opacity:0.6,fontWeight:600};
+      const cardValue={fontSize:30,fontWeight:700,color:C.white,marginTop:6,lineHeight:1};
+      const bucketChip=b=>({display:"inline-block",fontSize:10,marginRight:4,padding:"2px 8px",borderRadius:4,background:b==="Will"?"rgba(52,152,219,0.18)":b==="LPA"?"rgba(155,89,182,0.18)":"rgba(150,150,150,0.18)",color:b==="Will"?C.accent:b==="LPA"?"#9b59b6":C.text,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"});
+
+      return(
+        <div>
+          {/* Filters */}
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px",marginBottom:20}}>
+            <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:14,marginBottom:12}}>
+              <label style={{fontSize:12,color:C.text,opacity:0.7}}>End SLA Month</label>
+              <input type="month" value={fromMonth} onChange={e=>setFromMonth(e.target.value)} style={{...S.input,width:170,padding:"6px 10px",fontSize:13}}/>
+              <span style={{color:C.text,opacity:0.6}}>{"→"}</span>
+              <input type="month" value={toMonth} onChange={e=>setToMonth(e.target.value)} style={{...S.input,width:170,padding:"6px 10px",fontSize:13}}/>
+              <span style={{flex:1}}/>
+              <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"⬇"} CSV ({rows.length})</button>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+              <label style={{fontSize:12,color:C.text,opacity:0.7,marginRight:4}}>Product</label>
+              {productOptions.map(name=>{
+                const active=productFilter.has(name);
+                const count=allRows.filter(r=>r.buckets.includes(name)).length;
+                return(
+                  <button key={name} onClick={()=>toggleProduct(name)} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.bg,color:active?C.accent:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{name} ({count})</button>
+                );
+              })}
+              {productFilter.size>0&&<button onClick={()=>setProductFilter(new Set())} style={{padding:"4px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.text,cursor:"pointer",fontSize:11,fontWeight:500}}>Clear</button>}
+            </div>
+          </div>
+
+          {/* Summary cards */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:14,marginBottom:20}}>
+            <div style={card}><div style={cardLabel}>Total Wills</div><div style={cardValue}>{stats.willsTotal}</div></div>
+            <div style={card}><div style={cardLabel}>Wills Out of SLA</div><div style={{...cardValue,color:stats.willsBreached>0?C.red:C.green}}>{stats.willsBreached}</div></div>
+            <div style={card}>
+              <div style={cardLabel}>Wills Compliance %</div>
+              <div style={{...cardValue,color:pctColor(stats.willsPct)}}>{stats.willsPct==null?"—":`${stats.willsPct}%`}</div>
+              <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.willsTotal===0?"No Will deals":`${stats.willsMet} of ${stats.willsTotal} met`}</div>
+            </div>
+            <div style={card}><div style={cardLabel}>Total LPAs</div><div style={cardValue}>{stats.lpasTotal}</div></div>
+            <div style={card}><div style={cardLabel}>LPAs Out of SLA</div><div style={{...cardValue,color:stats.lpasBreached>0?C.red:C.green}}>{stats.lpasBreached}</div></div>
+            <div style={card}>
+              <div style={cardLabel}>LPAs Compliance %</div>
+              <div style={{...cardValue,color:pctColor(stats.lpasPct)}}>{stats.lpasPct==null?"—":`${stats.lpasPct}%`}</div>
+              <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.lpasTotal===0?"No LPA deals":`${stats.lpasMet} of ${stats.lpasTotal} met`}</div>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px"}}>
+            <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>Coral SLA results</div>
+            <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
+              SLA = 42 calendar days from Date of Appointment to first entry into "Drafts With Customer". Lead source tier 3 must contain "Coral". A deal with both Will and LPA products counts in both buckets. Cohort = deals whose Drafts With Customer date falls in the selected month range. Deals that ever sat in a "DO NOT USE" pipeline are excluded.
+            </div>
+            {rows.length===0?(
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed Coral deals in this range.</div>
+            ):(
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                  <thead>
+                    <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Bucket</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Products</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Drafts With Customer</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Calendar Days</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>SLA</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r=>(
+                      <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                        <td style={{padding:"10px 12px"}}>
+                          <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                        </td>
+                        <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>
+                          {r.buckets.map(b=>(<span key={b} style={bucketChip(b)}>{b}</span>))}
+                        </td>
+                        <td style={{padding:"10px 12px"}}>{r.drafter}</td>
+                        <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:0.7}}>{r.products.join(", ")||"—"}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.endDate)}</td>
+                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.calendarDays}d</td>
+                        <td style={{padding:"10px 12px",textAlign:"right",color:C.text,opacity:0.6}}>{r.target}d</td>
+                        <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r.met)}}>{r.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     // ─── Standard SLA Table (mixed drafting + amendment cohorts) ──
     // Drafting deals: 28 calendar days from latest of (original_date_entered_drafting_instructions,
     //   dateOfAppointment); excluded if both anchors missing; +14 cal day extension when the
@@ -2970,7 +3181,7 @@
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
           setStageLabels(stageLbls);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,waiverOpts,exclusions,result.doNotUseStageIds||[]));
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,waiverOpts,exclusions,result.doNotUseStageIds||[],result.leadSourceTier3Options||{},result.productOptions||{}));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -3416,7 +3627,8 @@
                   drafting:{label:"Drafting",defaultView:"graphs",subs:[
                     {key:"graphs",label:"Metrics"},
                     {key:"sla",label:"Standard SLA"},
-                    {key:"macmillan-sla",label:"Macmillan SLA"}
+                    {key:"macmillan-sla",label:"Macmillan SLA"},
+                    {key:"coral-sla",label:"Coral SLA"}
                   ]},
                   "legacy-advisor":{label:"Legacy Advisor",defaultView:"legacy-advisor",subs:[
                     {key:"legacy-advisor",label:"Metrics"},
@@ -3424,7 +3636,7 @@
                   ]}
                 };
                 const VIEW_TO_SECTION={
-                  graphs:"drafting",sla:"drafting","macmillan-sla":"drafting",
+                  graphs:"drafting",sla:"drafting","macmillan-sla":"drafting","coral-sla":"drafting",
                   "legacy-advisor":"legacy-advisor","legacy-advisor-sla":"legacy-advisor"
                 };
                 const activeSection=VIEW_TO_SECTION[view]||"drafting";
@@ -3485,6 +3697,7 @@
 
           {view==="sla"&&<StandardSLATable deals={deals} stageLabels={stageLabels}/>}
           {view==="macmillan-sla"&&<MacmillanSLATable deals={deals} stageLabels={stageLabels}/>}
+          {view==="coral-sla"&&<CoralSLATable deals={deals}/>}
           {view==="legacy-advisor-sla"&&<LegacyAdvisorSLATable deals={deals} stageLabels={stageLabels}/>}
 
           {view==="legacy-advisor"&&<>
@@ -3634,7 +3847,9 @@
             result.legacyAdvisorOptions||{},
             result.waiverOptions||{},
             result.dealExclusions||{},
-            result.doNotUseStageIds||[]
+            result.doNotUseStageIds||[],
+            result.leadSourceTier3Options||{},
+            result.productOptions||{}
           ));
           setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
           setError(null);
@@ -3762,7 +3977,9 @@
             result.legacyAdvisorOptions||{},
             result.waiverOptions||{},
             result.dealExclusions||{},
-            result.doNotUseStageIds||[]
+            result.doNotUseStageIds||[],
+            result.leadSourceTier3Options||{},
+            result.productOptions||{}
           ));
           setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
         }catch(e){setError(e.message||String(e));}
