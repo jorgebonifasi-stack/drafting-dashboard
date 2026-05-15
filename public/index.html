@@ -3811,10 +3811,14 @@
         return out;
       },[deals,fromDate,toDate]);
 
+      // Allowlist of lead sources that get surfaced as filter pills. Keeps
+      // the audit focused on cohorts that have their own SLA (Macmillan).
+      // Add more entries here as new SLA-tracked sources come online.
+      const AUDIT_LEAD_SOURCE_ALLOWLIST=["Macmillan"];
       const leadSourceOptions=useMemo(()=>{
-        const set=new Set();
-        deals.forEach(d=>(d.leadSources||[]).forEach(ls=>{if(ls)set.add(ls);}));
-        return Array.from(set).sort();
+        const seen=new Set();
+        deals.forEach(d=>(d.leadSources||[]).forEach(ls=>{if(ls)seen.add(ls);}));
+        return AUDIT_LEAD_SOURCE_ALLOWLIST.filter(ls=>seen.has(ls));
       },[deals]);
 
       const rows=useMemo(()=>{
@@ -3826,8 +3830,13 @@
         const total=rows.length;
         const met=rows.filter(r=>r.met).length;
         const breached=total-met;
-        const pct=total>0?Math.round((met/total)*100):null;
-        return{total,met,breached,pct};
+        const standard=rows.filter(r=>!r.isUrgent);
+        const urgent=rows.filter(r=>r.isUrgent);
+        const stdMet=standard.filter(r=>r.met).length;
+        const urgMet=urgent.filter(r=>r.met).length;
+        const stdPct=standard.length>0?Math.round((stdMet/standard.length)*100):null;
+        const urgPct=urgent.length>0?Math.round((urgMet/urgent.length)*100):null;
+        return{total,met,breached,stdPct,urgPct,stdCount:standard.length,urgCount:urgent.length};
       },[rows]);
 
       const toggleLead=name=>{setLeadFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
@@ -3883,11 +3892,20 @@
             </div>
 
             {/* Summary cards */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14,marginBottom:20}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:14,marginBottom:20}}>
               <div style={card}><div style={cardLabel}>Total deals</div><div style={cardValue}>{stats.total}</div></div>
               <div style={card}><div style={cardLabel}>Met SLA</div><div style={{...cardValue,color:C.green}}>{stats.met}</div></div>
               <div style={card}><div style={cardLabel}>Breached SLA</div><div style={{...cardValue,color:C.red}}>{stats.breached}</div></div>
-              <div style={card}><div style={cardLabel}>Compliance %</div><div style={{...cardValue,color:stats.pct==null?C.text:stats.pct>=90?C.green:stats.pct>=75?C.amber:C.red}}>{stats.pct==null?"—":`${stats.pct}%`}</div></div>
+              <div style={card}>
+                <div style={cardLabel}>Standard Compliance %</div>
+                <div style={{...cardValue,color:stats.stdPct==null?C.text:stats.stdPct>=90?C.green:stats.stdPct>=75?C.amber:C.red}}>{stats.stdPct==null?"—":`${stats.stdPct}%`}</div>
+                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.stdCount} deal{stats.stdCount===1?"":"s"}</div>
+              </div>
+              <div style={card}>
+                <div style={cardLabel}>Urgent Compliance %</div>
+                <div style={{...cardValue,color:stats.urgPct==null?C.text:stats.urgPct>=90?C.green:stats.urgPct>=75?C.amber:C.red}}>{stats.urgPct==null?"—":`${stats.urgPct}%`}</div>
+                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgCount} deal{stats.urgCount===1?"":"s"}</div>
+              </div>
             </div>
 
             {/* Table */}
