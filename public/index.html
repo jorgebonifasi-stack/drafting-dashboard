@@ -3619,8 +3619,229 @@
       );
     }
 
+    // ─── Audit Dashboard (SLA compliance report at /audit) ─────
+    // Authenticated standalone view. Reports deals whose End SLA date
+    // (earliest of original Drafts With Customer / original Ready For Printing)
+    // falls in the selected range, comparing actual working days from
+    // Date of Appointment against the per-priority SLA target (20 working
+    // days for standard, 3 working days for urgent).
+    function AuditDashboard(){
+      const[deals,setDeals]=useState([]);
+      const[loading,setLoading]=useState(true);
+      const[error,setError]=useState(null);
+      const[lastRefresh,setLastRefresh]=useState(null);
+
+      // Default range: previous calendar month
+      const today=new Date();
+      const defaultFrom=new Date(today.getFullYear(),today.getMonth()-1,1);
+      const defaultTo=new Date(today.getFullYear(),today.getMonth(),0); // last day of previous month
+      const toIsoDate=d=>d.toISOString().slice(0,10);
+      const[fromDate,setFromDate]=useState(toIsoDate(defaultFrom));
+      const[toDate,setToDate]=useState(toIsoDate(defaultTo));
+      const[leadFilter,setLeadFilter]=useState(()=>new Set());
+
+      const loadData=useCallback(async()=>{
+        setLoading(true);setError(null);
+        try{
+          const res=await fetch("/api/deals");
+          if(!res.ok)throw new Error("Failed to fetch deals");
+          const result=await res.json();
+          setDeals(processDeals(
+            result.deals||[],
+            result.ownerMap||{},
+            result.draftingOwnerOptions||{},
+            result.proofOwnerOptions||{},
+            result.queryReasonOptions||{},
+            result.urgentReasonOptions||{},
+            result.amendmentSourceOptions||{},
+            result.leadSourceOptions||{},
+            result.consultantQueryReasonOptions||{},
+            result.legacyAdvisorOptions||{},
+            result.waiverOptions||{},
+            result.dealExclusions||{}
+          ));
+          setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
+        }catch(e){setError(e.message||String(e));}
+        finally{setLoading(false);}
+      },[]);
+
+      useEffect(()=>{loadData();},[loadData]);
+
+      // Build audit rows: deals that have completed (reached DWC or RFP)
+      // and whose End date falls in [fromDate, toDate].
+      const allRows=useMemo(()=>{
+        const start=fromDate?new Date(fromDate+"T00:00:00"):null;
+        const end=toDate?new Date(toDate+"T23:59:59.999"):null;
+        const out=[];
+        deals.forEach(d=>{
+          if(!d.dateOfAppointment)return;
+          // End = earliest of origDraftsWithCustomer and origReadyForPrinting
+          const candidates=[];
+          if(d.origDraftsWithCustomer)candidates.push(d.origDraftsWithCustomer.getTime());
+          if(d.origReadyForPrinting)candidates.push(d.origReadyForPrinting.getTime());
+          if(!candidates.length)return;
+          const endDate=new Date(Math.min(...candidates));
+          if(start&&endDate<start)return;
+          if(end&&endDate>end)return;
+          // Compute working days from Date of Appointment to end (inclusive of partial-day handling via calcBusinessDays)
+          const startDay=new Date(d.dateOfAppointment);startDay.setHours(0,0,0,0);
+          const endDay=new Date(endDate);endDay.setHours(0,0,0,0);
+          const workingDays=endDay>=startDay?(calcBusinessDays(startDay,endDay)||0):null;
+          if(workingDays==null)return;
+          const target=d.isUrgent?3:20;
+          const met=workingDays<=target;
+          out.push({
+            id:d.id,
+            dealname:d.dealname,
+            drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
+            leadSources:(d.leadSources&&d.leadSources.length)?d.leadSources:[""],
+            leadSourceLabel:(d.leadSources&&d.leadSources.length)?d.leadSources.join(", "):"—",
+            isUrgent:!!d.isUrgent,
+            appointment:d.dateOfAppointment,
+            endDate,
+            workingDays,
+            target,
+            met,
+            status:met?"Met":"Breached"
+          });
+        });
+        out.sort((a,b)=>b.endDate-a.endDate);
+        return out;
+      },[deals,fromDate,toDate]);
+
+      const leadSourceOptions=useMemo(()=>{
+        const set=new Set();
+        deals.forEach(d=>(d.leadSources||[]).forEach(ls=>{if(ls)set.add(ls);}));
+        return Array.from(set).sort();
+      },[deals]);
+
+      const rows=useMemo(()=>{
+        if(leadFilter.size===0)return allRows;
+        return allRows.filter(r=>r.leadSources.some(ls=>leadFilter.has(ls)));
+      },[allRows,leadFilter]);
+
+      const stats=useMemo(()=>{
+        const total=rows.length;
+        const met=rows.filter(r=>r.met).length;
+        const breached=total-met;
+        const pct=total>0?Math.round((met/total)*100):null;
+        return{total,met,breached,pct};
+      },[rows]);
+
+      const toggleLead=name=>{setLeadFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
+
+      const exportCSV=useCallback(()=>{
+        const hdr=["Deal ID","Deal Name","Drafter","Lead Source(s)","Priority","Date of Appointment","End Date","Working Days Taken","SLA Target (days)","Status","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,r.leadSourceLabel,r.isUrgent?"Urgent":"Standard",fmtDate(r.appointment),fmtDate(r.endDate),r.workingDays,r.target,r.status,HS_BASE+r.id])];
+        downloadCSV(`sla_audit_${fromDate}_to_${toDate}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,fromDate,toDate]);
+
+      const statusColor=met=>met?C.green:C.red;
+      const card={background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"18px 20px"};
+      const cardLabel={fontSize:11,letterSpacing:1,textTransform:"uppercase",color:C.text,opacity:0.6,fontWeight:600};
+      const cardValue={fontSize:30,fontWeight:700,color:C.white,marginTop:6,lineHeight:1};
+
+      if(loading&&!deals.length)return<div style={{minHeight:"100vh",background:C.bg,color:C.text,display:"flex",alignItems:"center",justifyContent:"center"}}>Loading…</div>;
+
+      return(
+        <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'Inter','Segoe UI',system-ui,sans-serif"}}>
+          {/* Header */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12,padding:"20px 24px",background:C.bgDarker,borderBottom:`1px solid ${C.border}`}}>
+            <h1 style={{color:C.white,fontSize:20,fontWeight:700,margin:0}}>SLA Audit <span style={{color:C.text,opacity:0.6,fontWeight:400}}>— Drafting Dashboard</span></h1>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              {lastRefresh&&<span style={{fontSize:11,color:C.text,opacity:0.6}}>Data from {lastRefresh.toLocaleTimeString()}</span>}
+              <a href="/" style={{color:C.accent,textDecoration:"none",fontSize:13,fontWeight:500}}>{"← Back to dashboard"}</a>
+            </div>
+          </div>
+
+          <div style={{padding:"20px 24px"}}>
+            {error&&<div style={{marginBottom:16,padding:"10px 14px",background:"rgba(231,76,60,0.15)",border:`1px solid ${C.red}`,borderRadius:8,color:C.red,fontSize:13}}>{error}</div>}
+
+            {/* Filters */}
+            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px",marginBottom:20}}>
+              <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:14,marginBottom:12}}>
+                <label style={{fontSize:12,color:C.text,opacity:0.7}}>End SLA Date</label>
+                <input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)} style={{...S.input,width:160,padding:"6px 10px",fontSize:13}}/>
+                <span style={{color:C.text,opacity:0.6}}>{"→"}</span>
+                <input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} style={{...S.input,width:160,padding:"6px 10px",fontSize:13}}/>
+                <span style={{flex:1}}/>
+                <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"⬇"} CSV ({rows.length})</button>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                <label style={{fontSize:12,color:C.text,opacity:0.7,marginRight:4}}>Lead Source</label>
+                {leadSourceOptions.map(name=>{
+                  const active=leadFilter.has(name);
+                  const count=allRows.filter(r=>r.leadSources.includes(name)).length;
+                  return(
+                    <button key={name} onClick={()=>toggleLead(name)} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.bg,color:active?C.accent:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{name} ({count})</button>
+                  );
+                })}
+                {leadFilter.size>0&&<button onClick={()=>setLeadFilter(new Set())} style={{padding:"4px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.text,cursor:"pointer",fontSize:11,fontWeight:500}}>Clear</button>}
+              </div>
+            </div>
+
+            {/* Summary cards */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14,marginBottom:20}}>
+              <div style={card}><div style={cardLabel}>Total deals</div><div style={cardValue}>{stats.total}</div></div>
+              <div style={card}><div style={cardLabel}>Met SLA</div><div style={{...cardValue,color:C.green}}>{stats.met}</div></div>
+              <div style={card}><div style={cardLabel}>Breached SLA</div><div style={{...cardValue,color:C.red}}>{stats.breached}</div></div>
+              <div style={card}><div style={cardLabel}>Compliance %</div><div style={{...cardValue,color:stats.pct==null?C.text:stats.pct>=90?C.green:stats.pct>=75?C.amber:C.red}}>{stats.pct==null?"—":`${stats.pct}%`}</div></div>
+            </div>
+
+            {/* Table */}
+            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px"}}>
+              <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>Audit results</div>
+              <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
+                SLA = 20 working days for standard, 3 working days for urgent (Priority = High). End = earliest of original "Drafts With Customer" / "Ready For Printing". Working days exclude weekends.
+              </div>
+              {rows.length===0?(
+                <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed deals in this range.</div>
+              ):(
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                    <thead>
+                      <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
+                        <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                        <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
+                        <th style={{padding:"10px 12px",fontWeight:600}}>Lead Source(s)</th>
+                        <th style={{padding:"10px 12px",fontWeight:600}}>Priority</th>
+                        <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
+                        <th style={{padding:"10px 12px",fontWeight:600}}>End Date</th>
+                        <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Working Days</th>
+                        <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>SLA Target</th>
+                        <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(r=>(
+                        <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                          <td style={{padding:"10px 12px"}}>
+                            <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                            {r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
+                          </td>
+                          <td style={{padding:"10px 12px"}}>{r.drafter}</td>
+                          <td style={{padding:"10px 12px"}}>{r.leadSourceLabel}</td>
+                          <td style={{padding:"10px 12px"}}>{r.isUrgent?"Urgent":"Standard"}</td>
+                          <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
+                          <td style={{padding:"10px 12px"}}>{fmtDate(r.endDate)}</td>
+                          <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.workingDays}d</td>
+                          <td style={{padding:"10px 12px",textAlign:"right",color:C.text,opacity:0.6}}>{r.target}d</td>
+                          <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r.met)}}>{r.status}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     const __isTV=typeof window!=="undefined"&&window.location&&window.location.pathname.replace(/\/$/,"")==="/tv";
-    ReactDOM.createRoot(document.getElementById("root")).render(__isTV?<TVDashboard/>:<Dashboard/>);
+    const __isAudit=typeof window!=="undefined"&&window.location&&window.location.pathname.replace(/\/$/,"")==="/audit";
+    ReactDOM.createRoot(document.getElementById("root")).render(__isTV?<TVDashboard/>:__isAudit?<AuditDashboard/>:<Dashboard/>);
   </script>
 </body>
 </html>
