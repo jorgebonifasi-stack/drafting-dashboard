@@ -396,11 +396,24 @@ async function fetchPropertyOptions(propName) {
 }
 
 // ─── Fetch deal pipeline stage labels ──────────────────────────
-// Returns BOTH the label map and the list of stage IDs that belong to any
-// pipeline whose label contains "DO NOT USE" (case-insensitive). The audit
-// uses the latter to exclude reallocated/legacy deals whose stage history
-// includes those archive pipelines (the appointment date refers to the old
-// cycle, not the current EP cycle, so working-day calculations explode).
+// Returns BOTH the label map and the list of stage IDs we want to use as a
+// "stop the audit from including this deal" signal. We only flag a narrow
+// set of legacy completion stages from the archived "DO NOT USE" pipelines —
+// these are the ones whose presence in a deal's history means the *real*
+// drafting cycle happened in the old pipeline and the deal was later
+// reallocated to Estate Planning (its Date of Appointment refers to the
+// original cycle, not the EP cycle, so working-day calcs would explode).
+// Earlier DO NOT USE stages like "Appointment scheduled" / "On Hold" are
+// NOT flagged — a deal could pass through those without ever completing
+// the old workflow.
+const DO_NOT_USE_STAGE_LABELS = new Set([
+  "instructions delivered",
+  "documents ready",
+  "documents with customer for review",
+  "preparing documents",
+  "appointment sat"
+]);
+
 async function fetchDealStageLabels() {
   const url = "https://api.hubapi.com/crm/v3/pipelines/deals";
   const response = await fetch(url, {
@@ -415,8 +428,9 @@ async function fetchDealStageLabels() {
     const pipelineIsDoNotUse = /DO\s*NOT\s*USE/i.test(pipelineLabel);
     (pipeline.stages || []).forEach(stage => {
       labels[stage.id] = stage.label;
-      const stageLabel = stage.label || "";
-      if (pipelineIsDoNotUse || /DO\s*NOT\s*USE/i.test(stageLabel)) {
+      if (!pipelineIsDoNotUse) return;
+      const normalized = (stage.label || "").toLowerCase().trim();
+      if (DO_NOT_USE_STAGE_LABELS.has(normalized)) {
         doNotUseStageIds.push(stage.id);
       }
     });
