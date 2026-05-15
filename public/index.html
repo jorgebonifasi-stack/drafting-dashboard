@@ -3852,8 +3852,13 @@
           const waiverExtension=(!d.isUrgent&&d.waiverSigned14d===false)?10:0;
           const target=baseTarget+waiverExtension;
           const met=workingDays<=target;
-          // Coral SLA: 42 calendar days, no urgent / waiver distinction.
-          const coralTarget=42;
+          // Coral SLA: 42 calendar days from DoA to End. The 14-day waiver
+          // extension applies: when the customer has NOT signed it, add
+          // 14 calendar days to the Coral target. (Priority / urgent does
+          // NOT adjust the Coral SLA per the source dbt model.)
+          const coralBaseTarget=42;
+          const coralWaiverExtension=d.waiverSigned14d===false?14:0;
+          const coralTarget=coralBaseTarget+coralWaiverExtension;
           const coralMet=calendarDays<=coralTarget;
           // Cohort tagging: ep_lead_source covers Macmillan etc.; Coral is on
           // lead_source_tier_3 (substring match). Used by the filter pills.
@@ -3876,6 +3881,8 @@
             baseTarget,
             waiverExtension,
             target,
+            coralBaseTarget,
+            coralWaiverExtension,
             coralTarget,
             met,
             coralMet,
@@ -3954,11 +3961,11 @@
         const daysCol=isCoral?"Calendar Days Taken":"Working Days Taken";
         const targetCol=isCoral?"SLA Target (cal days)":"SLA Target (working days)";
         const hdr=isCoral
-          ?["Deal ID","Deal Name","Drafter","Lead Source(s)","Date of Appointment","End Date",daysCol,targetCol,"Status","SLA Breach Reason","HubSpot Link"]
+          ?["Deal ID","Deal Name","Drafter","Lead Source(s)","Date of Appointment","End Date",daysCol,"Base SLA (cal days)","Waiver Extension (cal days)",targetCol,"Status","SLA Breach Reason","HubSpot Link"]
           :["Deal ID","Deal Name","Drafter","Lead Source(s)","Priority","Date of Appointment","End Date",daysCol,"Base SLA (days)","Waiver Extension (days)",targetCol,"Status","SLA Breach Reason","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>(
           isCoral
-            ?[r.id,r.dealname,r.drafter,r.leadSourceLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.coralTarget,r.coralStatus,r.slaBreachReason||"",HS_BASE+r.id]
+            ?[r.id,r.dealname,r.drafter,r.leadSourceLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.coralBaseTarget,r.coralWaiverExtension||0,r.coralTarget,r.coralStatus,r.slaBreachReason||"",HS_BASE+r.id]
             :[r.id,r.dealname,r.drafter,r.leadSourceLabel,r.isUrgent?"Urgent":"Standard",fmtDate(r.appointment),fmtDate(r.endDate),r.workingDays,r.baseTarget,r.waiverExtension||0,r.target,r.status,r.slaBreachReason||"",HS_BASE+r.id]
         ))];
         const suffix=isCoral?"_coral":"";
@@ -4041,7 +4048,7 @@
               <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>SLA Logic</div>
               <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
                 {filterMode==="coral"
-                  ?"Coral SLA = 42 calendar days from Date of Appointment to End. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority / 14-day waiver do not adjust the Coral SLA."
+                  ?"Coral SLA = 42 calendar days from Date of Appointment to End. +14 calendar days when the 14-day waiver is not signed. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority does not adjust the Coral SLA."
                   :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays."}
               </div>
               {rows.length===0?(
@@ -4069,7 +4076,7 @@
                           <td style={{padding:"10px 12px"}}>
                             <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
                             {filterMode!=="coral"&&r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
-                            {filterMode!=="coral"&&r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
+                            {(filterMode==="coral"?r.coralWaiverExtension>0:r.waiverExtension>0)&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
                           </td>
                           <td style={{padding:"10px 12px"}}>{r.drafter}</td>
                           <td style={{padding:"10px 12px"}}>{r.leadSourceLabel}</td>
