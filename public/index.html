@@ -2502,12 +2502,12 @@
 
     // ─── Coral SLA Table (audit-style report for Coral lead-source-tier-3) ──
     // Retrospective compliance view. Filters deals to lead_source_tier_3 ⊇ "Coral",
-    // anchored on Drafts With Customer completion date in the selected month range.
-    // SLA = 42 calendar days from Date of Appointment to first entry into "Drafts
-    // With Customer" (per the source dbt model: sla_threshold_days = 42, sla_end_point
-    // = drafts_with_customer_at). Deals are split into Will / LPA buckets via
-    // case-insensitive substring on ep_products labels; a deal with both products
-    // counts in both. Excludes deals that have ever sat in a DO NOT USE stage.
+    // anchored on End date (earliest of firstDWC / firstRFP / firstSentToCustomer)
+    // in the selected month range. SLA = 42 calendar days from Date of Appointment
+    // to End (sla_threshold_days = 42 in the source dbt model). Deals are split
+    // into Will / LPA buckets via case-insensitive substring on ep_products labels;
+    // a deal with both products counts in both. Excludes deals that have ever sat
+    // in a DO NOT USE stage.
     function CoralSLATable({deals}){
       const SLA_CAL_DAYS=42;
       // Default: previous calendar month, single-month range.
@@ -2530,11 +2530,21 @@
           const tier3=(d.leadSourceTier3||"").toLowerCase();
           if(!tier3.includes("coral"))return;
           if(!d.dateOfAppointment)return;
-          if(!d.firstDWC)return;
-          if(start&&d.firstDWC<start)return;
-          if(end&&d.firstDWC>end)return;
+          // End = earliest of firstDWC, firstRFP, firstSentToCustomer — same
+          // pattern as the /audit page. Each "first*" prefers the workflow-
+          // stamped original_date_entered_<stage> when set, and falls back to
+          // (latest entered − cumulative_time_in_stage) as an upper-bound
+          // estimate when missing. See processDeals.
+          const candidates=[];
+          if(d.firstDWC)candidates.push(d.firstDWC.getTime());
+          if(d.firstRFP)candidates.push(d.firstRFP.getTime());
+          if(d.firstSentToCustomer)candidates.push(d.firstSentToCustomer.getTime());
+          if(!candidates.length)return;
+          const endDate=new Date(Math.min(...candidates));
+          if(start&&endDate<start)return;
+          if(end&&endDate>end)return;
           const startDay=new Date(d.dateOfAppointment);startDay.setHours(0,0,0,0);
-          const endDay=new Date(d.firstDWC);endDay.setHours(0,0,0,0);
+          const endDay=new Date(endDate);endDay.setHours(0,0,0,0);
           const calendarDays=Math.round((endDay-startDay)/86400000);
           if(calendarDays<0)return;
           const met=calendarDays<=SLA_CAL_DAYS;
@@ -2550,7 +2560,7 @@
             buckets,
             bucketLabel:buckets.join(" + "),
             appointment:d.dateOfAppointment,
-            endDate:d.firstDWC,
+            endDate,
             calendarDays,
             target:SLA_CAL_DAYS,
             met,
@@ -2591,7 +2601,7 @@
       const toggleProduct=name=>{setProductFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Products","Bucket","Date of Appointment","First Drafts With Customer","Calendar Days","SLA Target","Status","HubSpot Link"];
+        const hdr=["Deal ID","Deal Name","Drafter","Products","Bucket","Date of Appointment","End Date","Calendar Days","SLA Target","Status","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,r.products.join(", "),r.bucketLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.target,r.status,HS_BASE+r.id])];
         downloadCSV(`coral_sla_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,fromMonth,toMonth]);
@@ -2650,7 +2660,7 @@
           <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px"}}>
             <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>Coral SLA results</div>
             <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-              SLA = 42 calendar days from Date of Appointment to first entry into "Drafts With Customer". Lead source tier 3 must contain "Coral". A deal with both Will and LPA products counts in both buckets. Cohort = deals whose Drafts With Customer date falls in the selected month range. Deals that ever sat in a "DO NOT USE" pipeline are excluded.
+              SLA = 42 calendar days from Date of Appointment to End. End = earliest of "Drafts With Customer", "Ready For Printing", or "Sent To Customer". Lead source tier 3 must contain "Coral". A deal with both Will and LPA products counts in both buckets. Cohort = deals whose End date falls in the selected month range. Deals that ever sat in a "DO NOT USE" pipeline are excluded.
             </div>
             {rows.length===0?(
               <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed Coral deals in this range.</div>
@@ -2664,7 +2674,7 @@
                       <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Products</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>Drafts With Customer</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>End Date</th>
                       <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Calendar Days</th>
                       <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>SLA</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
