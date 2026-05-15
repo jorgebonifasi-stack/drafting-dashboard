@@ -237,7 +237,7 @@
     }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,waiverOptions,dealExclusions,doNotUseStageIds,leadSourceTier3Options,productOptions){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,waiverOptions,dealExclusions,doNotUseStageIds,leadSourceTier3Options,productOptions,slaBreachReasonOptions){
       // Pre-compute the property keys to check for any "DO NOT USE" stage entry.
       // If any of these are populated on a deal, the deal has historically lived
       // in an archive pipeline (e.g. "DO NOT USE - Will Appointments") and the
@@ -353,6 +353,12 @@
         const productsLc=products.map(v=>v.toLowerCase());
         const hasWillProduct=productsLc.some(v=>v.includes("will"));
         const hasLpaProduct=productsLc.some(v=>v.includes("lpa")||v.includes("lasting power of attorney"));
+        // SLA breach reason — surfaced as a column on the Macmillan and Coral
+        // tables. Parsed tolerant of both single-select (one value) and multi-
+        // select (semicolon-separated). Empty when the property is unset.
+        const rawSlaBreach=p.sla_breach_reason||"";
+        const slaBreachReasons=rawSlaBreach?rawSlaBreach.split(";").map(v=>(slaBreachReasonOptions||{})[v.trim()]||v.trim()).filter(Boolean):[];
+        const slaBreachReason=slaBreachReasons.join(", ");
         const dateOfAppointment=parseHSDate(p.date_of_appointment);
         // Workflow-stamped date: when drafting_query_reason was first populated (from 22/04/2026)
         const firstQueryDate=parseHSDate(p.date_drafting_query);
@@ -367,6 +373,7 @@
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
           wasInDoNotUse,
           leadSources,leadSourceTier3,leadSourceTier3List,products,hasWillProduct,hasLpaProduct,
+          slaBreachReason,slaBreachReasons,
           dateOfAppointment,firstQueryDate,waiverSigned14d,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
@@ -2365,7 +2372,8 @@
             deadline,
             bizRemaining,
             waiverExtension,
-            stage:stageLabels[d.dealstage]||d.dealstage||"—"
+            stage:stageLabels[d.dealstage]||d.dealstage||"—",
+            slaBreachReason:d.slaBreachReason||""
           });
         });
         out.sort((a,b)=>(a.bizRemaining??1e9)-(b.bizRemaining??1e9));
@@ -2410,8 +2418,8 @@
       const rowColor=n=>n==null?C.text:n<0?C.red:n<=2?C.amber:n<=5?"#F1C40F":C.green;
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Waiver Extension Days","Current Stage","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.waiverExtension||0,r.stage,HS_BASE+r.id])];
+        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Waiver Extension Days","Current Stage","SLA Breach Reason","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.waiverExtension||0,r.stage,r.slaBreachReason||"",HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
         const stSuffix=stageFilter.size===0?"":(stageFilter.size===1?`_${[...stageFilter][0].replace(/[^A-Za-z0-9]+/g,"_")}`:`_${stageFilter.size}stages`);
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
@@ -2472,6 +2480,7 @@
                       <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
                       <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Biz Days Remaining</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Current Stage</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>SLA Breach Reason</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2488,6 +2497,7 @@
                           {r.bizRemaining==null?"—":r.bizRemaining<0?`${r.bizRemaining}d (breached)`:`${r.bizRemaining}d`}
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.stage}</td>
+                        <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.slaBreachReason?0.85:0.4}}>{r.slaBreachReason||"—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -2564,7 +2574,8 @@
             calendarDays,
             target:SLA_CAL_DAYS,
             met,
-            status:met?"Met":"Breached"
+            status:met?"Met":"Breached",
+            slaBreachReason:d.slaBreachReason||""
           });
         });
         out.sort((a,b)=>b.endDate-a.endDate);
@@ -2601,8 +2612,8 @@
       const toggleProduct=name=>{setProductFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Products","Bucket","Date of Appointment","End Date","Calendar Days","SLA Target","Status","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,r.products.join(", "),r.bucketLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.target,r.status,HS_BASE+r.id])];
+        const hdr=["Deal ID","Deal Name","Drafter","Products","Bucket","Date of Appointment","End Date","Calendar Days","SLA Target","Status","SLA Breach Reason","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,r.products.join(", "),r.bucketLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.target,r.status,r.slaBreachReason||"",HS_BASE+r.id])];
         downloadCSV(`coral_sla_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,fromMonth,toMonth]);
 
@@ -2678,6 +2689,7 @@
                       <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Calendar Days</th>
                       <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>SLA</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>SLA Breach Reason</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2696,6 +2708,7 @@
                         <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.calendarDays}d</td>
                         <td style={{padding:"10px 12px",textAlign:"right",color:C.text,opacity:0.6}}>{r.target}d</td>
                         <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r.met)}}>{r.status}</td>
+                        <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.slaBreachReason?0.85:0.4}}>{r.slaBreachReason||"—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -3191,7 +3204,7 @@
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
           setStageLabels(stageLbls);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,waiverOpts,exclusions,result.doNotUseStageIds||[],result.leadSourceTier3Options||{},result.productOptions||{}));
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,waiverOpts,exclusions,result.doNotUseStageIds||[],result.leadSourceTier3Options||{},result.productOptions||{},result.slaBreachReasonOptions||{}));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -3859,7 +3872,8 @@
             result.dealExclusions||{},
             result.doNotUseStageIds||[],
             result.leadSourceTier3Options||{},
-            result.productOptions||{}
+            result.productOptions||{},
+            result.slaBreachReasonOptions||{}
           ));
           setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
           setError(null);
@@ -3989,7 +4003,8 @@
             result.dealExclusions||{},
             result.doNotUseStageIds||[],
             result.leadSourceTier3Options||{},
-            result.productOptions||{}
+            result.productOptions||{},
+            result.slaBreachReasonOptions||{}
           ));
           setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
         }catch(e){setError(e.message||String(e));}

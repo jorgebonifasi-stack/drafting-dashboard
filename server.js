@@ -53,6 +53,8 @@ const PROPERTIES = [
   // Coral SLA tab: lead source tier 3 ("Coral Insurance" / similar) plus
   // ep_products to split deals into Wills vs LPAs.
   "lead_source_tier_3", "ep_products",
+  // SLA breach reason (surfaced in Macmillan + Coral tables).
+  "sla_breach_reason",
   "date_drafting_query",
   "have_they_signed_the_14_day_waiver_",
   "consultant_query_reason",
@@ -456,7 +458,7 @@ async function fetchFreshData() {
     console.log(`[Pipelines] Discovered ${DO_NOT_USE_STAGE_IDS.length} DO NOT USE stage(s) — will check history per deal`);
   }
 
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, productOptions] =
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, productOptions, slaBreachReasonOptions] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -470,7 +472,8 @@ async function fetchFreshData() {
       fetchPropertyOptions("legacy_advisor__owner").catch(() => ({})),
       fetchPropertyOptions("have_they_signed_the_14_day_waiver_").catch(() => ({})),
       fetchPropertyOptions("lead_source_tier_3").catch(() => ({})),
-      fetchPropertyOptions("ep_products").catch(() => ({}))
+      fetchPropertyOptions("ep_products").catch(() => ({})),
+      fetchPropertyOptions("sla_breach_reason").catch(() => ({}))
     ]);
 
   return {
@@ -487,6 +490,7 @@ async function fetchFreshData() {
     waiverOptions,
     leadSourceTier3Options,
     productOptions,
+    slaBreachReasonOptions,
     stageLabels: stageData.labels || {},
     doNotUseStageIds: DO_NOT_USE_STAGE_IDS,
     dealExclusions: DRAFTER_EXCLUSIONS
