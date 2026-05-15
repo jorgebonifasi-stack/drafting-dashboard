@@ -171,6 +171,48 @@
       }
       return count;
     }
+
+    // ─── UK bank holidays (England & Wales) ──────────────────────
+    // Used by the SLA Audit only. Other SLA calcs across the dashboard
+    // (deadlines, productivity, RDWC turnaround, etc.) stay weekend-only
+    // to match how operational targets are tracked day-to-day.
+    const UK_BANK_HOLIDAYS=new Set([
+      // 2023
+      "2023-01-02","2023-04-07","2023-04-10","2023-05-01","2023-05-08","2023-05-29","2023-08-28","2023-12-25","2023-12-26",
+      // 2024
+      "2024-01-01","2024-03-29","2024-04-01","2024-05-06","2024-05-27","2024-08-26","2024-12-25","2024-12-26",
+      // 2025
+      "2025-01-01","2025-04-18","2025-04-21","2025-05-05","2025-05-26","2025-08-25","2025-12-25","2025-12-26",
+      // 2026
+      "2026-01-01","2026-04-03","2026-04-06","2026-05-04","2026-05-25","2026-08-31","2026-12-25","2026-12-28",
+      // 2027
+      "2027-01-01","2027-03-26","2027-03-29","2027-05-03","2027-05-31","2027-08-30","2027-12-27","2027-12-28"
+    ]);
+    // toISOString() converts to UTC and would shift days near midnight in
+    // BST. Build the ISO date from local components instead so the lookup
+    // matches the locally-rendered calendar day.
+    function toIsoLocal(d){
+      const y=d.getFullYear();
+      const m=String(d.getMonth()+1).padStart(2,"0");
+      const day=String(d.getDate()).padStart(2,"0");
+      return `${y}-${m}-${day}`;
+    }
+    function calcBusinessDaysUK(start,end){
+      if(!start||!end||end<=start)return null;
+      let count=0;
+      const cur=new Date(start);
+      cur.setHours(0,0,0,0);
+      const endDay=new Date(end);
+      endDay.setHours(0,0,0,0);
+      while(cur<endDay){
+        cur.setDate(cur.getDate()+1);
+        const dow=cur.getDay();
+        if(dow===0||dow===6)continue;
+        if(UK_BANK_HOLIDAYS.has(toIsoLocal(cur)))continue;
+        count++;
+      }
+      return count;
+    }
     // Signed business days between start → end (negative if end < start)
     function signedBusinessDays(start,end){
       if(!start||!end)return null;
@@ -3733,10 +3775,13 @@
           const endDate=new Date(Math.min(...candidates));
           if(start&&endDate<start)return;
           if(end&&endDate>end)return;
-          // Compute working days from Date of Appointment to end (inclusive of partial-day handling via calcBusinessDays)
+          // Compute working days from Date of Appointment to end. The audit
+          // uses calcBusinessDaysUK so that England & Wales bank holidays
+          // (Christmas, Easter, May bank holidays, etc.) don't count
+          // against the SLA — those are days the team isn't working.
           const startDay=new Date(d.dateOfAppointment);startDay.setHours(0,0,0,0);
           const endDay=new Date(endDate);endDay.setHours(0,0,0,0);
-          const workingDays=endDay>=startDay?(calcBusinessDays(startDay,endDay)||0):null;
+          const workingDays=endDay>=startDay?(calcBusinessDaysUK(startDay,endDay)||0):null;
           if(workingDays==null)return;
           // 14-day waiver: when the customer has NOT signed it, the standard SLA
           // gets an extra 14 calendar days, approximated as 10 working days.
@@ -3849,7 +3894,7 @@
             <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px"}}>
               <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>Audit results</div>
               <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-                SLA = 20 working days for standard, 3 working days for urgent (Priority = High). +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of "Drafts With Customer", "Ready For Printing", or "Sent To Customer". Working days exclude weekends.
+                SLA = 20 working days for standard, 3 working days for urgent (Priority = High). +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of "Drafts With Customer", "Ready For Printing", or "Sent To Customer". Working days exclude weekends and UK (England & Wales) bank holidays.
               </div>
               {rows.length===0?(
                 <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed deals in this range.</div>
