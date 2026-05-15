@@ -3698,7 +3698,12 @@
         const out=[];
         deals.forEach(d=>{
           if(!d.dateOfAppointment)return;
-          // End = earliest of origDraftsWithCustomer and origReadyForPrinting
+          // Skip deals that never entered Drafting Instructions (Estate Planning) — they
+          // were either reallocated from another pipeline by a workflow (e.g. moved straight
+          // to Will Verified or Amendment Requested) or are amendment-only deals. The audit
+          // measures the standard drafting SLA, not those edge-case journeys.
+          if(!d.origEnteredDrafting&&!d.enteredDrafting)return;
+          // End = earliest of firstDWC, firstRFP, firstSentToCustomer
           const candidates=[];
           // Use the earliest of FIRST-entry estimates across the three completion stages.
           // firstDWC / firstRFP / firstSentToCustomer prefer the workflow-stamped
