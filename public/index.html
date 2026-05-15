@@ -3764,6 +3764,9 @@
       const[fromMonth,setFromMonth]=useState(defaultMonth);
       const[toMonth,setToMonth]=useState(defaultMonth);
       const[leadFilter,setLeadFilter]=useState(()=>new Set());
+      // Product filter is only meaningful in Coral mode (Will / LPA buckets).
+      // We clear it automatically when leaving Coral mode (see effect below).
+      const[productFilter,setProductFilter]=useState(()=>new Set());
 
       // Convert "YYYY-MM" to first / last instant of the month for inclusive
       // range comparison.
@@ -3873,6 +3876,8 @@
             leadSourceLabel:(d.leadSources&&d.leadSources.length)?d.leadSources.join(", "):"—",
             cohorts:baseCohorts,
             isCoral,
+            hasWillProduct:!!d.hasWillProduct,
+            hasLpaProduct:!!d.hasLpaProduct,
             isUrgent:!!d.isUrgent,
             appointment:d.dateOfAppointment,
             endDate,
@@ -3914,10 +3919,31 @@
         return"standard";
       },[leadFilter]);
 
+      // Clear the product filter when leaving Coral mode — Will / LPA pills
+      // are only shown in Coral mode so the filter would otherwise become
+      // invisible-but-applied if the user switched back to standard.
+      useEffect(()=>{if(filterMode!=="coral"&&productFilter.size>0)setProductFilter(new Set());},[filterMode,productFilter]);
+
+      // Will / LPA pill options — only surfaced in Coral mode, and only when
+      // at least one Coral deal has the corresponding product flag.
+      const productOptions=useMemo(()=>{
+        if(filterMode!=="coral")return[];
+        const out=[];
+        if(allRows.some(r=>r.isCoral&&r.hasWillProduct))out.push("Will");
+        if(allRows.some(r=>r.isCoral&&r.hasLpaProduct))out.push("LPA");
+        return out;
+      },[allRows,filterMode]);
+
       const rows=useMemo(()=>{
         let filtered=allRows;
         if(leadFilter.size>0){
           filtered=allRows.filter(r=>(r.cohorts||[]).some(c=>leadFilter.has(c)));
+        }
+        if(filterMode==="coral"&&productFilter.size>0){
+          filtered=filtered.filter(r=>
+            (productFilter.has("Will")&&r.hasWillProduct)||
+            (productFilter.has("LPA")&&r.hasLpaProduct)
+          );
         }
         // Decorate each row with the active SLA's display fields so the table
         // and stats can read uniform field names regardless of cohort.
@@ -3939,7 +3965,7 @@
             displayMet:r.met,
             displayStatus:r.status};
         });
-      },[allRows,leadFilter,filterMode]);
+      },[allRows,leadFilter,filterMode,productFilter]);
 
       const stats=useMemo(()=>{
         const total=rows.length;
@@ -3951,10 +3977,20 @@
         const urgMet=urgent.filter(r=>r.displayMet).length;
         const stdPct=standard.length>0?Math.round((stdMet/standard.length)*100):null;
         const urgPct=urgent.length>0?Math.round((urgMet/urgent.length)*100):null;
-        return{total,met,breached,stdPct,urgPct,stdMet,urgMet,stdCount:standard.length,urgCount:urgent.length};
+        // Will / LPA cohorts (Coral only). A deal with both products counts
+        // in both — matches the original SQL semantics for "Will & LPA" rows.
+        const wills=rows.filter(r=>r.hasWillProduct);
+        const lpas=rows.filter(r=>r.hasLpaProduct);
+        const willsMet=wills.filter(r=>r.displayMet).length;
+        const lpasMet=lpas.filter(r=>r.displayMet).length;
+        const willsPct=wills.length>0?Math.round((willsMet/wills.length)*100):null;
+        const lpasPct=lpas.length>0?Math.round((lpasMet/lpas.length)*100):null;
+        return{total,met,breached,stdPct,urgPct,stdMet,urgMet,stdCount:standard.length,urgCount:urgent.length,
+          willsCount:wills.length,willsMet,willsPct,lpasCount:lpas.length,lpasMet,lpasPct};
       },[rows]);
 
       const toggleLead=name=>{setLeadFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
+      const toggleProduct=name=>{setProductFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
 
       const exportCSV=useCallback(()=>{
         const isCoral=filterMode==="coral";
@@ -4014,6 +4050,19 @@
                 })}
                 {leadFilter.size>0&&<button onClick={()=>setLeadFilter(new Set())} style={{padding:"4px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.text,cursor:"pointer",fontSize:11,fontWeight:500}}>Clear</button>}
               </div>
+              {filterMode==="coral"&&productOptions.length>0&&(
+                <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginTop:10}}>
+                  <label style={{fontSize:12,color:C.text,opacity:0.7,marginRight:4}}>Product</label>
+                  {productOptions.map(name=>{
+                    const active=productFilter.has(name);
+                    const count=allRows.filter(r=>r.isCoral&&(name==="Will"?r.hasWillProduct:r.hasLpaProduct)).length;
+                    return(
+                      <button key={name} onClick={()=>toggleProduct(name)} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.bg,color:active?C.accent:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{name} ({count})</button>
+                    );
+                  })}
+                  {productFilter.size>0&&<button onClick={()=>setProductFilter(new Set())} style={{padding:"4px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.text,cursor:"pointer",fontSize:11,fontWeight:500}}>Clear</button>}
+                </div>
+              )}
             </div>
 
             {/* Summary cards */}
@@ -4022,11 +4071,18 @@
               <div style={card}><div style={cardLabel}>Met SLA</div><div style={{...cardValue,color:C.green}}>{stats.met}</div></div>
               <div style={card}><div style={cardLabel}>Breached SLA</div><div style={{...cardValue,color:C.red}}>{stats.breached}</div></div>
               {filterMode==="coral"?(
-                <div style={card}>
-                  <div style={cardLabel}>Compliance %</div>
-                  <div style={{...cardValue,color:stats.total===0?C.text:Math.round((stats.met/stats.total)*100)>=90?C.green:Math.round((stats.met/stats.total)*100)>=75?C.amber:C.red}}>{stats.total===0?"—":`${Math.round((stats.met/stats.total)*100)}%`}</div>
-                  <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.total===0?"No Coral deals":`${stats.met} of ${stats.total} met`}</div>
-                </div>
+                <React.Fragment>
+                  <div style={card}>
+                    <div style={cardLabel}>Wills Compliance %</div>
+                    <div style={{...cardValue,color:stats.willsPct==null?C.text:stats.willsPct>=90?C.green:stats.willsPct>=75?C.amber:C.red}}>{stats.willsPct==null?"—":`${stats.willsPct}%`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.willsCount===0?"No Will deals":`${stats.willsMet} of ${stats.willsCount} met`}</div>
+                  </div>
+                  <div style={card}>
+                    <div style={cardLabel}>LPAs Compliance %</div>
+                    <div style={{...cardValue,color:stats.lpasPct==null?C.text:stats.lpasPct>=90?C.green:stats.lpasPct>=75?C.amber:C.red}}>{stats.lpasPct==null?"—":`${stats.lpasPct}%`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.lpasCount===0?"No LPA deals":`${stats.lpasMet} of ${stats.lpasCount} met`}</div>
+                  </div>
+                </React.Fragment>
               ):(
                 <React.Fragment>
                   <div style={card}>
