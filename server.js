@@ -272,10 +272,18 @@ async function fetchDealsWithFilters(filterGroups) {
   let after = null;
   const maxPages = 100;
 
+  // Extend the property list with hs_v2_date_entered_<stageId> for every
+  // DO NOT USE stage we discovered at startup. If any of these are populated
+  // on a deal, the deal has been in an archive pipeline and should be
+  // excluded from the audit (see AuditDashboard).
+  const properties = DO_NOT_USE_STAGE_IDS.length
+    ? PROPERTIES.concat(DO_NOT_USE_STAGE_IDS.map(id => `hs_v2_date_entered_${id}`))
+    : PROPERTIES;
+
   for (let page = 0; page < maxPages; page++) {
     const body = {
       filterGroups,
-      properties: PROPERTIES,
+      properties,
       limit: 100
     };
     if (after) body.after = after;
@@ -388,25 +396,50 @@ async function fetchPropertyOptions(propName) {
 }
 
 // ─── Fetch deal pipeline stage labels ──────────────────────────
+// Returns BOTH the label map and the list of stage IDs that belong to any
+// pipeline whose label contains "DO NOT USE" (case-insensitive). The audit
+// uses the latter to exclude reallocated/legacy deals whose stage history
+// includes those archive pipelines (the appointment date refers to the old
+// cycle, not the current EP cycle, so working-day calculations explode).
 async function fetchDealStageLabels() {
   const url = "https://api.hubapi.com/crm/v3/pipelines/deals";
   const response = await fetch(url, {
     headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
   });
-  if (!response.ok) return {};
+  if (!response.ok) return { labels: {}, doNotUseStageIds: [] };
   const data = await response.json();
-  const map = {};
+  const labels = {};
+  const doNotUseStageIds = [];
   (data.results || []).forEach(pipeline => {
+    const pipelineLabel = pipeline.label || "";
+    const pipelineIsDoNotUse = /DO\s*NOT\s*USE/i.test(pipelineLabel);
     (pipeline.stages || []).forEach(stage => {
-      map[stage.id] = stage.label;
+      labels[stage.id] = stage.label;
+      const stageLabel = stage.label || "";
+      if (pipelineIsDoNotUse || /DO\s*NOT\s*USE/i.test(stageLabel)) {
+        doNotUseStageIds.push(stage.id);
+      }
     });
   });
-  return map;
+  return { labels, doNotUseStageIds };
 }
+
+// Cached at startup so we know which extra hs_v2_date_entered_<stageId>
+// properties to request per-deal.
+let DO_NOT_USE_STAGE_IDS = [];
 
 // ─── Fetch all fresh data ──────────────────────────────────────
 async function fetchFreshData() {
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, stageLabels] =
+  // Pipelines first — we need the DO NOT USE stage IDs to know which extra
+  // per-deal properties to request. This is also what powers the audit's
+  // "skip deals that have ever been in a DO NOT USE stage" filter.
+  const stageData = await fetchDealStageLabels().catch(() => ({ labels: {}, doNotUseStageIds: [] }));
+  DO_NOT_USE_STAGE_IDS = stageData.doNotUseStageIds || [];
+  if (DO_NOT_USE_STAGE_IDS.length) {
+    console.log(`[Pipelines] Discovered ${DO_NOT_USE_STAGE_IDS.length} DO NOT USE stage(s) — will check history per deal`);
+  }
+
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -418,8 +451,7 @@ async function fetchFreshData() {
       fetchPropertyOptions("ep_lead_source").catch(() => ({})),
       fetchPropertyOptions("consultant_query_reason").catch(() => ({})),
       fetchPropertyOptions("legacy_advisor__owner").catch(() => ({})),
-      fetchPropertyOptions("have_they_signed_the_14_day_waiver_").catch(() => ({})),
-      fetchDealStageLabels().catch(() => ({}))
+      fetchPropertyOptions("have_they_signed_the_14_day_waiver_").catch(() => ({}))
     ]);
 
   return {
@@ -434,7 +466,8 @@ async function fetchFreshData() {
     consultantQueryReasonOptions,
     legacyAdvisorOptions,
     waiverOptions,
-    stageLabels,
+    stageLabels: stageData.labels || {},
+    doNotUseStageIds: DO_NOT_USE_STAGE_IDS,
     dealExclusions: DRAFTER_EXCLUSIONS
   };
 }

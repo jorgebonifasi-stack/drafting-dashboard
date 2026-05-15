@@ -195,9 +195,16 @@
     }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,waiverOptions,dealExclusions){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,waiverOptions,dealExclusions,doNotUseStageIds){
+      // Pre-compute the property keys to check for any "DO NOT USE" stage entry.
+      // If any of these are populated on a deal, the deal has historically lived
+      // in an archive pipeline (e.g. "DO NOT USE - Will Appointments") and the
+      // audit should exclude it — appointment-date-based SLA windows refer to
+      // the original cycle, not the current Estate Planning cycle.
+      const doNotUseKeys=(doNotUseStageIds||[]).map(id=>`hs_v2_date_entered_${id}`);
       return rawDeals.map(d=>{
         const p=d.properties||{};
+        const wasInDoNotUse=doNotUseKeys.some(k=>!!p[k]);
         const enteredDrafting=parseHSDate(p.hs_v2_date_entered_1223620771);
         const nativeExitedDrafting=parseHSDate(p.hs_v2_date_exited_1223620771);
         const origDraftsWithCustomer=parseHSDate(p.original_date_entered_drafts_with_customer);
@@ -303,6 +310,7 @@
         const waiverSigned14d=waiverLabel==="yes"||waiverLabel==="true"?true:(waiverLabel==="no"||waiverLabel==="false"?false:null);
         return{
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
+          wasInDoNotUse,
           leadSources,dateOfAppointment,firstQueryDate,waiverSigned14d,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
@@ -2896,7 +2904,7 @@
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
           setStageLabels(stageLbls);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,waiverOpts,exclusions));
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,waiverOpts,exclusions,result.doNotUseStageIds||[]));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -3559,7 +3567,8 @@
             result.consultantQueryReasonOptions||{},
             result.legacyAdvisorOptions||{},
             result.waiverOptions||{},
-            result.dealExclusions||{}
+            result.dealExclusions||{},
+            result.doNotUseStageIds||[]
           ));
           setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
           setError(null);
@@ -3681,7 +3690,8 @@
             result.consultantQueryReasonOptions||{},
             result.legacyAdvisorOptions||{},
             result.waiverOptions||{},
-            result.dealExclusions||{}
+            result.dealExclusions||{},
+            result.doNotUseStageIds||[]
           ));
           setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
         }catch(e){setError(e.message||String(e));}
@@ -3698,6 +3708,12 @@
         const out=[];
         deals.forEach(d=>{
           if(!d.dateOfAppointment)return;
+          // Skip deals that have ever sat in a "DO NOT USE" pipeline stage (e.g.
+          // the archived "DO NOT USE - Will Appointments" pipeline). Those deals
+          // were reallocated into Estate Planning via workflow, so their Date of
+          // Appointment refers to the original cycle — not the current EP cycle —
+          // and the working-day calculation would be meaningless.
+          if(d.wasInDoNotUse)return;
           // Skip deals that never entered Drafting Instructions (Estate Planning) — they
           // were either reallocated from another pipeline by a workflow (e.g. moved straight
           // to Will Verified or Amendment Requested) or are amendment-only deals. The audit
