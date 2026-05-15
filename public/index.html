@@ -346,13 +346,24 @@
         const rawLeadTier3=p.lead_source_tier_3||"";
         const leadSourceTier3List=rawLeadTier3?rawLeadTier3.split(";").map(v=>(leadSourceTier3Options||{})[v.trim()]||v.trim()).filter(Boolean):[];
         const leadSourceTier3=leadSourceTier3List.join(", ");
-        // ep_products is a multi-select checkbox; expose label array so the
-        // Coral tab can split deals into Will / LPA buckets via substring match.
+        // Products: primary source is ep_products (multi-select checkbox).
+        // Fallback: parse from the deal name (some deal names include product
+        // hints like "MW", "LPA", "Will with Trust"). Detection uses substring
+        // match across both sources so deals tagged either way are captured.
         const rawProducts=p.ep_products||"";
         const products=rawProducts?rawProducts.split(";").map(v=>(productOptions||{})[v.trim()]||v.trim()).filter(Boolean):[];
         const productsLc=products.map(v=>v.toLowerCase());
-        const hasWillProduct=productsLc.some(v=>v.includes("will"));
-        const hasLpaProduct=productsLc.some(v=>v.includes("lpa")||v.includes("lasting power of attorney"));
+        const dealnameLc=(p.dealname||"").toLowerCase();
+        // Will detection: any product label contains "will", OR the deal name
+        // contains "will" / "mw" (mirror will) / "lit" (living in trust).
+        const willInProducts=productsLc.some(v=>v.includes("will"));
+        const willInDealname=/(^|[^a-z])(will|mw|lit)([^a-z]|$)/.test(dealnameLc);
+        const hasWillProduct=willInProducts||willInDealname;
+        // LPA detection: any product label contains "lpa" / "lasting power of
+        // attorney", OR the deal name contains "lpa".
+        const lpaInProducts=productsLc.some(v=>v.includes("lpa")||v.includes("lasting power of attorney"));
+        const lpaInDealname=/(^|[^a-z])lpa([^a-z]|$)/.test(dealnameLc);
+        const hasLpaProduct=lpaInProducts||lpaInDealname;
         // SLA breach reason — surfaced as a column on the Macmillan and Coral
         // tables. Parsed tolerant of both single-select (one value) and multi-
         // select (semicolon-separated). Empty when the property is unset.
