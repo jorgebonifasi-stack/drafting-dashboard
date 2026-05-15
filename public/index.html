@@ -2510,216 +2510,6 @@
       );
     }
 
-    // ─── Coral SLA Table (audit-style report for Coral lead-source-tier-3) ──
-    // Retrospective compliance view. Filters deals to lead_source_tier_3 ⊇ "Coral",
-    // anchored on End date (earliest of firstDWC / firstRFP / firstSentToCustomer)
-    // in the selected month range. SLA = 42 calendar days from Date of Appointment
-    // to End (sla_threshold_days = 42 in the source dbt model). Deals are split
-    // into Will / LPA buckets via case-insensitive substring on ep_products labels;
-    // a deal with both products counts in both. Excludes deals that have ever sat
-    // in a DO NOT USE stage.
-    function CoralSLATable({deals}){
-      const SLA_CAL_DAYS=42;
-      // Default: previous calendar month, single-month range.
-      const today=new Date();
-      const prevMonth=new Date(today.getFullYear(),today.getMonth()-1,1);
-      const toYearMonth=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-      const defaultMonth=toYearMonth(prevMonth);
-      const[fromMonth,setFromMonth]=useState(defaultMonth);
-      const[toMonth,setToMonth]=useState(defaultMonth);
-      const[productFilter,setProductFilter]=useState(()=>new Set());
-      const monthStart=ym=>{const[y,m]=ym.split("-").map(Number);return new Date(y,m-1,1,0,0,0,0);};
-      const monthEnd=ym=>{const[y,m]=ym.split("-").map(Number);return new Date(y,m,0,23,59,59,999);};
-
-      const allRows=useMemo(()=>{
-        const start=fromMonth?monthStart(fromMonth):null;
-        const end=toMonth?monthEnd(toMonth):null;
-        const out=[];
-        deals.forEach(d=>{
-          if(d.wasInDoNotUse)return;
-          const tier3=(d.leadSourceTier3||"").toLowerCase();
-          if(!tier3.includes("coral"))return;
-          if(!d.dateOfAppointment)return;
-          // End = earliest of firstDWC, firstRFP, firstSentToCustomer — same
-          // pattern as the /audit page. Each "first*" prefers the workflow-
-          // stamped original_date_entered_<stage> when set, and falls back to
-          // (latest entered − cumulative_time_in_stage) as an upper-bound
-          // estimate when missing. See processDeals.
-          const candidates=[];
-          if(d.firstDWC)candidates.push(d.firstDWC.getTime());
-          if(d.firstRFP)candidates.push(d.firstRFP.getTime());
-          if(d.firstSentToCustomer)candidates.push(d.firstSentToCustomer.getTime());
-          if(!candidates.length)return;
-          const endDate=new Date(Math.min(...candidates));
-          if(start&&endDate<start)return;
-          if(end&&endDate>end)return;
-          const startDay=new Date(d.dateOfAppointment);startDay.setHours(0,0,0,0);
-          const endDay=new Date(endDate);endDay.setHours(0,0,0,0);
-          const calendarDays=Math.round((endDay-startDay)/86400000);
-          if(calendarDays<0)return;
-          const met=calendarDays<=SLA_CAL_DAYS;
-          const buckets=[];
-          if(d.hasWillProduct)buckets.push("Will");
-          if(d.hasLpaProduct)buckets.push("LPA");
-          if(!buckets.length)buckets.push("Other");
-          out.push({
-            id:d.id,
-            dealname:d.dealname,
-            drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
-            products:d.products||[],
-            buckets,
-            bucketLabel:buckets.join(" + "),
-            appointment:d.dateOfAppointment,
-            endDate,
-            calendarDays,
-            target:SLA_CAL_DAYS,
-            met,
-            status:met?"Met":"Breached",
-            slaBreachReason:d.slaBreachReason||""
-          });
-        });
-        out.sort((a,b)=>b.endDate-a.endDate);
-        return out;
-      },[deals,fromMonth,toMonth]);
-
-      const productOptions=useMemo(()=>{
-        const set=new Set();
-        allRows.forEach(r=>r.buckets.forEach(b=>set.add(b)));
-        return Array.from(set).sort();
-      },[allRows]);
-
-      const rows=useMemo(()=>{
-        if(productFilter.size===0)return allRows;
-        return allRows.filter(r=>r.buckets.some(b=>productFilter.has(b)));
-      },[allRows,productFilter]);
-
-      // Cohort stats: Wills and LPAs are independent cohorts. A deal in both
-      // counts in both — matches the SQL's product_type LIKE '%Will%' and
-      // LIKE '%LPA%' behaviour for "Will & LPA" rows.
-      const stats=useMemo(()=>{
-        const wills=allRows.filter(r=>r.buckets.includes("Will"));
-        const lpas=allRows.filter(r=>r.buckets.includes("LPA"));
-        const willsMet=wills.filter(r=>r.met).length;
-        const lpasMet=lpas.filter(r=>r.met).length;
-        const willsPct=wills.length>0?Math.round((willsMet/wills.length)*100):null;
-        const lpasPct=lpas.length>0?Math.round((lpasMet/lpas.length)*100):null;
-        return{
-          willsTotal:wills.length,willsMet,willsBreached:wills.length-willsMet,willsPct,
-          lpasTotal:lpas.length,lpasMet,lpasBreached:lpas.length-lpasMet,lpasPct
-        };
-      },[allRows]);
-
-      const toggleProduct=name=>{setProductFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
-
-      const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Products","Bucket","Date of Appointment","End Date","Calendar Days","SLA Target","Status","SLA Breach Reason","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,r.products.join(", "),r.bucketLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.target,r.status,r.slaBreachReason||"",HS_BASE+r.id])];
-        downloadCSV(`coral_sla_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
-      },[rows,fromMonth,toMonth]);
-
-      const statusColor=met=>met?C.green:C.red;
-      const pctColor=p=>p==null?C.text:p>=90?C.green:p>=75?C.amber:C.red;
-      const card={background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"18px 20px"};
-      const cardLabel={fontSize:11,letterSpacing:1,textTransform:"uppercase",color:C.text,opacity:0.6,fontWeight:600};
-      const cardValue={fontSize:30,fontWeight:700,color:C.white,marginTop:6,lineHeight:1};
-      const bucketChip=b=>({display:"inline-block",fontSize:10,marginRight:4,padding:"2px 8px",borderRadius:4,background:b==="Will"?"rgba(52,152,219,0.18)":b==="LPA"?"rgba(155,89,182,0.18)":"rgba(150,150,150,0.18)",color:b==="Will"?C.accent:b==="LPA"?"#9b59b6":C.text,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"});
-
-      return(
-        <div>
-          {/* Filters */}
-          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px",marginBottom:20}}>
-            <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:14,marginBottom:12}}>
-              <label style={{fontSize:12,color:C.text,opacity:0.7}}>End SLA Month</label>
-              <input type="month" value={fromMonth} onChange={e=>setFromMonth(e.target.value)} style={{...S.input,width:170,padding:"6px 10px",fontSize:13}}/>
-              <span style={{color:C.text,opacity:0.6}}>{"→"}</span>
-              <input type="month" value={toMonth} onChange={e=>setToMonth(e.target.value)} style={{...S.input,width:170,padding:"6px 10px",fontSize:13}}/>
-              <span style={{flex:1}}/>
-              <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"⬇"} CSV ({rows.length})</button>
-            </div>
-            <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-              <label style={{fontSize:12,color:C.text,opacity:0.7,marginRight:4}}>Product</label>
-              {productOptions.map(name=>{
-                const active=productFilter.has(name);
-                const count=allRows.filter(r=>r.buckets.includes(name)).length;
-                return(
-                  <button key={name} onClick={()=>toggleProduct(name)} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.bg,color:active?C.accent:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{name} ({count})</button>
-                );
-              })}
-              {productFilter.size>0&&<button onClick={()=>setProductFilter(new Set())} style={{padding:"4px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.text,cursor:"pointer",fontSize:11,fontWeight:500}}>Clear</button>}
-            </div>
-          </div>
-
-          {/* Summary cards */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:14,marginBottom:20}}>
-            <div style={card}><div style={cardLabel}>Total Wills</div><div style={cardValue}>{stats.willsTotal}</div></div>
-            <div style={card}><div style={cardLabel}>Wills Out of SLA</div><div style={{...cardValue,color:stats.willsBreached>0?C.red:C.green}}>{stats.willsBreached}</div></div>
-            <div style={card}>
-              <div style={cardLabel}>Wills Compliance %</div>
-              <div style={{...cardValue,color:pctColor(stats.willsPct)}}>{stats.willsPct==null?"—":`${stats.willsPct}%`}</div>
-              <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.willsTotal===0?"No Will deals":`${stats.willsMet} of ${stats.willsTotal} met`}</div>
-            </div>
-            <div style={card}><div style={cardLabel}>Total LPAs</div><div style={cardValue}>{stats.lpasTotal}</div></div>
-            <div style={card}><div style={cardLabel}>LPAs Out of SLA</div><div style={{...cardValue,color:stats.lpasBreached>0?C.red:C.green}}>{stats.lpasBreached}</div></div>
-            <div style={card}>
-              <div style={cardLabel}>LPAs Compliance %</div>
-              <div style={{...cardValue,color:pctColor(stats.lpasPct)}}>{stats.lpasPct==null?"—":`${stats.lpasPct}%`}</div>
-              <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.lpasTotal===0?"No LPA deals":`${stats.lpasMet} of ${stats.lpasTotal} met`}</div>
-            </div>
-          </div>
-
-          {/* Table */}
-          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px"}}>
-            <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>Coral SLA results</div>
-            <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-              SLA = 42 calendar days from Date of Appointment to End. End = earliest of "Drafts With Customer", "Ready For Printing", or "Sent To Customer". Lead source tier 3 must contain "Coral". A deal with both Will and LPA products counts in both buckets. Cohort = deals whose End date falls in the selected month range. Deals that ever sat in a "DO NOT USE" pipeline are excluded.
-            </div>
-            {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed Coral deals in this range.</div>
-            ):(
-              <div style={{overflowX:"auto"}}>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                  <thead>
-                    <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>Bucket</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>Products</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>End Date</th>
-                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Calendar Days</th>
-                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>SLA</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
-                      <th style={{padding:"10px 12px",fontWeight:600}}>SLA Breach Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map(r=>(
-                      <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
-                        <td style={{padding:"10px 12px"}}>
-                          <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
-                        </td>
-                        <td style={{padding:"10px 12px",whiteSpace:"nowrap"}}>
-                          {r.buckets.map(b=>(<span key={b} style={bucketChip(b)}>{b}</span>))}
-                        </td>
-                        <td style={{padding:"10px 12px"}}>{r.drafter}</td>
-                        <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:0.7}}>{r.products.join(", ")||"—"}</td>
-                        <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
-                        <td style={{padding:"10px 12px"}}>{fmtDate(r.endDate)}</td>
-                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.calendarDays}d</td>
-                        <td style={{padding:"10px 12px",textAlign:"right",color:C.text,opacity:0.6}}>{r.target}d</td>
-                        <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r.met)}}>{r.status}</td>
-                        <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.slaBreachReason?0.85:0.4}}>{r.slaBreachReason||"—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-      );
-    }
-
     // ─── Standard SLA Table (mixed drafting + amendment cohorts) ──
     // Drafting deals: 28 calendar days from latest of (original_date_entered_drafting_instructions,
     //   dateOfAppointment); excluded if both anchors missing; +14 cal day extension when the
@@ -3650,8 +3440,7 @@
                   drafting:{label:"Drafting",defaultView:"graphs",subs:[
                     {key:"graphs",label:"Metrics"},
                     {key:"sla",label:"Standard SLA"},
-                    {key:"macmillan-sla",label:"Macmillan SLA"},
-                    {key:"coral-sla",label:"Coral SLA"}
+                    {key:"macmillan-sla",label:"Macmillan SLA"}
                   ]},
                   "legacy-advisor":{label:"Legacy Advisor",defaultView:"legacy-advisor",subs:[
                     {key:"legacy-advisor",label:"Metrics"},
@@ -3659,7 +3448,7 @@
                   ]}
                 };
                 const VIEW_TO_SECTION={
-                  graphs:"drafting",sla:"drafting","macmillan-sla":"drafting","coral-sla":"drafting",
+                  graphs:"drafting",sla:"drafting","macmillan-sla":"drafting",
                   "legacy-advisor":"legacy-advisor","legacy-advisor-sla":"legacy-advisor"
                 };
                 const activeSection=VIEW_TO_SECTION[view]||"drafting";
@@ -3720,7 +3509,6 @@
 
           {view==="sla"&&<StandardSLATable deals={deals} stageLabels={stageLabels}/>}
           {view==="macmillan-sla"&&<MacmillanSLATable deals={deals} stageLabels={stageLabels}/>}
-          {view==="coral-sla"&&<CoralSLATable deals={deals}/>}
           {view==="legacy-advisor-sla"&&<LegacyAdvisorSLATable deals={deals} stageLabels={stageLabels}/>}
 
           {view==="legacy-advisor"&&<>
@@ -4055,6 +3843,8 @@
           const endDay=new Date(endDate);endDay.setHours(0,0,0,0);
           const workingDays=endDay>=startDay?(calcBusinessDaysUK(startDay,endDay)||0):null;
           if(workingDays==null)return;
+          // Calendar days for the Coral SLA (42 cal days from DoA to End).
+          const calendarDays=Math.round((endDay-startDay)/86400000);
           // 14-day waiver: when the customer has NOT signed it, the standard SLA
           // gets an extra 14 calendar days, approximated as 10 working days.
           // Urgent SLA stays at 3 working days (waiver doesn't apply to rush jobs).
@@ -4062,21 +3852,35 @@
           const waiverExtension=(!d.isUrgent&&d.waiverSigned14d===false)?10:0;
           const target=baseTarget+waiverExtension;
           const met=workingDays<=target;
+          // Coral SLA: 42 calendar days, no urgent / waiver distinction.
+          const coralTarget=42;
+          const coralMet=calendarDays<=coralTarget;
+          // Cohort tagging: ep_lead_source covers Macmillan etc.; Coral is on
+          // lead_source_tier_3 (substring match). Used by the filter pills.
+          const isCoral=((d.leadSourceTier3||"").toLowerCase().includes("coral"));
+          const baseCohorts=(d.leadSources&&d.leadSources.length)?d.leadSources.slice():[];
+          if(isCoral&&!baseCohorts.includes("Coral"))baseCohorts.push("Coral");
           out.push({
             id:d.id,
             dealname:d.dealname,
             drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
             leadSources:(d.leadSources&&d.leadSources.length)?d.leadSources:[""],
             leadSourceLabel:(d.leadSources&&d.leadSources.length)?d.leadSources.join(", "):"—",
+            cohorts:baseCohorts,
+            isCoral,
             isUrgent:!!d.isUrgent,
             appointment:d.dateOfAppointment,
             endDate,
             workingDays,
+            calendarDays,
             baseTarget,
             waiverExtension,
             target,
+            coralTarget,
             met,
+            coralMet,
             status:met?"Met":"Breached",
+            coralStatus:coralMet?"Met":"Breached",
             slaBreachReason:d.slaBreachReason||""
           });
         });
@@ -4085,28 +3889,59 @@
       },[deals,fromMonth,toMonth]);
 
       // Allowlist of lead sources that get surfaced as filter pills. Keeps
-      // the audit focused on cohorts that have their own SLA (Macmillan).
-      // Add more entries here as new SLA-tracked sources come online.
-      const AUDIT_LEAD_SOURCE_ALLOWLIST=["Macmillan"];
+      // the audit focused on cohorts that have their own SLA. Add new
+      // SLA-tracked sources here. Each cohort can have its own SLA logic
+      // — see `filterMode` below.
+      const AUDIT_LEAD_SOURCE_ALLOWLIST=["Macmillan","Coral"];
       const leadSourceOptions=useMemo(()=>{
         const seen=new Set();
-        deals.forEach(d=>(d.leadSources||[]).forEach(ls=>{if(ls)seen.add(ls);}));
+        allRows.forEach(r=>(r.cohorts||[]).forEach(c=>{if(c)seen.add(c);}));
         return AUDIT_LEAD_SOURCE_ALLOWLIST.filter(ls=>seen.has(ls));
-      },[deals]);
+      },[allRows]);
+
+      // When the Coral pill is the only active filter, swap the SLA engine:
+      // 42 calendar days from DoA → End instead of 20 working days. Keeps
+      // the rest of the audit shape identical so the page reads the same way.
+      const filterMode=useMemo(()=>{
+        if(leadFilter.size===1&&leadFilter.has("Coral"))return"coral";
+        return"standard";
+      },[leadFilter]);
 
       const rows=useMemo(()=>{
-        if(leadFilter.size===0)return allRows;
-        return allRows.filter(r=>r.leadSources.some(ls=>leadFilter.has(ls)));
-      },[allRows,leadFilter]);
+        let filtered=allRows;
+        if(leadFilter.size>0){
+          filtered=allRows.filter(r=>(r.cohorts||[]).some(c=>leadFilter.has(c)));
+        }
+        // Decorate each row with the active SLA's display fields so the table
+        // and stats can read uniform field names regardless of cohort.
+        return filtered.map(r=>{
+          if(filterMode==="coral"){
+            return{...r,
+              displayDays:r.calendarDays,
+              displayDaysUnit:"cal",
+              displayTarget:r.coralTarget,
+              displayTargetUnit:"cal",
+              displayMet:r.coralMet,
+              displayStatus:r.coralStatus};
+          }
+          return{...r,
+            displayDays:r.workingDays,
+            displayDaysUnit:"wd",
+            displayTarget:r.target,
+            displayTargetUnit:"wd",
+            displayMet:r.met,
+            displayStatus:r.status};
+        });
+      },[allRows,leadFilter,filterMode]);
 
       const stats=useMemo(()=>{
         const total=rows.length;
-        const met=rows.filter(r=>r.met).length;
+        const met=rows.filter(r=>r.displayMet).length;
         const breached=total-met;
         const standard=rows.filter(r=>!r.isUrgent);
         const urgent=rows.filter(r=>r.isUrgent);
-        const stdMet=standard.filter(r=>r.met).length;
-        const urgMet=urgent.filter(r=>r.met).length;
+        const stdMet=standard.filter(r=>r.displayMet).length;
+        const urgMet=urgent.filter(r=>r.displayMet).length;
         const stdPct=standard.length>0?Math.round((stdMet/standard.length)*100):null;
         const urgPct=urgent.length>0?Math.round((urgMet/urgent.length)*100):null;
         return{total,met,breached,stdPct,urgPct,stdMet,urgMet,stdCount:standard.length,urgCount:urgent.length};
@@ -4115,10 +3950,20 @@
       const toggleLead=name=>{setLeadFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Lead Source(s)","Priority","Date of Appointment","End Date","Working Days Taken","Base SLA (days)","Waiver Extension (days)","SLA Target (days)","Status","SLA Breach Reason","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,r.leadSourceLabel,r.isUrgent?"Urgent":"Standard",fmtDate(r.appointment),fmtDate(r.endDate),r.workingDays,r.baseTarget,r.waiverExtension||0,r.target,r.status,r.slaBreachReason||"",HS_BASE+r.id])];
-        downloadCSV(`sla_audit_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
-      },[rows,fromMonth,toMonth]);
+        const isCoral=filterMode==="coral";
+        const daysCol=isCoral?"Calendar Days Taken":"Working Days Taken";
+        const targetCol=isCoral?"SLA Target (cal days)":"SLA Target (working days)";
+        const hdr=isCoral
+          ?["Deal ID","Deal Name","Drafter","Lead Source(s)","Date of Appointment","End Date",daysCol,targetCol,"Status","SLA Breach Reason","HubSpot Link"]
+          :["Deal ID","Deal Name","Drafter","Lead Source(s)","Priority","Date of Appointment","End Date",daysCol,"Base SLA (days)","Waiver Extension (days)",targetCol,"Status","SLA Breach Reason","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>(
+          isCoral
+            ?[r.id,r.dealname,r.drafter,r.leadSourceLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.coralTarget,r.coralStatus,r.slaBreachReason||"",HS_BASE+r.id]
+            :[r.id,r.dealname,r.drafter,r.leadSourceLabel,r.isUrgent?"Urgent":"Standard",fmtDate(r.appointment),fmtDate(r.endDate),r.workingDays,r.baseTarget,r.waiverExtension||0,r.target,r.status,r.slaBreachReason||"",HS_BASE+r.id]
+        ))];
+        const suffix=isCoral?"_coral":"";
+        downloadCSV(`sla_audit${suffix}_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,fromMonth,toMonth,filterMode]);
 
       const statusColor=met=>met?C.green:C.red;
       const card={background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"18px 20px"};
@@ -4155,7 +4000,7 @@
                 <label style={{fontSize:12,color:C.text,opacity:0.7,marginRight:4}}>Lead Source</label>
                 {leadSourceOptions.map(name=>{
                   const active=leadFilter.has(name);
-                  const count=allRows.filter(r=>r.leadSources.includes(name)).length;
+                  const count=allRows.filter(r=>(r.cohorts||[]).includes(name)).length;
                   return(
                     <button key={name} onClick={()=>toggleLead(name)} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.bg,color:active?C.accent:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{name} ({count})</button>
                   );
@@ -4169,23 +4014,35 @@
               <div style={card}><div style={cardLabel}>Total deals</div><div style={cardValue}>{stats.total}</div></div>
               <div style={card}><div style={cardLabel}>Met SLA</div><div style={{...cardValue,color:C.green}}>{stats.met}</div></div>
               <div style={card}><div style={cardLabel}>Breached SLA</div><div style={{...cardValue,color:C.red}}>{stats.breached}</div></div>
-              <div style={card}>
-                <div style={cardLabel}>Standard Compliance %</div>
-                <div style={{...cardValue,color:stats.stdPct==null?C.text:stats.stdPct>=90?C.green:stats.stdPct>=75?C.amber:C.red}}>{stats.stdPct==null?"—":`${stats.stdPct}%`}</div>
-                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.stdCount===0?"No standard deals":`${stats.stdMet} of ${stats.stdCount} met`}</div>
-              </div>
-              <div style={card}>
-                <div style={cardLabel}>Urgent Compliance %</div>
-                <div style={{...cardValue,color:stats.urgPct==null?C.text:stats.urgPct>=90?C.green:stats.urgPct>=75?C.amber:C.red}}>{stats.urgPct==null?"—":`${stats.urgPct}%`}</div>
-                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgCount===0?"No urgent deals":`${stats.urgMet} of ${stats.urgCount} met`}</div>
-              </div>
+              {filterMode==="coral"?(
+                <div style={card}>
+                  <div style={cardLabel}>Compliance %</div>
+                  <div style={{...cardValue,color:stats.total===0?C.text:Math.round((stats.met/stats.total)*100)>=90?C.green:Math.round((stats.met/stats.total)*100)>=75?C.amber:C.red}}>{stats.total===0?"—":`${Math.round((stats.met/stats.total)*100)}%`}</div>
+                  <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.total===0?"No Coral deals":`${stats.met} of ${stats.total} met`}</div>
+                </div>
+              ):(
+                <React.Fragment>
+                  <div style={card}>
+                    <div style={cardLabel}>Standard Compliance %</div>
+                    <div style={{...cardValue,color:stats.stdPct==null?C.text:stats.stdPct>=90?C.green:stats.stdPct>=75?C.amber:C.red}}>{stats.stdPct==null?"—":`${stats.stdPct}%`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.stdCount===0?"No standard deals":`${stats.stdMet} of ${stats.stdCount} met`}</div>
+                  </div>
+                  <div style={card}>
+                    <div style={cardLabel}>Urgent Compliance %</div>
+                    <div style={{...cardValue,color:stats.urgPct==null?C.text:stats.urgPct>=90?C.green:stats.urgPct>=75?C.amber:C.red}}>{stats.urgPct==null?"—":`${stats.urgPct}%`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgCount===0?"No urgent deals":`${stats.urgMet} of ${stats.urgCount} met`}</div>
+                  </div>
+                </React.Fragment>
+              )}
             </div>
 
             {/* Table */}
             <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px"}}>
               <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>SLA Logic</div>
               <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-                SLA = 20 working days for standard, 3 working days for urgent (Priority = High). +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of "Drafts With Customer", "Ready For Printing", or "Sent To Customer". Working days exclude weekends and UK (England & Wales) bank holidays.
+                {filterMode==="coral"
+                  ?"Coral SLA = 42 calendar days from Date of Appointment to End. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority / 14-day waiver do not adjust the Coral SLA."
+                  :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays."}
               </div>
               {rows.length===0?(
                 <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed deals in this range.</div>
@@ -4197,10 +4054,10 @@
                         <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
                         <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
                         <th style={{padding:"10px 12px",fontWeight:600}}>Lead Source(s)</th>
-                        <th style={{padding:"10px 12px",fontWeight:600}}>Priority</th>
+                        {filterMode!=="coral"&&<th style={{padding:"10px 12px",fontWeight:600}}>Priority</th>}
                         <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
                         <th style={{padding:"10px 12px",fontWeight:600}}>End Date</th>
-                        <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Working Days</th>
+                        <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>{filterMode==="coral"?"Calendar Days":"Working Days"}</th>
                         <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>SLA Target</th>
                         <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
                         <th style={{padding:"10px 12px",fontWeight:600}}>SLA Breach Reason</th>
@@ -4211,17 +4068,17 @@
                         <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
                           <td style={{padding:"10px 12px"}}>
                             <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
-                            {r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
-                            {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
+                            {filterMode!=="coral"&&r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
+                            {filterMode!=="coral"&&r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
                           </td>
                           <td style={{padding:"10px 12px"}}>{r.drafter}</td>
                           <td style={{padding:"10px 12px"}}>{r.leadSourceLabel}</td>
-                          <td style={{padding:"10px 12px"}}>{r.isUrgent?"Urgent":"Standard"}</td>
+                          {filterMode!=="coral"&&<td style={{padding:"10px 12px"}}>{r.isUrgent?"Urgent":"Standard"}</td>}
                           <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
                           <td style={{padding:"10px 12px"}}>{fmtDate(r.endDate)}</td>
-                          <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.workingDays}d</td>
-                          <td style={{padding:"10px 12px",textAlign:"right",color:C.text,opacity:0.6}}>{r.target}d</td>
-                          <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r.met)}}>{r.status}</td>
+                          <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.displayDays}d</td>
+                          <td style={{padding:"10px 12px",textAlign:"right",color:C.text,opacity:0.6}}>{r.displayTarget}d</td>
+                          <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r.displayMet)}}>{r.displayStatus}</td>
                           <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.slaBreachReason?0.85:0.4}}>{r.slaBreachReason||"—"}</td>
                         </tr>
                       ))}
