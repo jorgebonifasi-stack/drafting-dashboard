@@ -51,8 +51,12 @@ const PROPERTIES = [
   "hs_v2_date_entered_1223751330",
   "ep_lead_source", "date_of_appointment",
   // Coral SLA tab: lead source tier 3 ("Coral Insurance" / similar) plus
-  // ep_products to split deals into Wills vs LPAs.
-  "lead_source_tier_3", "ep_products",
+  // product properties to split deals into Wills vs LPAs. We request
+  // both `ep_products` and `products` because the HubSpot UI labels the
+  // populated field "Products" (visible on Coral deals) and we don't yet
+  // know which is the actual internal name — processDeals will use
+  // whichever comes back non-empty.
+  "lead_source_tier_3", "ep_products", "products",
   // SLA breach reason (surfaced in Macmillan + Coral tables).
   "sla_breach_reason",
   "date_drafting_query",
@@ -458,7 +462,7 @@ async function fetchFreshData() {
     console.log(`[Pipelines] Discovered ${DO_NOT_USE_STAGE_IDS.length} DO NOT USE stage(s) — will check history per deal`);
   }
 
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, productOptions, slaBreachReasonOptions] =
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, epProductOptions, slaBreachReasonOptions, productsOptions] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -473,8 +477,12 @@ async function fetchFreshData() {
       fetchPropertyOptions("have_they_signed_the_14_day_waiver_").catch(() => ({})),
       fetchPropertyOptions("lead_source_tier_3").catch(() => ({})),
       fetchPropertyOptions("ep_products").catch(() => ({})),
-      fetchPropertyOptions("sla_breach_reason").catch(() => ({}))
+      fetchPropertyOptions("sla_breach_reason").catch(() => ({})),
+      fetchPropertyOptions("products").catch(() => ({}))
     ]);
+  // Merge product option maps from both candidate properties so the client
+  // resolves internal-name → label whichever property turned out to be live.
+  const productOptions = { ...epProductOptions, ...productsOptions };
 
   return {
     deals,
