@@ -4003,21 +4003,25 @@
       const toggleLead=name=>{setLeadFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
       const toggleProduct=name=>{setProductFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
 
-      // SLA progression — line chart data. Last 12 months rolling, with the
-      // current (partial) month included as the rightmost point. Lines map
-      // 1:1 to the summary cards: Standard / Urgent in standard mode, Wills /
-      // LPAs in Coral mode. The Lead Source + Product filters apply (we
-      // re-derive the cohort from allRows, ignoring the End-SLA-Month picker
-      // since the chart's purpose is trend context, not table cohort).
+      // SLA progression — line chart data. Starts at January 2026 (when the
+      // current SLA reporting cadence began) and runs through the current
+      // month, which is included as a partial point. Lines map 1:1 to the
+      // summary cards: Standard / Urgent in standard mode, Wills / LPAs in
+      // Coral mode. The Lead Source + Product filters apply (we re-derive
+      // the cohort from allRows, ignoring the End-SLA-Month picker since
+      // the chart's purpose is trend context, not table cohort).
       const slaTrend=useMemo(()=>{
         const now=new Date();
         const currentMonthKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+        const SERIES_START=new Date(2026,0,1); // January 2026
         const buckets=[];
-        for(let i=11;i>=0;i--){
-          const d=new Date(now.getFullYear(),now.getMonth()-i,1);
-          const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-          const label=d.toLocaleDateString("en-GB",{month:"short",year:"2-digit"});
-          buckets.push({key,label,start:new Date(d.getFullYear(),d.getMonth(),1,0,0,0,0),end:new Date(d.getFullYear(),d.getMonth()+1,0,23,59,59,999),isPartial:key===currentMonthKey});
+        const cursor=new Date(SERIES_START);
+        const endCursor=new Date(now.getFullYear(),now.getMonth(),1);
+        while(cursor<=endCursor){
+          const key=`${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,"0")}`;
+          const label=cursor.toLocaleDateString("en-GB",{month:"short",year:"2-digit"});
+          buckets.push({key,label,start:new Date(cursor.getFullYear(),cursor.getMonth(),1,0,0,0,0),end:new Date(cursor.getFullYear(),cursor.getMonth()+1,0,23,59,59,999),isPartial:key===currentMonthKey});
+          cursor.setMonth(cursor.getMonth()+1);
         }
         // Same cohort filtering as the table, minus the month-range filter
         // (which is the audit table's narrowing — the trend is monthly anyway).
@@ -4198,7 +4202,7 @@
             <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px",marginBottom:20}}>
               <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>
                 <div style={{color:C.white,fontSize:14,fontWeight:600}}>SLA Progression</div>
-                <div style={{fontSize:11,color:C.text,opacity:0.6}}>Last 12 months · compliance % per month · 90% target reference</div>
+                <div style={{fontSize:11,color:C.text,opacity:0.6}}>From January 2026 · compliance % per month · 90% target reference</div>
               </div>
               <div style={{height:260,marginTop:8}}>
                 <ResponsiveContainer width="100%" height="100%">
