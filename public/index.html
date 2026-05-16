@@ -113,6 +113,24 @@
       const[y,m]=bucket.split("-");
       return new Date(Date.UTC(parseInt(y),parseInt(m)-1,1));
     }
+    // 00:00 LOCAL of the last day in the bucket. Used by the Pipeline Flow
+    // chart so backlog is sampled at one consistent "midnight" reading per
+    // bucket (matching how a daily backlog snapshot job would log it).
+    function bucketLastMidnight(bucket,gran){
+      if(gran==="DoD"){
+        const[y,m,d]=bucket.split("-").map(Number);
+        return new Date(y,m-1,d,0,0,0,0);
+      }
+      if(gran==="WoW"){
+        const[y,wStr]=bucket.split("-W");
+        const mon=mondayOfISOWeek(parseInt(y),parseInt(wStr));
+        const sun=new Date(mon);sun.setUTCDate(sun.getUTCDate()+6);
+        return new Date(sun.getUTCFullYear(),sun.getUTCMonth(),sun.getUTCDate(),0,0,0,0);
+      }
+      const[y,m]=bucket.split("-").map(Number);
+      // Day 0 of next month = last day of current month, in local time
+      return new Date(y,m,0,0,0,0,0);
+    }
 
     // ─── parse HubSpot timestamp ────────────────────────────────
     function parseHSDate(v){
@@ -543,7 +561,7 @@
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
       la3:'Average business-day turnover per Legacy Advisor for deals that exited "Replied — Drafts With Customer" in the selected period. Turnover = business days from entering the stage to exiting it.',
-      chart12:'Drafting pipeline flow over time. Entered: uses original (workflow-stamped) entry date for stability. Exited & Backlog: uses native HubSpot dates (latest entry/exit) for accuracy. Current period backlog uses live dealstage count. Includes all deals (standard + urgent).',
+      chart12:'Drafting pipeline flow over time. Entered: uses original (workflow-stamped) entry date for stability. Exited: latest native exit timestamp. Backlog: midnight snapshot — count of deals in Drafting Instructions at 00:00 (local) of the last day in each bucket, capped at today\'s 00:00 for in-progress buckets. Methodology is identical for every bar (no separate live count for the current period). Includes all deals (standard + urgent).',
       chart8:'Urgent (High Priority) drafts over time. Stacked bars show completed urgent requests by reason. Line shows average turnaround in business days (Mon\u2013Fri). From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day.',
       chart9:'Average turnaround in business days (Mon\u2013Fri) for urgent drafts completed in the selected period, grouped by Drafting Owner. From 18 Apr 2026: measured from Date Marked Urgent to completion. Before 18 Apr: measured from first entry into Drafting Instructions. SLA: 1 business day. Green = met, red = breached.',
       chart10:'Amendments completed per period. Stacked bars show amendment source breakdown. Line shows average turnaround in calendar days (entered \u2192 exited "Amendment Requested"). Grouped by exit date.',
@@ -1716,23 +1734,21 @@
           }
         });
 
-        const lastBucket=uniq[uniq.length-1];
+        // Midnight snapshot: backlog = deals in DI at 00:00 LOCAL of the
+        // last day in each bucket. For in-progress buckets (containing
+        // today), cap at today's 00:00 since we can't sample the future.
+        // No special-case for "current period" — same computation for every
+        // bar, identical to what a nightly cron snapshot would record.
+        const todayMidnight=new Date();todayMidnight.setHours(0,0,0,0);
         return uniq.map(bucket=>{
-          const endOfPeriod=bucketEndDate(bucket,gran);
+          let snap=bucketLastMidnight(bucket,gran);
+          if(snap>todayMidnight)snap=todayMidnight;
           let backlog=0;
-          if(bucket===lastBucket){
-            // Current period: use dealstage for accurate count (stage 1223620771 = Drafting Instructions)
-            deals.forEach(d=>{
-              if(d.dealstage==="1223620771")backlog++;
-            });
-          }else{
-            // Historical backlog: native dates (latest entry/exit reflects current state better)
-            deals.forEach(d=>{
-              if(!d.enteredDrafting||d.enteredDrafting>endOfPeriod)return;
-              if(d.nativeExitedDrafting&&d.nativeExitedDrafting<=endOfPeriod&&d.nativeExitedDrafting>=d.enteredDrafting)return;
-              backlog++;
-            });
-          }
+          deals.forEach(d=>{
+            if(!d.enteredDrafting||d.enteredDrafting>snap)return;
+            if(d.nativeExitedDrafting&&d.nativeExitedDrafting<=snap&&d.nativeExitedDrafting>=d.enteredDrafting)return;
+            backlog++;
+          });
           return{
             bucket,label:bucketLabel(bucket,gran),
             entered:entered[bucket]||0,
@@ -3281,19 +3297,17 @@
           if(ent){const b=dateToBucket(ent,gran);(enteredByB[b]=enteredByB[b]||[]).push(d);}
           if(d.nativeExitedDrafting){const b=dateToBucket(d.nativeExitedDrafting,gran);(exitedByB[b]=exitedByB[b]||[]).push(d);}
         });
-        const lastBucket=uniq[uniq.length-1];
+        // Midnight backlog snapshot — see Chart12 for rationale.
+        const todayMidnight=new Date();todayMidnight.setHours(0,0,0,0);
         const rows=uniq.map(bucket=>{
-          const endOfPeriod=bucketEndDate(bucket,gran);
+          let snap=bucketLastMidnight(bucket,gran);
+          if(snap>todayMidnight)snap=todayMidnight;
           let backlog=0;
-          if(bucket===lastBucket){
-            deals.forEach(d=>{if(d.dealstage==="1223620771")backlog++;});
-          }else{
-            deals.forEach(d=>{
-              if(!d.enteredDrafting||d.enteredDrafting>endOfPeriod)return;
-              if(d.nativeExitedDrafting&&d.nativeExitedDrafting<=endOfPeriod&&d.nativeExitedDrafting>=d.enteredDrafting)return;
-              backlog++;
-            });
-          }
+          deals.forEach(d=>{
+            if(!d.enteredDrafting||d.enteredDrafting>snap)return;
+            if(d.nativeExitedDrafting&&d.nativeExitedDrafting<=snap&&d.nativeExitedDrafting>=d.enteredDrafting)return;
+            backlog++;
+          });
           const entCount=(enteredByB[bucket]||[]).length,extCount=(exitedByB[bucket]||[]).length;
           return{_key:bucket,label:bucketLabel(bucket,gran),entered:entCount,exited:extCount,net:(entCount-extCount>0?"+":"")+(entCount-extCount),backlog};
         });
