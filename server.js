@@ -468,6 +468,48 @@ async function fetchDealStageLabels() {
 // properties to request per-deal.
 let DO_NOT_USE_STAGE_IDS = [];
 
+// Resolve owner IDs that don't appear in the list endpoints (active or
+// archived). Fully-removed HubSpot users sometimes drop out of both lists
+// but can still be fetched individually with archived=true. Updates the
+// given map in place. Capped concurrency so this stays cheap.
+async function resolveMissingOwners(deals, ownerMap) {
+  const idsToTry = new Set();
+  const ownerFields = ["drafting_owner", "proof_reading__owner", "hubspot_owner_id", "legacy_advisor__owner"];
+  deals.forEach(d => {
+    const p = d.properties || {};
+    ownerFields.forEach(field => {
+      const v = p[field];
+      if (v && /^\d+$/.test(String(v)) && !ownerMap[String(v)]) {
+        idsToTry.add(String(v));
+      }
+    });
+  });
+  if (idsToTry.size === 0) return;
+
+  const headers = { "Authorization": "Bearer " + HUBSPOT_TOKEN };
+  const ids = Array.from(idsToTry);
+  const CONCURRENCY = 5;
+  let cursor = 0;
+  const workers = Array.from({ length: CONCURRENCY }, async () => {
+    while (cursor < ids.length) {
+      const id = ids[cursor++];
+      try {
+        // Try archived=true first — it returns both archived and (in
+        // practice) some removed users that the list endpoints omit.
+        let res = await fetch(`https://api.hubapi.com/crm/v3/owners/${id}?archived=true`, { headers });
+        if (!res.ok) res = await fetch(`https://api.hubapi.com/crm/v3/owners/${id}`, { headers });
+        if (!res.ok) continue;
+        const o = await res.json();
+        const name = ((o.firstName || "") + " " + (o.lastName || "")).trim();
+        ownerMap[id] = (name || o.email || id) + " (Deactivated)";
+      } catch (e) { /* skip */ }
+    }
+  });
+  await Promise.all(workers);
+  const resolvedCount = ids.filter(id => ownerMap[id]).length;
+  console.log(`[Owners] Resolved ${resolvedCount}/${ids.size} previously-unknown owner IDs via per-ID lookup`);
+}
+
 // ─── Fetch all fresh data ──────────────────────────────────────
 async function fetchFreshData() {
   // Pipelines first — we need the DO NOT USE stage IDs to know which extra
@@ -500,6 +542,11 @@ async function fetchFreshData() {
   // Merge product option maps from both candidate properties so the client
   // resolves internal-name → label whichever property turned out to be live.
   const productOptions = { ...epProductOptions, ...productsOptions };
+
+  // Per-ID fallback for removed/deactivated owners that don't appear in
+  // either list endpoint. Without this, deals owned by fully-removed users
+  // fall through to the raw numeric ID and get bucketed as "Unassigned".
+  await resolveMissingOwners(deals, ownerMap);
 
   return {
     deals,
