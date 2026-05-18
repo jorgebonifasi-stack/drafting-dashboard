@@ -610,7 +610,7 @@
       c13:[{key:"label",label:"Period"},{key:"count",label:"Deals"}],
       c15:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
       c16:[{key:"name",label:"Drafter"},{key:"count",label:"Amendments"}],
-      cWorkload:[{key:"name",label:"Drafter"},{key:"breached",label:"Breached"},{key:"close",label:"Close"},{key:"warning",label:"Warning"},{key:"comfortable",label:"Comfortable"},{key:"total",label:"Total"}],
+      cWorkload:[{key:"name",label:"Drafter"},{key:"breached",label:"Breached"},{key:"close",label:"Close"},{key:"warning",label:"Warning"},{key:"comfortable",label:"Comfortable"},{key:"total",label:"Total"},{key:"breachedPct",label:"Breached %"}],
       la1:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Active in RDWC"}],
       la2:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Exited RDWC"}],
       la3:[{key:"name",label:"Legacy Advisor"},{key:"avg",label:"Avg Biz Days"},{key:"count",label:"Deals"}],
@@ -954,6 +954,12 @@
         // imbalance and SLA risk concentration, not for completeness.
         return Object.values(byDrafter)
           .filter(d=>d.total>=10)
+          .map(d=>{
+            // Pre-compute the right-edge label so the chart shows both the
+            // raw total AND the breached % in one glance.
+            const pct=d.total>0?Math.round((d.breached/d.total)*100):0;
+            return{...d,breachedPct:pct,totalLabel:`${d.total} · ${pct}% breached`};
+          })
           .sort((a,b)=>(b.breached-a.breached)||(b.total-a.total));
       },[deals,stageLabels]);
 
@@ -980,7 +986,7 @@
             <Bar dataKey="close" name="Close" stackId="status" fill={C.amber} barSize={20}/>
             <Bar dataKey="warning" name="Warning" stackId="status" fill="#F1C40F" barSize={20}/>
             <Bar dataKey="comfortable" name="Comfortable" stackId="status" fill={C.green} barSize={20} radius={[0,6,6,0]}>
-              <LabelList dataKey="total" position="right" fill={C.white} fontSize={12} fontWeight={700}/>
+              <LabelList dataKey="totalLabel" position="right" fill={C.white} fontSize={12} fontWeight={700}/>
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -3565,7 +3571,10 @@
         const sorted=Object.values(byDrafter)
           .filter(d=>d.total>=10)
           .sort((a,b)=>(b.breached-a.breached)||(b.total-a.total));
-        const rows=sorted.map(d=>({_key:d.name,name:d.name,breached:d.breached,close:d.close,warning:d.warning,comfortable:d.comfortable,total:d.total}));
+        const rows=sorted.map(d=>{
+          const pct=d.total>0?Math.round((d.breached/d.total)*100):0;
+          return{_key:d.name,name:d.name,breached:d.breached,close:d.close,warning:d.warning,comfortable:d.comfortable,total:d.total,breachedPct:`${pct}%`};
+        });
         const detailMap={};
         sorted.forEach(d=>{
           // Sort drill-down deals by state severity, then days remaining ascending
