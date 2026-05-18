@@ -4156,45 +4156,64 @@
         // Decorate each row with the active SLA's display fields so the table
         // and stats can read uniform field names regardless of cohort.
         return filtered.map(r=>{
+          // Tri-state: a breached deal whose SLA Breach Reason is "N/A" (case-
+          // insensitive, exact match) is "Excluded" — kept in the table for
+          // audit trail but pulled out of the compliance % denominator. Met
+          // deals are always Met regardless of breach reason.
+          const reasonNA=((r.slaBreachReason||"").trim().toLowerCase()==="n/a");
           if(filterMode==="coral"){
+            const displayMet=r.coralMet;
+            const displayExcluded=!displayMet&&reasonNA;
             return{...r,
               displayDays:r.calendarDays,
               displayDaysUnit:"cal",
               displayTarget:r.coralTarget,
               displayTargetUnit:"cal",
-              displayMet:r.coralMet,
-              displayStatus:r.coralStatus};
+              displayMet,
+              displayExcluded,
+              displayStatus:displayMet?"Met":(displayExcluded?"Excluded":"Breached")};
           }
+          const displayMet=r.met;
+          const displayExcluded=!displayMet&&reasonNA;
           return{...r,
             displayDays:r.workingDays,
             displayDaysUnit:"wd",
             displayTarget:r.target,
             displayTargetUnit:"wd",
-            displayMet:r.met,
-            displayStatus:r.status};
+            displayMet,
+            displayExcluded,
+            displayStatus:displayMet?"Met":(displayExcluded?"Excluded":"Breached")};
         });
       },[allRows,leadFilter,filterMode,productFilter]);
 
       const stats=useMemo(()=>{
+        // Compliance denominators exclude N/A-reason breaches everywhere —
+        // they're shown in a separate "Excluded" card but don't drag the % down.
         const total=rows.length;
         const met=rows.filter(r=>r.displayMet).length;
-        const breached=total-met;
+        const excluded=rows.filter(r=>r.displayExcluded).length;
+        const breached=total-met-excluded;
+        const eligibilityCount=arr=>arr.filter(r=>!r.displayExcluded).length;
         const standard=rows.filter(r=>!r.isUrgent);
         const urgent=rows.filter(r=>r.isUrgent);
         const stdMet=standard.filter(r=>r.displayMet).length;
         const urgMet=urgent.filter(r=>r.displayMet).length;
-        const stdPct=standard.length>0?Math.round((stdMet/standard.length)*100):null;
-        const urgPct=urgent.length>0?Math.round((urgMet/urgent.length)*100):null;
+        const stdEligible=eligibilityCount(standard);
+        const urgEligible=eligibilityCount(urgent);
+        const stdPct=stdEligible>0?Math.round((stdMet/stdEligible)*100):null;
+        const urgPct=urgEligible>0?Math.round((urgMet/urgEligible)*100):null;
         // Will / LPA cohorts (Coral only). A deal with both products counts
         // in both — matches the original SQL semantics for "Will & LPA" rows.
         const wills=rows.filter(r=>r.hasWillProduct);
         const lpas=rows.filter(r=>r.hasLpaProduct);
         const willsMet=wills.filter(r=>r.displayMet).length;
         const lpasMet=lpas.filter(r=>r.displayMet).length;
-        const willsPct=wills.length>0?Math.round((willsMet/wills.length)*100):null;
-        const lpasPct=lpas.length>0?Math.round((lpasMet/lpas.length)*100):null;
-        return{total,met,breached,stdPct,urgPct,stdMet,urgMet,stdCount:standard.length,urgCount:urgent.length,
-          willsCount:wills.length,willsMet,willsPct,lpasCount:lpas.length,lpasMet,lpasPct};
+        const willsEligible=eligibilityCount(wills);
+        const lpasEligible=eligibilityCount(lpas);
+        const willsPct=willsEligible>0?Math.round((willsMet/willsEligible)*100):null;
+        const lpasPct=lpasEligible>0?Math.round((lpasMet/lpasEligible)*100):null;
+        return{total,met,breached,excluded,stdPct,urgPct,stdMet,urgMet,stdCount:standard.length,urgCount:urgent.length,stdEligible,urgEligible,
+          willsCount:wills.length,willsMet,willsPct,willsEligible,lpasCount:lpas.length,lpasMet,lpasPct,lpasEligible};
       },[rows]);
 
       // Exclusive selection — clicking a lead-source pill switches to it
@@ -4213,14 +4232,18 @@
           :["Deal ID","Deal Name","Drafter","Lead Source(s)","Priority","Date of Appointment","End Date",daysCol,"Base SLA (days)","Waiver Extension (days)",targetCol,"Status","SLA Breach Reason","HubSpot Link"];
         const lines=[hdr,...rows.map(r=>(
           isCoral
-            ?[r.id,r.dealname,r.drafter,r.leadSourceLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.coralBaseTarget,r.coralWaiverExtension||0,r.coralTarget,r.coralStatus,r.slaBreachReason||"",HS_BASE+r.id]
-            :[r.id,r.dealname,r.drafter,r.leadSourceLabel,r.isUrgent?"Urgent":"Standard",fmtDate(r.appointment),fmtDate(r.endDate),r.workingDays,r.baseTarget,r.waiverExtension||0,r.target,r.status,r.slaBreachReason||"",HS_BASE+r.id]
+            ?[r.id,r.dealname,r.drafter,r.leadSourceLabel,fmtDate(r.appointment),fmtDate(r.endDate),r.calendarDays,r.coralBaseTarget,r.coralWaiverExtension||0,r.coralTarget,r.displayStatus,r.slaBreachReason||"",HS_BASE+r.id]
+            :[r.id,r.dealname,r.drafter,r.leadSourceLabel,r.isUrgent?"Urgent":"Standard",fmtDate(r.appointment),fmtDate(r.endDate),r.workingDays,r.baseTarget,r.waiverExtension||0,r.target,r.displayStatus,r.slaBreachReason||"",HS_BASE+r.id]
         ))];
         const suffix=isCoral?"_coral":"";
         downloadCSV(`sla_audit${suffix}_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,fromMonth,toMonth,filterMode]);
 
-      const statusColor=met=>met?C.green:C.red;
+      // Tri-state colouring: Met = green, Excluded = muted grey (kept in
+      // the table for audit trail but doesn't count toward breach total),
+      // Breached = red.
+      const statusColor=r=>r.displayMet?C.green:(r.displayExcluded?C.text:C.red);
+      const statusOpacity=r=>r.displayExcluded?0.55:1;
       const card={background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"18px 20px"};
       const cardLabel={fontSize:11,letterSpacing:1,textTransform:"uppercase",color:C.text,opacity:0.6,fontWeight:600};
       const cardValue={fontSize:30,fontWeight:700,color:C.white,marginTop:6,lineHeight:1};
@@ -4273,21 +4296,26 @@
             </div>
 
             {/* Summary cards */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:14,marginBottom:20}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:14,marginBottom:20}}>
               <div style={card}><div style={cardLabel}>Total deals</div><div style={cardValue}>{stats.total}</div></div>
               <div style={card}><div style={cardLabel}>Met SLA</div><div style={{...cardValue,color:C.green}}>{stats.met}</div></div>
               <div style={card}><div style={cardLabel}>Breached SLA</div><div style={{...cardValue,color:C.red}}>{stats.breached}</div></div>
+              <div style={card}>
+                <div style={cardLabel}>Excluded</div>
+                <div style={{...cardValue,color:C.text,opacity:0.65}}>{stats.excluded}</div>
+                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>SLA Breach Reason = N/A</div>
+              </div>
               {filterMode==="coral"?(
                 <React.Fragment>
                   <div style={card}>
                     <div style={cardLabel}>Wills Compliance %</div>
                     <div style={{...cardValue,color:stats.willsPct==null?C.text:stats.willsPct>=90?C.green:stats.willsPct>=75?C.amber:C.red}}>{stats.willsPct==null?"—":`${stats.willsPct}%`}</div>
-                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.willsCount===0?"No Will deals":`${stats.willsMet} of ${stats.willsCount} met`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.willsEligible===0?"No Will deals":`${stats.willsMet} of ${stats.willsEligible} met`}{stats.willsCount>stats.willsEligible?` · ${stats.willsCount-stats.willsEligible} excl`:""}</div>
                   </div>
                   <div style={card}>
                     <div style={cardLabel}>LPAs Compliance %</div>
                     <div style={{...cardValue,color:stats.lpasPct==null?C.text:stats.lpasPct>=90?C.green:stats.lpasPct>=75?C.amber:C.red}}>{stats.lpasPct==null?"—":`${stats.lpasPct}%`}</div>
-                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.lpasCount===0?"No LPA deals":`${stats.lpasMet} of ${stats.lpasCount} met`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.lpasEligible===0?"No LPA deals":`${stats.lpasMet} of ${stats.lpasEligible} met`}{stats.lpasCount>stats.lpasEligible?` · ${stats.lpasCount-stats.lpasEligible} excl`:""}</div>
                   </div>
                 </React.Fragment>
               ):(
@@ -4295,12 +4323,12 @@
                   <div style={card}>
                     <div style={cardLabel}>Standard Compliance %</div>
                     <div style={{...cardValue,color:stats.stdPct==null?C.text:stats.stdPct>=90?C.green:stats.stdPct>=75?C.amber:C.red}}>{stats.stdPct==null?"—":`${stats.stdPct}%`}</div>
-                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.stdCount===0?"No standard deals":`${stats.stdMet} of ${stats.stdCount} met`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.stdEligible===0?"No standard deals":`${stats.stdMet} of ${stats.stdEligible} met`}{stats.stdCount>stats.stdEligible?` · ${stats.stdCount-stats.stdEligible} excl`:""}</div>
                   </div>
                   <div style={card}>
                     <div style={cardLabel}>Urgent Compliance %</div>
                     <div style={{...cardValue,color:stats.urgPct==null?C.text:stats.urgPct>=90?C.green:stats.urgPct>=75?C.amber:C.red}}>{stats.urgPct==null?"—":`${stats.urgPct}%`}</div>
-                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgCount===0?"No urgent deals":`${stats.urgMet} of ${stats.urgCount} met`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgEligible===0?"No urgent deals":`${stats.urgMet} of ${stats.urgEligible} met`}{stats.urgCount>stats.urgEligible?` · ${stats.urgCount-stats.urgEligible} excl`:""}</div>
                   </div>
                 </React.Fragment>
               )}
@@ -4311,8 +4339,8 @@
               <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>SLA Logic</div>
               <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
                 {filterMode==="coral"
-                  ?"Coral SLA = 42 calendar days from Date of Appointment to End. +14 calendar days when the 14-day waiver is not signed. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority does not adjust the Coral SLA."
-                  :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays."}
+                  ?"Coral SLA = 42 calendar days from Date of Appointment to End. +14 calendar days when the 14-day waiver is not signed. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority does not adjust the Coral SLA. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."
+                  :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."}
               </div>
               {rows.length===0?(
                 <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed deals in this range.</div>
@@ -4346,7 +4374,7 @@
                           <td style={{padding:"10px 12px"}}>{fmtDate(r.endDate)}</td>
                           <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.displayDays}d</td>
                           <td style={{padding:"10px 12px",textAlign:"right",color:C.text,opacity:0.6}}>{r.displayTarget}d</td>
-                          <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r.displayMet)}}>{r.displayStatus}</td>
+                          <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r),opacity:statusOpacity(r)}}>{r.displayStatus}</td>
                           <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.slaBreachReason?0.85:0.4}}>{r.slaBreachReason||"—"}</td>
                         </tr>
                       ))}
