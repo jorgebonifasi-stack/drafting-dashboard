@@ -1018,18 +1018,51 @@ app.get("/api/debug/deal/:id", requireAuth, requireAdmin, async (req, res) => {
   if (!HUBSPOT_TOKEN) return res.status(500).json({ error: "HUBSPOT_API_KEY not set" });
   const dealId = String(req.params.id || "").replace(/[^0-9]/g, "");
   if (!dealId) return res.status(400).json({ error: "Provide a numeric deal id" });
+  const headers = { "Authorization": "Bearer " + HUBSPOT_TOKEN };
+
+  // We need to list properties explicitly — HubSpot doesn't accept `*` as a
+  // wildcard and without a `properties` parameter it returns only 3 default
+  // fields. Build the request list from:
+  //   1) The PROPERTIES we already fetch for the dashboard
+  //   2) Any "drafts with customer" / DWC / RDWC related internal name
+  //      discovered via the deal-properties metadata endpoint (so we catch
+  //      mis-spelled or alternately-named variants of the same field).
+  const baseProps = [...PROPERTIES,
+    // Extra fields useful for diagnosing why a row is missing
+    "createdate", "hs_lastmodifieddate", "hs_pipeline",
+    "first_date_entered_drafting_instructions", "first_date_entered_drafts_with_customer",
+    "hs_v2_date_entered_1223751329"
+  ];
+
+  // 1) Get the full list of deal properties so we can find any field whose
+  //    label or internal name looks "DWC"-related.
+  let dwcLikeNames = [];
   try {
-    // Fetch ALL properties on the deal (no `properties=` filter) so we can
-    // surface property-name mismatches.
-    const url = `https://api.hubapi.com/crm/v3/objects/deals/${dealId}?properties=*&archived=false`;
-    const r = await fetch(url, { headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN } });
+    const metaRes = await fetch("https://api.hubapi.com/crm/v3/properties/deals", { headers });
+    if (metaRes.ok) {
+      const meta = await metaRes.json();
+      dwcLikeNames = (meta.results || [])
+        .filter(p => {
+          const blob = `${p.name || ""} ${p.label || ""}`.toLowerCase();
+          return blob.includes("drafts with customer") || blob.includes("drafts_with_customer") ||
+                 blob.includes("dwc") || blob.includes("rdwc");
+        })
+        .map(p => p.name);
+    }
+  } catch (e) { /* best-effort */ }
+
+  const propsToFetch = Array.from(new Set([...baseProps, ...dwcLikeNames]));
+
+  try {
+    const url = `https://api.hubapi.com/crm/v3/objects/deals/${dealId}?properties=${encodeURIComponent(propsToFetch.join(","))}&archived=false`;
+    const r = await fetch(url, { headers });
     if (!r.ok) return res.status(r.status).json({ error: `HubSpot ${r.status}: ${await r.text()}` });
     const data = await r.json();
     const props = data.properties || {};
-    // Pull out the fields the dashboard relies on for productivity
+
     const relevant = {};
     [
-      "dealname", "dealstage", "pipeline", "drafting_owner", "proof_reading__owner",
+      "dealname", "dealstage", "pipeline", "hs_pipeline", "drafting_owner", "proof_reading__owner",
       "hs_v2_date_entered_1223620771", "hs_v2_date_exited_1223620771",
       "hs_v2_date_entered_1223620775", "hs_v2_date_entered_1223620777",
       "original_date_entered_drafting_instructions",
@@ -1041,20 +1074,27 @@ app.get("/api/debug/deal/:id", requireAuth, requireAdmin, async (req, res) => {
       "paid_line_items_summary", "ep_product", "have_they_signed_the_14_day_waiver_",
       "hs_priority", "amendment_source", "sla_breach_reason"
     ].forEach(k => { relevant[k] = props[k] !== undefined ? props[k] : null; });
-    // Also include all property keys whose name mentions "drafts_with_customer" /
-    // "drafts" / "dwc" so we catch any internal-name variants the team uses.
+
+    // All DWC-named properties (whether or not we already had them)
     const dwcLike = {};
-    Object.keys(props).forEach(k => {
-      const lk = k.toLowerCase();
-      if (lk.includes("drafts_with_customer") || lk.includes("drafts_w_customer") || lk.includes("rdwc") || lk.includes("_dwc_")) {
-        dwcLike[k] = props[k];
-      }
-    });
+    dwcLikeNames.forEach(n => { dwcLike[n] = props[n] !== undefined ? props[n] : null; });
+
+    // Whether the deal is in the search-filter result set the dashboard
+    // ingests. If false, the deal is invisible to the dashboard regardless
+    // of its properties.
+    const inDashboardFetchFilter = !!(
+      props.hs_v2_date_entered_1223620771 || props.hs_v2_date_entered_1223620773 ||
+      props.hs_v2_date_exited_1223620773 || props.hs_v2_date_entered_1223620775 ||
+      props.hs_v2_date_entered_1223620777 || props.hs_v2_date_entered_1223751329
+    );
+
     res.json({
       id: data.id,
+      inDashboardFetchFilter,
       relevant,
-      dwcLikePropertyKeys: dwcLike,
-      allPropertyKeys: Object.keys(props).sort()
+      dwcLikePropertyValues: dwcLike,
+      _propsRequestedCount: propsToFetch.length,
+      _propsReturnedCount: Object.keys(props).length
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
