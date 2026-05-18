@@ -370,20 +370,37 @@ async function fetchAllDeals() {
 }
 
 // ─── Fetch HubSpot owners ──────────────────────────────────────
+// Fetches both active AND archived (deactivated) owners so deals
+// owned by deactivated users still resolve to a human-readable name.
+// Without this, deactivated owners' deals fall through to the raw
+// numeric owner ID and get filtered out / bucketed as "Unassigned"
+// in the dashboard's drafter / proofreader charts.
 async function fetchOwners() {
-  const url = "https://api.hubapi.com/crm/v3/owners?limit=500";
-  const response = await fetch(url, {
-    headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
-  });
-
-  if (!response.ok) return {};
-
-  const data = await response.json();
+  const headers = { "Authorization": "Bearer " + HUBSPOT_TOKEN };
   const map = {};
-  (data.results || []).forEach(o => {
-    const name = ((o.firstName || "") + " " + (o.lastName || "")).trim();
-    map[String(o.id)] = name || o.email || String(o.id);
-  });
+
+  const fetchPage = async (archived) => {
+    let after = null;
+    for (let page = 0; page < 20; page++) {
+      const params = new URLSearchParams({ limit: "500" });
+      if (archived) params.set("archived", "true");
+      if (after) params.set("after", after);
+      const res = await fetch(`https://api.hubapi.com/crm/v3/owners?${params}`, { headers });
+      if (!res.ok) return;
+      const data = await res.json();
+      (data.results || []).forEach(o => {
+        const name = ((o.firstName || "") + " " + (o.lastName || "")).trim();
+        // Mark archived owners so the UI / charts can optionally surface them.
+        // Existing call sites just read the name string so this is transparent.
+        map[String(o.id)] = (name || o.email || String(o.id)) + (archived ? " (Deactivated)" : "");
+      });
+      after = data.paging && data.paging.next && data.paging.next.after;
+      if (!after) return;
+    }
+  };
+
+  await fetchPage(false);
+  await fetchPage(true);
   return map;
 }
 
