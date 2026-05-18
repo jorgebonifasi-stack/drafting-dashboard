@@ -551,7 +551,7 @@
 
     // ─── metric descriptions ────────────────────────────────────
     const INFO={
-      chart1:'NEW METRIC — Drafts completed in the selected period. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Grouped by Drafting Owner.',
+      chart1:'NEW METRIC — Drafts completed in the selected period. Includes both standard and urgent (Priority = High) deals — every completion counts toward the drafter\'s total volume. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Grouped by Drafting Owner.',
       chart1b:'OLD METRIC — Drafts completed based on Date exited "Drafting Instructions (Estate Planning)" for all deals. This counts a deal as complete when it leaves Drafting Instructions, regardless of whether it has reached Drafts With Customer or Ready For Printing. Grouped by Drafting Owner.',
       chart2:'Average calendar days from first entering "Drafting Instructions (Estate Planning)" to completion. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Includes Drafting Query time. Grouped by Drafting Owner.',
       chart3:'Line: average calendar days from entering to exiting "Required \u2014 Proof Reading" for deals completed that period. Bars: deals that entered "Required \u2014 Proof Reading" (Date entered "Required - Proof Reading (Estate Planning)") in that period. SLA: 2 days.',
@@ -3110,13 +3110,17 @@
       },[deals]);
 
       // ── table data for standard charts (c1–c7) ─────────────────
+      // c1: "Total Drafts Completed per Drafter" — includes BOTH standard
+      // AND urgent (Priority = High) deals. "Total" in the chart title is
+      // intentional: high-priority drafts are still drafts and count toward
+      // each drafter's weekly productivity.
       const c1Table=useMemo(()=>{
         const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;const groups={};
-        standardDeals.forEach(d=>{if(!d.exitedDrafting||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
+        deals.forEach(d=>{if(!d.exitedDrafting||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
         const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((overrides[name]??standardTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:perfLabel(perfState(arr.length,t))};}).sort((a,b)=>b.count-a.count);
         const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedDrafting)}));});
         return{rows,detailMap};
-      },[standardDeals,gran,selectedBucket,standardTarget,overrides]);
+      },[deals,gran,selectedBucket,standardTarget,overrides]);
 
       // ── c1b: Old metric — Total Drafts Completed per Drafter (Exit DI) ──
       const c1bTable=useMemo(()=>{
@@ -3585,7 +3589,7 @@
           {/* Row 1: Per-drafter completion bars */}
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-1" title="Total Drafts Completed per Drafter" infoText={INFO.chart1} columns={T_COLS.c1} rows={c1Table.rows} detailMap={c1Table.detailMap} detailCols={T_DCOLS.c1} csvName={`drafts_completed_${gran}_${selectedBucket}.csv`}>
-              <Chart1 deals={standardDeals} gran={gran} bucket={selectedBucket} standardTarget={standardTarget} overrides={overrides}/>
+              <Chart1 deals={deals} gran={gran} bucket={selectedBucket} standardTarget={standardTarget} overrides={overrides}/>
             </ChartCard>
             <ChartCard chartId="chart-16" title="Total Amendments Completed per Drafter" infoText={INFO.chart16} columns={T_COLS.c16} rows={c16Table.rows} detailMap={c16Table.detailMap} detailCols={T_DCOLS.c16} csvName={`amendments_completed_per_drafter_${gran}_${selectedBucket}.csv`}>
               <Chart16 deals={deals} gran={gran} bucket={selectedBucket}/>
@@ -3758,7 +3762,7 @@
             <div style={cardStyle}>
               <div style={titleStyle}>Total Drafts Completed per Drafter — {bucketLabel(currentBucket,gran)}</div>
               <div style={{flex:1,minHeight:0}}>
-                <Chart1 deals={standardDeals} gran={gran} bucket={currentBucket} standardTarget={DEFAULT_STANDARD_TARGET} overrides={DEFAULT_OVERRIDES}/>
+                <Chart1 deals={deals} gran={gran} bucket={currentBucket} standardTarget={DEFAULT_STANDARD_TARGET} overrides={DEFAULT_OVERRIDES}/>
               </div>
             </div>
             <div style={cardStyle}>
