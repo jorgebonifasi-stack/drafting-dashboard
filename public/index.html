@@ -2382,9 +2382,20 @@
       );
     }
 
-    // ─── Macmillan SLA Table ───────────────────────────────────
+    // ─── Partnerships SLA Table (Macmillan + Coral) ─────────────
+    // One table, two cohorts, each evaluated against its own SLA:
+    //   Macmillan: 20 working days from Date of Appointment, +14 calendar
+    //              days extension when 14-day waiver is unsigned.
+    //   Coral:     42 calendar days from Date of Appointment, +14 calendar
+    //              days extension when 14-day waiver is unsigned.
+    // Days remaining is computed in each partnership's native unit and
+    // displayed with a unit suffix. Status thresholds scale per-unit so the
+    // red/amber/yellow/green colouring stays comparable:
+    //   wd:  breached <0 | close <=2 | warning <=5
+    //   cal: breached <0 | close <=3 | warning <=7
     function MacmillanSLATable({deals,stageLabels}){
-      const SLA_DAYS=20;
+      const MAC_SLA_WD=20;
+      const CORAL_SLA_CAL=42;
       // Normalise stage labels (collapse dash/whitespace/case) so "Required — Proof Reading"
       // matches "Required - Proof Reading" etc.
       const normStage=s=>(s||"").toLowerCase().replace(/[\u2013\u2014-]+/g," ").replace(/\s+/g," ").trim();
@@ -2396,35 +2407,59 @@
       ]);
       const[drafterFilter,setDrafterFilter]=useState("__all__");
       const[stageFilter,setStageFilter]=useState(()=>new Set());
+      const[partnershipFilter,setPartnershipFilter]=useState(()=>new Set()); // empty = both
+      const togglePartnership=name=>{setPartnershipFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
       const toggleStage=name=>{setStageFilter(prev=>{const n=new Set(prev);if(n.has(name))n.delete(name);else n.add(name);return n;});};
       const allRows=useMemo(()=>{
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
         deals.forEach(d=>{
-          if(!d.leadSources||!d.leadSources.includes("Macmillan"))return;
+          // Partnership tagging: a deal lands in this table if it matches
+          // Macmillan (via ep_lead_source) OR Coral (via lead_source_tier_3).
+          // Macmillan wins in the unlikely both-match case.
+          const isMacmillan=(d.leadSources||[]).includes("Macmillan");
+          const isCoral=((d.leadSourceTier3||"").toLowerCase().includes("coral"));
+          if(!isMacmillan&&!isCoral)return;
           if(!d.dateOfAppointment)return;
-          // Only include deals currently in a pre-"Drafts with Customer" stage
           const stageLabel=stageLabels[d.dealstage]||d.dealstage||"";
           if(!ALLOWED_STAGES.has(normStage(stageLabel)))return;
-          const baseDeadline=addBusinessDays(d.dateOfAppointment,SLA_DAYS);
-          // If the customer has NOT signed the 14-day waiver, extend the SLA by 14 calendar days.
+          const partnership=isMacmillan?"Macmillan":"Coral";
           const waiverExtension=d.waiverSigned14d===false?14:0;
-          const deadline=new Date(baseDeadline);
-          if(waiverExtension)deadline.setDate(deadline.getDate()+waiverExtension);
-          const bizRemaining=signedBusinessDays(today,deadline);
+          let deadline,daysRemaining,daysUnit,slaTargetLabel;
+          if(isMacmillan){
+            const baseDeadline=addBusinessDays(d.dateOfAppointment,MAC_SLA_WD);
+            deadline=new Date(baseDeadline);
+            if(waiverExtension)deadline.setDate(deadline.getDate()+waiverExtension);
+            daysRemaining=signedBusinessDays(today,deadline);
+            daysUnit="wd";
+            slaTargetLabel=`${MAC_SLA_WD}wd${waiverExtension?` +${waiverExtension}cal`:""}`;
+          }else{
+            const appt=new Date(d.dateOfAppointment);appt.setHours(0,0,0,0);
+            const totalCalDays=CORAL_SLA_CAL+waiverExtension;
+            deadline=new Date(appt);deadline.setDate(deadline.getDate()+totalCalDays);
+            daysRemaining=Math.round((deadline-today)/86400000);
+            daysUnit="cal";
+            slaTargetLabel=`${CORAL_SLA_CAL}cal${waiverExtension?` +${waiverExtension}cal`:""}`;
+          }
           out.push({
             id:d.id,
             dealname:d.dealname,
+            partnership,
             drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
             appointment:d.dateOfAppointment,
             deadline,
-            bizRemaining,
+            daysRemaining,
+            daysUnit,
+            slaTargetLabel,
+            // Legacy alias so the existing backlog-chart + row-colour helpers
+            // (which read .bizRemaining) keep working unchanged.
+            bizRemaining:daysRemaining,
             waiverExtension,
             stage:stageLabels[d.dealstage]||d.dealstage||"—",
             slaBreachReason:d.slaBreachReason||""
           });
         });
-        out.sort((a,b)=>(a.bizRemaining??1e9)-(b.bizRemaining??1e9));
+        out.sort((a,b)=>(a.daysRemaining??1e9)-(b.daysRemaining??1e9));
         return out;
       },[deals,stageLabels]);
 
@@ -2446,10 +2481,11 @@
 
       const chartRows=useMemo(()=>{
         let arr=allRows;
+        if(partnershipFilter.size>0)arr=arr.filter(r=>partnershipFilter.has(r.partnership));
         if(drafterFilter!=="__all__")arr=arr.filter(r=>r.drafter===drafterFilter);
         if(stageFilter.size>0)arr=arr.filter(r=>stageFilter.has(r.stage));
         return arr;
-      },[allRows,drafterFilter,stageFilter]);
+      },[allRows,drafterFilter,stageFilter,partnershipFilter]);
 
       const[gran,setGran]=useState("WoW");
       const[selectedBucket,setSelectedBucket]=useState(null);
@@ -2457,22 +2493,42 @@
       useEffect(()=>{setSelectedBucket(null);},[gran]);
 
       const getBucketDate=useCallback(r=>r.appointment,[]);
-      const getStatus=useCallback(r=>r.bizRemaining==null?"comfortable":r.bizRemaining<0?"breached":r.bizRemaining<=2?"close":r.bizRemaining<=5?"warning":"comfortable",[]);
+      // Per-unit thresholds: working-day rows (Macmillan) keep the original
+      // 0 / 2 / 5 thresholds. Calendar-day rows (Coral) use 0 / 3 / 7 so
+      // "warning" means a similar amount of clock-time pressure across cohorts.
+      const getStatus=useCallback(r=>{
+        const n=r.daysRemaining;
+        if(n==null)return"comfortable";
+        if(n<0)return"breached";
+        if(r.daysUnit==="cal"){
+          if(n<=3)return"close";
+          if(n<=7)return"warning";
+          return"comfortable";
+        }
+        if(n<=2)return"close";
+        if(n<=5)return"warning";
+        return"comfortable";
+      },[]);
 
       const rows=useMemo(()=>(
         selectedBucket?chartRows.filter(r=>r.appointment&&dateToBucket(r.appointment,gran)===selectedBucket):chartRows
       ),[chartRows,selectedBucket,gran]);
 
-      const rowColor=n=>n==null?C.text:n<0?C.red:n<=2?C.amber:n<=5?"#F1C40F":C.green;
+      const rowColor=r=>{
+        if(!r||r.daysRemaining==null)return C.text;
+        const s=getStatus(r);
+        return s==="breached"?C.red:s==="close"?C.amber:s==="warning"?"#F1C40F":C.green;
+      };
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Date of Appointment","SLA Deadline","Business Days Remaining","Waiver Extension Days","Current Stage","SLA Breach Reason","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.bizRemaining==null?"":r.bizRemaining,r.waiverExtension||0,r.stage,r.slaBreachReason||"",HS_BASE+r.id])];
+        const hdr=["Deal ID","Deal Name","Partnership","Drafter","Date of Appointment","SLA Deadline","Days Remaining","Days Unit","SLA Target","Waiver Extension Days","Current Stage","SLA Breach Reason","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.partnership,r.drafter,fmtDate(r.appointment),fmtDate(r.deadline),r.daysRemaining==null?"":r.daysRemaining,r.daysUnit,r.slaTargetLabel,r.waiverExtension||0,r.stage,r.slaBreachReason||"",HS_BASE+r.id])];
         const drSuffix=drafterFilter==="__all__"?"":`_${drafterFilter.replace(/\s+/g,"_")}`;
         const stSuffix=stageFilter.size===0?"":(stageFilter.size===1?`_${[...stageFilter][0].replace(/[^A-Za-z0-9]+/g,"_")}`:`_${stageFilter.size}stages`);
+        const pnSuffix=partnershipFilter.size===0?"":(partnershipFilter.size===1?`_${[...partnershipFilter][0]}`:"");
         const bSuffix=selectedBucket?`_${selectedBucket}`:"";
-        downloadCSV(`macmillan_sla${drSuffix}${stSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
-      },[rows,drafterFilter,stageFilter,selectedBucket]);
+        downloadCSV(`partnerships_sla${pnSuffix}${drSuffix}${stSuffix}${bSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,drafterFilter,stageFilter,selectedBucket,partnershipFilter]);
 
       return(
         <React.Fragment>
@@ -2481,9 +2537,9 @@
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:16}}>
               <div>
-                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan — Deals Nearing SLA</div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Partnerships — Deals Nearing SLA</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Lead source = Macmillan, SLA = 20 business days from Date of Appointment. +14 calendar days when the customer has not signed the 14-day waiver. Only deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, or Approved — Proof Reading.
+                  Macmillan: 20 working days from Date of Appointment. Coral: 42 calendar days from Date of Appointment. Both extend by 14 calendar days when the customer has not signed the 14-day waiver. Only deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, or Approved — Proof Reading.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -2493,6 +2549,17 @@
                     <button onClick={()=>setSelectedBucket(null)} style={{background:"transparent",border:"none",color:C.accent,cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>{"\u00D7"}</button>
                   </span>
                 )}
+                <label style={{fontSize:12,color:C.text,opacity:0.7}}>Partnership</label>
+                <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+                  {["Macmillan","Coral"].map(name=>{
+                    const active=partnershipFilter.has(name);
+                    const count=allRows.filter(r=>r.partnership===name).length;
+                    return(
+                      <button key={name} onClick={()=>togglePartnership(name)} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.bg,color:active?C.accent:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{name} ({count})</button>
+                    );
+                  })}
+                  {partnershipFilter.size>0&&<button onClick={()=>setPartnershipFilter(new Set())} style={{padding:"4px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.text,cursor:"pointer",fontSize:11,fontWeight:500}}>Clear</button>}
+                </div>
                 <label style={{fontSize:12,color:C.text,opacity:0.7}}>Drafter</label>
                 <select style={S.select} value={drafterFilter} onChange={e=>setDrafterFilter(e.target.value)}>
                   <option value="__all__">All ({allRows.length})</option>
@@ -2516,17 +2583,18 @@
               </div>
             </div>
             {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open Macmillan deals with an appointment date.":selectedBucket?"No deals in the selected bucket for the active filters.":"No deals match the active filters."}</div>
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No open Macmillan or Coral deals with an appointment date.":selectedBucket?"No deals in the selected bucket for the active filters.":"No deals match the active filters."}</div>
             ):(
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
                   <thead>
                     <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Partnership</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Appointment</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
-                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Biz Days Remaining</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Days Remaining</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Current Stage</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>SLA Breach Reason</th>
                     </tr>
@@ -2538,11 +2606,14 @@
                           <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
                           {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+{r.waiverExtension}d waiver</span>}
                         </td>
+                        <td style={{padding:"10px 12px"}}>
+                          <span style={{display:"inline-block",fontSize:10,padding:"2px 8px",borderRadius:4,background:r.partnership==="Coral"?"rgba(155,89,182,0.18)":"rgba(52,152,219,0.18)",color:r.partnership==="Coral"?"#9b59b6":C.accent,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>{r.partnership}</span>
+                        </td>
                         <td style={{padding:"10px 12px"}}>{r.drafter}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
-                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.bizRemaining)}}>
-                          {r.bizRemaining==null?"—":r.bizRemaining<0?`${r.bizRemaining}d (breached)`:`${r.bizRemaining}d`}
+                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r)}}>
+                          {r.daysRemaining==null?"—":r.daysRemaining<0?`${r.daysRemaining}d ${r.daysUnit} (breached)`:`${r.daysRemaining}d ${r.daysUnit}`}
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.stage}</td>
                         <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.slaBreachReason?0.85:0.4}}>{r.slaBreachReason||"—"}</td>
@@ -3493,7 +3564,7 @@
                   drafting:{label:"Drafting",defaultView:"graphs",subs:[
                     {key:"graphs",label:"Metrics"},
                     {key:"sla",label:"Standard SLA"},
-                    {key:"macmillan-sla",label:"Macmillan SLA"}
+                    {key:"macmillan-sla",label:"Partnerships SLA"}
                   ]},
                   "legacy-advisor":{label:"Legacy Advisor",defaultView:"legacy-advisor",subs:[
                     {key:"legacy-advisor",label:"Metrics"},
