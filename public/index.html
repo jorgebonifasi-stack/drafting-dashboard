@@ -162,6 +162,15 @@
       if (state === "close") return "#F39C12";
       return "#E74C3C";
     }
+    // Faded variant of perfColor, used by Chart 1 to render the "partially
+    // finished" segment of each drafter's bar (deals currently sitting in
+    // Required / Approved Proofreading). Same hue, 38% alpha so the
+    // achievement colour stays visually linked to the solid segment.
+    function perfColorLight(state){
+      if (state === "met") return "rgba(39,174,96,0.38)";
+      if (state === "close") return "rgba(243,156,18,0.38)";
+      return "rgba(231,76,60,0.38)";
+    }
     function perfLabel(state){
       if (state === "met") return "\u2713 Met";
       if (state === "close") return "\u26A0 Close";
@@ -551,7 +560,7 @@
 
     // ─── metric descriptions ────────────────────────────────────
     const INFO={
-      chart1:'NEW METRIC — Drafts completed in the selected period. Includes both standard and urgent (Priority = High) deals — every completion counts toward the drafter\'s total volume. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Grouped by Drafting Owner.',
+      chart1:'Stacked bar per drafter — solid segment = drafts that reached the customer (Drafts With Customer / Ready For Printing / Sent To Customer) in this period; lighter same-hue segment = drafts the drafter handed off in this period but are still in QA (currently in Required Proofreading or Approved Proofreading). Total bar = drafter\'s output for the period and is what the target line compares against. Includes both standard and urgent (Priority = High) deals. Solid segment bucketed by completion date (pre-12 Apr 2026: date exited Drafting Instructions; from 12 Apr 2026: earliest of Original Date Entered Drafts With Customer / Ready For Printing). Light segment bucketed by the date the drafter last exited Drafting Instructions. Grouped by Drafting Owner.',
       chart1b:'OLD METRIC — Drafts completed based on Date exited "Drafting Instructions (Estate Planning)" for all deals. This counts a deal as complete when it leaves Drafting Instructions, regardless of whether it has reached Drafts With Customer or Ready For Printing. Grouped by Drafting Owner.',
       chart2:'Average calendar days from first entering "Drafting Instructions (Estate Planning)" to completion. Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". Includes Drafting Query time. Grouped by Drafting Owner.',
       chart3:'Line: average calendar days from entering to exiting "Required \u2014 Proof Reading" for deals completed that period. Bars: deals that entered "Required \u2014 Proof Reading" (Date entered "Required - Proof Reading (Estate Planning)") in that period. SLA: 2 days.',
@@ -586,7 +595,7 @@
 
     // ─── table column configs ───────────────────────────────────
     const T_COLS={
-      c1:[{key:"name",label:"Drafter"},{key:"count",label:"Completed"},{key:"target",label:"Target"},{key:"status",label:"Status"}],
+      c1:[{key:"name",label:"Drafter"},{key:"full",label:"Completed"},{key:"partial",label:"In proofreading"},{key:"count",label:"Total"},{key:"target",label:"Target"},{key:"status",label:"Status"}],
       c2:[{key:"name",label:"Drafter"},{key:"avg",label:"Avg Days"},{key:"count",label:"Deals"}],
       c3:[{key:"label",label:"Period"},{key:"avgTurnaround",label:"Avg Days"},{key:"entered",label:"Entered"},{key:"completed",label:"Completed"}],
       c4:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
@@ -607,7 +616,7 @@
       la3:[{key:"name",label:"Legacy Advisor"},{key:"avg",label:"Avg Biz Days"},{key:"count",label:"Deals"}],
     };
     const T_DCOLS={
-      c1:[{key:"date",label:"Completed"}],
+      c1:[{key:"date",label:"Date"},{key:"state",label:"State"}],
       c2:[{key:"start",label:"Started"},{key:"exit",label:"Completed"},{key:"days",label:"Days"}],
       c3:[{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Days"}],
       c4:[{key:"queryDate",label:"First Query Date"},{key:"reasons",label:"Reasons"}],
@@ -719,21 +728,48 @@
     }
 
     // ─── Chart 1: Total Drafts Completed ────────────────────────
+    // Stacked bar per drafter, two segments:
+    //   - "full":    deals that reached Drafts With Customer / Ready For
+    //                Printing / Sent To Customer in the bucket (bucketed by
+    //                exitedDrafting — the DWC date, same as before).
+    //   - "partial": deals currently sitting in Required Proofreading or
+    //                Approved Proofreading whose drafter handed off in this
+    //                bucket (bucketed by nativeExitedDrafting — the date
+    //                the drafter actually pushed the deal out of DI).
+    // Total (full + partial) is what's compared against the drafter's target
+    // for the perfState colour, so drafters get credit for finishing their
+    // part even when QA hasn't shipped the deal yet. The light segment
+    // re-renders as the deal progresses: once it reaches DWC it leaves the
+    // partial bucket and lands in the full bucket (potentially a later week).
+    const RP_STAGE_ID="1223620773";
+    const AP_STAGE_ID="1223620774";
     function Chart1({deals,gran,bucket,standardTarget,overrides}){
       const data=useMemo(()=>{
         const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
         const counts={};
         deals.forEach(d=>{
-          if(!d.exitedDrafting)return;
-          if(dateToBucket(d.exitedDrafting,gran)!==bucket)return;
-          counts[d.drafterName]=(counts[d.drafterName]||0)+1;
+          const drafter=d.drafterName;
+          if(!drafter||drafter==="Unknown"||/^\d+$/.test(drafter))return;
+          // FULL segment: existing behaviour, bucketed by exitedDrafting (DWC).
+          if(d.exitedDrafting&&dateToBucket(d.exitedDrafting,gran)===bucket){
+            (counts[drafter]=counts[drafter]||{full:0,partial:0}).full++;
+            return;
+          }
+          // PARTIAL segment: deal is currently in RP or AP. Bucket by the
+          // date the drafter exited DI (their hand-off moment).
+          if((d.dealstage===RP_STAGE_ID||d.dealstage===AP_STAGE_ID)&&d.nativeExitedDrafting){
+            if(dateToBucket(d.nativeExitedDrafting,gran)===bucket){
+              (counts[drafter]=counts[drafter]||{full:0,partial:0}).partial++;
+            }
+          }
         });
         return Object.entries(counts)
-          .filter(([n,c])=>c>=1&&!/^\d+$/.test(n)&&n!=="Unknown")
-          .map(([name,count])=>{
+          .filter(([,c])=>(c.full+c.partial)>=1)
+          .map(([name,c])=>{
+            const total=c.full+c.partial;
             const wt=overrides[name]??standardTarget;
             const target=Math.round(wt*mult);
-            return{name,count,target,state:perfState(count,target),isCustom:name in overrides};
+            return{name,full:c.full,partial:c.partial,count:total,target,state:perfState(total,target),isCustom:name in overrides};
           }).sort((a,b)=>b.count-a.count);
       },[deals,gran,bucket,standardTarget,overrides]);
 
@@ -749,9 +785,17 @@
             <YAxis type="category" dataKey="name" width={130} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
             <Tooltip content={<DarkTooltip/>}/>
             <ReferenceLine x={globalTarget} stroke={C.white} strokeDasharray="8 4" strokeWidth={2.5} label={{value:`Target: ${globalTarget}`,position:"top",fill:C.white,fontSize:14,fontWeight:700,offset:10}}/>
-            <Bar dataKey="count" radius={[0,6,6,0]} barSize={22}>
-              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
+            <Legend verticalAlign="top" height={28} iconType="square" wrapperStyle={{color:C.text,fontSize:11}}
+              payload={[
+                {value:"Completed (at customer)",type:"square",color:perfColor("met")},
+                {value:"In proofreading",type:"square",color:perfColorLight("met")}
+              ]}/>
+            <Bar dataKey="full" name="Completed" stackId="completion" barSize={22}>
               {data.map((entry,i)=>(<Cell key={i} fill={perfColor(entry.state)}/>))}
+            </Bar>
+            <Bar dataKey="partial" name="In proofreading" stackId="completion" radius={[0,6,6,0]} barSize={22}>
+              {data.map((entry,i)=>(<Cell key={i} fill={perfColorLight(entry.state)}/>))}
+              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -3186,10 +3230,36 @@
       // intentional: high-priority drafts are still drafts and count toward
       // each drafter's weekly productivity.
       const c1Table=useMemo(()=>{
-        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;const groups={};
-        deals.forEach(d=>{if(!d.exitedDrafting||dateToBucket(d.exitedDrafting,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
-        const rows=Object.entries(groups).filter(([,a])=>a.length>=1).map(([name,arr])=>{const t=Math.round((overrides[name]??standardTarget)*mult);return{_key:name,name,count:arr.length,target:t,status:perfLabel(perfState(arr.length,t))};}).sort((a,b)=>b.count-a.count);
-        const detailMap={};rows.forEach(r=>{detailMap[r._key]=groups[r._key].map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedDrafting)}));});
+        const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
+        // Two-cohort bucket — see Chart1 for the equivalent breakdown logic.
+        const groups={}; // drafter → { full: [...], partial: [...] }
+        deals.forEach(d=>{
+          if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
+          if(d.exitedDrafting&&dateToBucket(d.exitedDrafting,gran)===selectedBucket){
+            (groups[d.drafterName]=groups[d.drafterName]||{full:[],partial:[]}).full.push(d);
+            return;
+          }
+          if((d.dealstage===RP_STAGE_ID||d.dealstage===AP_STAGE_ID)&&d.nativeExitedDrafting){
+            if(dateToBucket(d.nativeExitedDrafting,gran)===selectedBucket){
+              (groups[d.drafterName]=groups[d.drafterName]||{full:[],partial:[]}).partial.push(d);
+            }
+          }
+        });
+        const rows=Object.entries(groups)
+          .filter(([,g])=>(g.full.length+g.partial.length)>=1)
+          .map(([name,g])=>{
+            const total=g.full.length+g.partial.length;
+            const t=Math.round((overrides[name]??standardTarget)*mult);
+            return{_key:name,name,full:g.full.length,partial:g.partial.length,count:total,target:t,status:perfLabel(perfState(total,t))};
+          })
+          .sort((a,b)=>b.count-a.count);
+        const detailMap={};
+        rows.forEach(r=>{
+          const g=groups[r._key];
+          const fullRows=g.full.map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.exitedDrafting),state:"Completed"}));
+          const partialRows=g.partial.map(d=>({id:d.id,dealname:d.dealname,date:fmtDate(d.nativeExitedDrafting),state:"In proofreading"}));
+          detailMap[r._key]=[...fullRows,...partialRows];
+        });
         return{rows,detailMap};
       },[deals,gran,selectedBucket,standardTarget,overrides]);
 
