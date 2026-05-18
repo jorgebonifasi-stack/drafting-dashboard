@@ -367,18 +367,28 @@
         // Products: source is paid_line_items_summary (multi-line text,
         // populated by the printing workflow). Example raw value:
         //   "Severance of tenancy x1 150.00\nCouple Will with Trust x1 750.00"
-        // Detection just substring-matches the lowercased raw text. The
-        // dealname fallback fires when the summary is empty (e.g. deals
-        // that haven't paid yet) and the dealname contains product hints
-        // like "MW" (mirror will), "LIT" (living in trust), or "LPA".
+        //
+        // Categorisation matches the dbt model's product_type derivation:
+        //   - "Estate Planning Package" (e.g. "Classic Estate Planning
+        //     Package: Simple Will") is a bundle that always includes BOTH
+        //     a Will and an LPA → flag both, regardless of which is named
+        //     after the colon.
+        //   - Otherwise, substring-match "will" → Will, "lpa" / "lasting
+        //     power of attorney" → LPA. A deal can match both independently
+        //     (e.g. "Couple Simple Will, Single LPA").
+        //
+        // The dealname fallback (MW / LIT / LPA word-boundary regex) fires
+        // when paid_line_items_summary is empty — useful for deals that
+        // haven't reached billing yet.
         const rawProducts=p.paid_line_items_summary||"";
         const products=rawProducts?rawProducts.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):[];
         const productsLc=rawProducts.toLowerCase();
         const dealnameLc=(p.dealname||"").toLowerCase();
-        const willInProducts=productsLc.includes("will");
+        const isEstatePlanningPackage=productsLc.includes("estate planning package");
+        const willInProducts=isEstatePlanningPackage||productsLc.includes("will");
         const willInDealname=/(^|[^a-z])(will|mw|lit)([^a-z]|$)/.test(dealnameLc);
         const hasWillProduct=willInProducts||willInDealname;
-        const lpaInProducts=productsLc.includes("lpa")||productsLc.includes("lasting power of attorney");
+        const lpaInProducts=isEstatePlanningPackage||productsLc.includes("lpa")||productsLc.includes("lasting power of attorney");
         const lpaInDealname=/(^|[^a-z])lpa([^a-z]|$)/.test(dealnameLc);
         const hasLpaProduct=lpaInProducts||lpaInDealname;
         // SLA breach reason — surfaced as a column on the Macmillan and Coral
