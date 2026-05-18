@@ -51,9 +51,11 @@ const PROPERTIES = [
   "hs_v2_date_entered_1223751330",
   "ep_lead_source", "date_of_appointment",
   // Coral SLA tab: lead source tier 3 ("Coral Insurance" / similar) plus
-  // ep_product (singular — verified internal name in HubSpot) to split
-  // deals into Wills vs LPAs.
-  "lead_source_tier_3", "ep_product",
+  // paid_line_items_summary (a HubSpot multi-line text populated via the
+  // printing workflow). Free-text values look like:
+  //   "Severance of tenancy x1 150.00\nCouple Will with Trust x1 750.00"
+  // so Will / LPA detection just substring-matches the raw string.
+  "lead_source_tier_3", "paid_line_items_summary",
   // SLA breach reason (surfaced in Macmillan + Coral tables).
   "sla_breach_reason",
   "date_drafting_query",
@@ -518,7 +520,7 @@ async function fetchFreshData() {
     console.log(`[Pipelines] Discovered ${DO_NOT_USE_STAGE_IDS.length} DO NOT USE stage(s) — will check history per deal`);
   }
 
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, productOptions, slaBreachReasonOptions] =
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, slaBreachReasonOptions] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -532,9 +534,12 @@ async function fetchFreshData() {
       fetchPropertyOptions("legacy_advisor__owner").catch(() => ({})),
       fetchPropertyOptions("have_they_signed_the_14_day_waiver_").catch(() => ({})),
       fetchPropertyOptions("lead_source_tier_3").catch(() => ({})),
-      fetchPropertyOptions("ep_product").catch(() => ({})),
       fetchPropertyOptions("sla_breach_reason").catch(() => ({}))
     ]);
+  // paid_line_items_summary is multi-line text, not an enum, so there are
+  // no options to resolve. Send an empty map for backwards compatibility
+  // with processDeals's `productOptions` parameter.
+  const productOptions = {};
 
   // Per-ID fallback for removed/deactivated owners that don't appear in
   // either list endpoint. Without this, deals owned by fully-removed users

@@ -364,23 +364,21 @@
         const rawLeadTier3=p.lead_source_tier_3||"";
         const leadSourceTier3List=rawLeadTier3?rawLeadTier3.split(";").map(v=>(leadSourceTier3Options||{})[v.trim()]||v.trim()).filter(Boolean):[];
         const leadSourceTier3=leadSourceTier3List.join(", ");
-        // Products: source is ep_product (singular — verified HubSpot internal
-        // name). Multi-select checkbox; HubSpot returns ;-separated internal
-        // option values. Resolved through productOptions for label matching.
-        // Fallback: parse from the deal name when ep_product is empty (some
-        // deal names include product hints like "MW", "LPA", "Will with Trust").
-        const rawProducts=p.ep_product||"";
-        const products=rawProducts?rawProducts.split(";").map(v=>(productOptions||{})[v.trim()]||v.trim()).filter(Boolean):[];
-        const productsLc=products.map(v=>v.toLowerCase());
+        // Products: source is paid_line_items_summary (multi-line text,
+        // populated by the printing workflow). Example raw value:
+        //   "Severance of tenancy x1 150.00\nCouple Will with Trust x1 750.00"
+        // Detection just substring-matches the lowercased raw text. The
+        // dealname fallback fires when the summary is empty (e.g. deals
+        // that haven't paid yet) and the dealname contains product hints
+        // like "MW" (mirror will), "LIT" (living in trust), or "LPA".
+        const rawProducts=p.paid_line_items_summary||"";
+        const products=rawProducts?rawProducts.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):[];
+        const productsLc=rawProducts.toLowerCase();
         const dealnameLc=(p.dealname||"").toLowerCase();
-        // Will detection: any product label contains "will", OR the deal name
-        // contains "will" / "mw" (mirror will) / "lit" (living in trust).
-        const willInProducts=productsLc.some(v=>v.includes("will"));
+        const willInProducts=productsLc.includes("will");
         const willInDealname=/(^|[^a-z])(will|mw|lit)([^a-z]|$)/.test(dealnameLc);
         const hasWillProduct=willInProducts||willInDealname;
-        // LPA detection: any product label contains "lpa" / "lasting power of
-        // attorney", OR the deal name contains "lpa".
-        const lpaInProducts=productsLc.some(v=>v.includes("lpa")||v.includes("lasting power of attorney"));
+        const lpaInProducts=productsLc.includes("lpa")||productsLc.includes("lasting power of attorney");
         const lpaInDealname=/(^|[^a-z])lpa([^a-z]|$)/.test(dealnameLc);
         const hasLpaProduct=lpaInProducts||lpaInDealname;
         // SLA breach reason — surfaced as a column on the Macmillan and Coral
