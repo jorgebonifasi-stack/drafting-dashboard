@@ -364,13 +364,12 @@
         const rawLeadTier3=p.lead_source_tier_3||"";
         const leadSourceTier3List=rawLeadTier3?rawLeadTier3.split(";").map(v=>(leadSourceTier3Options||{})[v.trim()]||v.trim()).filter(Boolean):[];
         const leadSourceTier3=leadSourceTier3List.join(", ");
-        // Products: primary source is ep_products (multi-select checkbox).
-        // We also accept `products` because the HubSpot UI labels the field
-        // "Products" and the internal name might be the simpler one. Whichever
-        // is populated wins; both are merged through productOptions for label
-        // resolution. Fallback: parse from the deal name (some deal names
-        // include product hints like "MW", "LPA", "Will with Trust").
-        const rawProducts=p.ep_products||p.products||"";
+        // Products: source is ep_product (singular — verified HubSpot internal
+        // name). Multi-select checkbox; HubSpot returns ;-separated internal
+        // option values. Resolved through productOptions for label matching.
+        // Fallback: parse from the deal name when ep_product is empty (some
+        // deal names include product hints like "MW", "LPA", "Will with Trust").
+        const rawProducts=p.ep_product||"";
         const products=rawProducts?rawProducts.split(";").map(v=>(productOptions||{})[v.trim()]||v.trim()).filter(Boolean):[];
         const productsLc=products.map(v=>v.toLowerCase());
         const dealnameLc=(p.dealname||"").toLowerCase();
