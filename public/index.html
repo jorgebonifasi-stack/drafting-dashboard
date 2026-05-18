@@ -959,36 +959,31 @@
 
       if(!data.length)return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No drafters with 10+ open deals in the working stages.</div>;
       const maxVal=Math.max(...data.map(d=>d.total),5);
-      // Vertical stacked bars: drafter names along the X-axis, deal counts
-      // going up the Y-axis. Width scales with the drafter count so labels
-      // stay readable; chart height is fixed.
-      const chartWidthMin=Math.max(560,data.length*70+80);
+      // Horizontal stacked bars: drafter names along the Y-axis, deal counts
+      // running along the X-axis. Height scales with the drafter count so
+      // each bar stays a sensible thickness; chart width is fluid.
       return(
-        <div style={{overflowX:"auto"}}>
-          <div style={{minWidth:chartWidthMin}}>
-            <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={data} margin={{top:20,right:24,left:0,bottom:48}}>
-                <CartesianGrid vertical={false} stroke={C.grid} strokeDasharray="3 3"/>
-                <XAxis type="category" dataKey="name" interval={0} angle={-30} textAnchor="end" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} tickLine={false} height={64}/>
-                <YAxis type="number" domain={[0,Math.ceil(maxVal*1.1)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
-                <Tooltip content={<StackedTooltip/>}/>
-                <Legend verticalAlign="top" height={28} wrapperStyle={{color:C.text,fontSize:12}}
-                  payload={[
-                    {value:"Breached",type:"square",color:C.red},
-                    {value:"Close",type:"square",color:C.amber},
-                    {value:"Warning",type:"square",color:"#F1C40F"},
-                    {value:"Comfortable",type:"square",color:C.green}
-                  ]}/>
-                <Bar dataKey="breached" name="Breached" stackId="status" fill={C.red} maxBarSize={48}/>
-                <Bar dataKey="close" name="Close" stackId="status" fill={C.amber} maxBarSize={48}/>
-                <Bar dataKey="warning" name="Warning" stackId="status" fill="#F1C40F" maxBarSize={48}/>
-                <Bar dataKey="comfortable" name="Comfortable" stackId="status" fill={C.green} maxBarSize={48} radius={[6,6,0,0]}>
-                  <LabelList dataKey="total" position="top" fill={C.white} fontSize={12} fontWeight={700}/>
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+        <ResponsiveContainer width="100%" height={Math.max(300,data.length*36+80)}>
+          <BarChart data={data} layout="vertical" margin={{top:20,right:80,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxVal*1.1)]} tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} allowDecimals={false}/>
+            <YAxis type="category" dataKey="name" width={150} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<StackedTooltip/>}/>
+            <Legend verticalAlign="top" height={28} wrapperStyle={{color:C.text,fontSize:12}}
+              payload={[
+                {value:"Breached",type:"square",color:C.red},
+                {value:"Close",type:"square",color:C.amber},
+                {value:"Warning",type:"square",color:"#F1C40F"},
+                {value:"Comfortable",type:"square",color:C.green}
+              ]}/>
+            <Bar dataKey="breached" name="Breached" stackId="status" fill={C.red} barSize={20}/>
+            <Bar dataKey="close" name="Close" stackId="status" fill={C.amber} barSize={20}/>
+            <Bar dataKey="warning" name="Warning" stackId="status" fill="#F1C40F" barSize={20}/>
+            <Bar dataKey="comfortable" name="Comfortable" stackId="status" fill={C.green} barSize={20} radius={[0,6,6,0]}>
+              <LabelList dataKey="total" position="right" fill={C.white} fontSize={12} fontWeight={700}/>
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
       );
     }
 
