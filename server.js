@@ -1008,6 +1008,59 @@ app.get("/admin/logins", requireAuth, requireAdmin, (req, res) => {
   res.sendFile(path.join(__dirname, "admin", "logins.html"));
 });
 
+// ─── Admin: Inspect a single deal ──────────────────────────────
+// Returns the deal's raw HubSpot properties plus selected computed values
+// (matches what processDeals would produce client-side). Useful for
+// diagnosing "why isn't this deal in the chart?" without hand-tracing
+// every transform.
+// GET /api/debug/deal/:id
+app.get("/api/debug/deal/:id", requireAuth, requireAdmin, async (req, res) => {
+  if (!HUBSPOT_TOKEN) return res.status(500).json({ error: "HUBSPOT_API_KEY not set" });
+  const dealId = String(req.params.id || "").replace(/[^0-9]/g, "");
+  if (!dealId) return res.status(400).json({ error: "Provide a numeric deal id" });
+  try {
+    // Fetch ALL properties on the deal (no `properties=` filter) so we can
+    // surface property-name mismatches.
+    const url = `https://api.hubapi.com/crm/v3/objects/deals/${dealId}?properties=*&archived=false`;
+    const r = await fetch(url, { headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN } });
+    if (!r.ok) return res.status(r.status).json({ error: `HubSpot ${r.status}: ${await r.text()}` });
+    const data = await r.json();
+    const props = data.properties || {};
+    // Pull out the fields the dashboard relies on for productivity
+    const relevant = {};
+    [
+      "dealname", "dealstage", "pipeline", "drafting_owner", "proof_reading__owner",
+      "hs_v2_date_entered_1223620771", "hs_v2_date_exited_1223620771",
+      "hs_v2_date_entered_1223620775", "hs_v2_date_entered_1223620777",
+      "original_date_entered_drafting_instructions",
+      "original_date_entered_drafts_with_customer",
+      "original_date_entered_ready_for_printing",
+      "original_date_entered_sent_to_customer",
+      "first_date_exited_drafting_instructions",
+      "date_of_appointment", "lead_source_tier_3", "ep_lead_source",
+      "paid_line_items_summary", "ep_product", "have_they_signed_the_14_day_waiver_",
+      "hs_priority", "amendment_source", "sla_breach_reason"
+    ].forEach(k => { relevant[k] = props[k] !== undefined ? props[k] : null; });
+    // Also include all property keys whose name mentions "drafts_with_customer" /
+    // "drafts" / "dwc" so we catch any internal-name variants the team uses.
+    const dwcLike = {};
+    Object.keys(props).forEach(k => {
+      const lk = k.toLowerCase();
+      if (lk.includes("drafts_with_customer") || lk.includes("drafts_w_customer") || lk.includes("rdwc") || lk.includes("_dwc_")) {
+        dwcLike[k] = props[k];
+      }
+    });
+    res.json({
+      id: data.id,
+      relevant,
+      dwcLikePropertyKeys: dwcLike,
+      allPropertyKeys: Object.keys(props).sort()
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({
