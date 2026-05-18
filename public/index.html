@@ -2942,91 +2942,6 @@
       );
     }
 
-    // ─── Sidebar (Reporting section) ────────────────────────────
-    // Collapsed: a slim 48px rail with section icons. Expanded: 220px
-    // panel that reveals section labels and items. Items set the parent
-    // Dashboard's `view` state — e.g. clicking "SLA Audit" sets view="audit"
-    // and the main content area renders AuditDashboard in embedded mode.
-    function Sidebar({view,setView,expanded,setExpanded}){
-      const RAIL_WIDTH=48;
-      const EXPANDED_WIDTH=220;
-      const ITEMS={
-        reporting:{
-          label:"Reporting",
-          icon:"📊",
-          items:[
-            {key:"audit",label:"SLA Audit"}
-          ]
-        }
-      };
-      const isActive=k=>view===k;
-      const sectionForView=k=>k==="audit"?"reporting":null;
-      const activeSection=sectionForView(view);
-
-      const railBtn={
-        width:RAIL_WIDTH,height:RAIL_WIDTH,background:"transparent",border:"none",
-        color:C.text,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",
-        fontSize:20,transition:"background .15s"
-      };
-      const itemBtn=(active)=>({
-        display:"flex",alignItems:"center",gap:10,
-        padding:"8px 12px",margin:"0 8px",borderRadius:6,
-        background:active?"rgba(52,152,219,0.18)":"transparent",
-        color:active?C.accent:C.text,
-        border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
-        width:"calc(100% - 16px)",textAlign:"left",
-        transition:"background .15s"
-      });
-
-      return(
-        <div style={{
-          width:expanded?EXPANDED_WIDTH:RAIL_WIDTH,
-          minWidth:expanded?EXPANDED_WIDTH:RAIL_WIDTH,
-          background:C.bgDarker,
-          borderRight:`1px solid ${C.border}`,
-          display:"flex",flexDirection:"column",
-          transition:"width .18s ease",
-          overflow:"hidden",
-          flexShrink:0
-        }}>
-          {/* Toggle */}
-          <button onClick={()=>setExpanded(!expanded)} title={expanded?"Collapse sidebar":"Expand sidebar"} style={{...railBtn,borderBottom:`1px solid ${C.border}`,width:"100%"}}>
-            <span style={{fontSize:16}}>{expanded?"‹":"›"}</span>
-          </button>
-
-          {/* Reporting section */}
-          {Object.entries(ITEMS).map(([sectionKey,section])=>{
-            const sectionActive=activeSection===sectionKey;
-            if(!expanded){
-              // Collapsed: icon only, click goes straight to the first item.
-              const firstItem=section.items[0];
-              return(
-                <button key={sectionKey}
-                  onClick={()=>setView(firstItem.key)}
-                  title={section.label}
-                  style={{...railBtn,width:"100%",background:sectionActive?"rgba(52,152,219,0.18)":"transparent",color:sectionActive?C.accent:C.text}}>
-                  <span>{section.icon}</span>
-                </button>
-              );
-            }
-            return(
-              <div key={sectionKey} style={{marginTop:8}}>
-                <div style={{display:"flex",alignItems:"center",gap:10,padding:"6px 16px",fontSize:11,letterSpacing:1,textTransform:"uppercase",color:C.text,opacity:0.55,fontWeight:700}}>
-                  <span>{section.icon}</span>
-                  <span>{section.label}</span>
-                </div>
-                {section.items.map(it=>(
-                  <button key={it.key} onClick={()=>setView(it.key)} style={itemBtn(isActive(it.key))}>
-                    {it.label}
-                  </button>
-                ))}
-              </div>
-            );
-          })}
-        </div>
-      );
-    }
-
     function Dashboard(){
       const[loading,setLoading]=useState(true);
       const[error,setError]=useState(null);
@@ -3037,7 +2952,6 @@
       const[gran,setGran]=useState("WoW");
       const[selectedBucket,setSelectedBucket]=useState(null);
       const[settingsOpen,setSettingsOpen]=useState(false);
-      const[sidebarExpanded,setSidebarExpanded]=useState(false);
       const[standardTarget,setStandardTarget]=useState(DEFAULT_STANDARD_TARGET);
       const[overrides,setOverrides]=useState({...DEFAULT_OVERRIDES});
       const[proofTarget,setProofTarget]=useState(DEFAULT_PROOF_TARGET);
@@ -3557,9 +3471,7 @@
       if(loading&&!deals.length)return<SkeletonUI/>;
 
       return(
-        <div style={{...S.page,display:"flex",alignItems:"stretch"}}>
-          <Sidebar view={view} setView={setView} expanded={sidebarExpanded} setExpanded={setSidebarExpanded}/>
-          <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column"}}>
+        <div style={S.page}>
           {/* Top Bar */}
           <div style={S.topBar}>
             <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
@@ -3575,35 +3487,32 @@
                   "legacy-advisor":{label:"Legacy Advisor",defaultView:"legacy-advisor",subs:[
                     {key:"legacy-advisor",label:"Metrics"},
                     {key:"legacy-advisor-sla",label:"SLA"}
+                  ]},
+                  reporting:{label:"Reporting",defaultView:"audit",subs:[
+                    {key:"audit",label:"SLA Audit"}
                   ]}
                 };
                 const VIEW_TO_SECTION={
                   graphs:"drafting",sla:"drafting","macmillan-sla":"drafting",
-                  "legacy-advisor":"legacy-advisor","legacy-advisor-sla":"legacy-advisor"
-                  // "audit" intentionally not mapped — it's a Reporting view
-                  // and lives in the sidebar; section pills stay clickable
-                  // (un-highlighted) so the user can jump back to Drafting
-                  // or Legacy Advisor with one click.
+                  "legacy-advisor":"legacy-advisor","legacy-advisor-sla":"legacy-advisor",
+                  audit:"reporting"
                 };
-                const activeSection=VIEW_TO_SECTION[view]||null;
-                const subTabs=activeSection?SECTIONS[activeSection].subs:[];
+                const activeSection=VIEW_TO_SECTION[view]||"drafting";
+                const subTabs=SECTIONS[activeSection].subs;
                 const sectionPill=(key)=>({padding:"6px 16px",borderRadius:6,border:"none",background:activeSection===key?C.accent:"transparent",color:activeSection===key?C.white:C.text,cursor:"pointer",fontSize:11,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",transition:"all .15s"});
                 const subPill=(active)=>({padding:"6px 14px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":C.surface,color:active?C.accent:C.text,cursor:"pointer",fontSize:12,fontWeight:600,transition:"all .15s"});
                 return(
                   <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                    <div style={{display:"flex",alignItems:"center",gap:4,padding:3,background:C.surface,borderRadius:8,border:`1px solid ${C.border}`,alignSelf:"flex-start"}}>
+                    <div style={{display:"flex",gap:4,padding:3,background:C.surface,borderRadius:8,border:`1px solid ${C.border}`,alignSelf:"flex-start"}}>
                       {Object.entries(SECTIONS).map(([key,s])=>(
                         <button key={key} style={sectionPill(key)} onClick={()=>setView(s.defaultView)}>{s.label}</button>
                       ))}
-                      {view==="audit"&&<span style={{padding:"6px 12px",fontSize:11,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",color:C.accent}}>Reporting · SLA Audit</span>}
                     </div>
-                    {subTabs.length>0&&(
-                      <div style={{display:"flex",gap:6,paddingLeft:2}}>
-                        {subTabs.map(t=>(
-                          <button key={t.key} style={subPill(view===t.key)} onClick={()=>setView(t.key)}>{t.label}</button>
-                        ))}
-                      </div>
-                    )}
+                    <div style={{display:"flex",gap:6,paddingLeft:2}}>
+                      {subTabs.map(t=>(
+                        <button key={t.key} style={subPill(view===t.key)} onClick={()=>setView(t.key)}>{t.label}</button>
+                      ))}
+                    </div>
                   </div>
                 );
               })()}
@@ -3762,7 +3671,6 @@
             proofTarget={proofTarget} setProofTarget={setProofTarget}
             proofOverrides={proofOverrides} setProofOverrides={setProofOverrides} prooferNames={prooferNames}
             saveStatus={saveStatus} saveError={saveError}/>
-          </div>{/* /flex content column */}
         </div>
       );
     }
