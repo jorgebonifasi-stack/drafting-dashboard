@@ -351,10 +351,17 @@
         const rawUrgentReason=p.urgent_request_reason||"";
         const urgentReason=rawUrgentReason?rawUrgentReason.split(";").map(r=>(urgentReasonOptions||{})[r.trim()]||r.trim()).filter(Boolean):[];
         const isUrgent=priority==="high";
-        // Urgent SLA: date_marked_urgent (post-18 Apr) or draftingStart (pre-18 Apr fallback)
+        // Urgent SLA anchor: date_marked_urgent (post-18 Apr) or draftingStart
+        // (pre-18 Apr fallback). Then clamped forward to draftingStart — a deal
+        // marked urgent BEFORE it ever entered Drafting Instructions can't tick
+        // down the drafter's clock until the drafter actually has the deal.
+        // (e.g. a Macmillan deal flagged urgent on import 13 days before its
+        // appointment shouldn't accrue 9 days of "drafter time" while it sat
+        // pre-DI.)
         const URGENT_CUTOVER=new Date("2026-04-18T00:00:00");
         const dateMarkedUrgent=parseHSDate(p.date_marked_urgent);
-        const urgentStart=dateMarkedUrgent&&dateMarkedUrgent>=URGENT_CUTOVER?dateMarkedUrgent:draftingStart;
+        const rawUrgentAnchor=dateMarkedUrgent&&dateMarkedUrgent>=URGENT_CUTOVER?dateMarkedUrgent:draftingStart;
+        const urgentStart=(rawUrgentAnchor&&draftingStart&&rawUrgentAnchor<draftingStart)?draftingStart:rawUrgentAnchor;
         // Consultant Query (stage 1223751330)
         const enteredConsultantQuery=parseHSDate(p.hs_v2_date_entered_1223751330);
         // Approved - Proof Reading (stage 1223620774). Entered timestamp is
