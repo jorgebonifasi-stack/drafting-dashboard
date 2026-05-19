@@ -2043,8 +2043,11 @@
 
         const selDate=selectedDate; // "YYYY-MM-DD"
 
-        // Build grid: {ownerId: {hour: count}} and collect individual activities per drafter
+        // Build grid: {ownerId: {hour: count}} and collect individual activities per drafter.
+        // proofGrid is a parallel grid tracking only the proofreader-attributed
+        // events so the heatmap can colour proofreading distinctly from drafting.
         const grid={};
+        const proofGrid={};
         const activitiesByOwner={};
         (activityData.activities||[]).forEach(a=>{
           if(!drafterOwnerIds.has(a.ownerId))return;
@@ -2074,14 +2077,20 @@
           {key:"exitedApproved",label:"\u2192 Exited Approved"},
         ];
 
-        // Helper — push a stage event into grid + activities for a given owner.
-        const pushStageEvent=(oid,ts,deal,label)=>{
+        // Helper — push a stage event into grid + activities for a given
+        // owner. `isProofer` flag also bumps proofGrid so the cell can be
+        // coloured by proofreading-vs-drafting share.
+        const pushStageEvent=(oid,ts,deal,label,isProofer)=>{
           const dt=new Date(ts);
           const dateStr=dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
           if(dateStr!==selDate)return;
           const hour=dt.getHours();
           if(!grid[oid])grid[oid]={};
           grid[oid][hour]=(grid[oid][hour]||0)+1;
+          if(isProofer){
+            if(!proofGrid[oid])proofGrid[oid]={};
+            proofGrid[oid][hour]=(proofGrid[oid][hour]||0)+1;
+          }
           if(!activitiesByOwner[oid])activitiesByOwner[oid]=[];
           activitiesByOwner[oid].push({
             id:deal.id,
@@ -2090,7 +2099,8 @@
             type:"Stage Move",
             dealIds:[deal.id],
             _stageLabel:label,
-            _dealName:deal.dealname
+            _dealName:deal.dealname,
+            _isProofer:!!isProofer
           });
         };
 
@@ -2103,7 +2113,7 @@
             stageEvents.forEach(ev=>{
               const ts=deal[ev.key];
               if(!ts)return;
-              pushStageEvent(oid,ts,deal,ev.label);
+              pushStageEvent(oid,ts,deal,ev.label,false);
             });
           }
 
@@ -2119,10 +2129,10 @@
           const proofOid=nameToOwnerId[prooferLower];
           if(proofOid){
             if(deal.enteredApproved){
-              pushStageEvent(proofOid,deal.enteredApproved,deal,"→ Approved Proof Reading");
+              pushStageEvent(proofOid,deal.enteredApproved,deal,"→ Approved Proof Reading",true);
             }
             if(deal.enteredDraftingQuery&&deal.enteredProofreading&&deal.enteredDraftingQuery>=deal.enteredProofreading){
-              pushStageEvent(proofOid,deal.enteredDraftingQuery,deal,"→ Drafting Query (Proofer)");
+              pushStageEvent(proofOid,deal.enteredDraftingQuery,deal,"→ Drafting Query (Proofer)",true);
             }
           }
         });
@@ -2133,10 +2143,10 @@
           name:ownerMap[id]||id
         })).filter(d=>d.name&&d.name!=="Unknown"&&!/^\d+$/.test(d.name)).sort((a,b)=>a.name.localeCompare(b.name));
 
-        return{drafters,hours,grid,activitiesByOwner};
+        return{drafters,hours,grid,proofGrid,activitiesByOwner};
       },[activityData,drafterNamesProp,selectedDate,allDeals]);
 
-      const{drafters,hours,grid,activitiesByOwner}=heatmapData;
+      const{drafters,hours,grid,proofGrid,activitiesByOwner}=heatmapData;
 
       // Expose table data to parent ChartCard
       useEffect(()=>{
@@ -2191,11 +2201,22 @@
 
       return(
         <div>
-          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}}>
             <button onClick={()=>changeDate(-1)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 12px",cursor:"pointer",fontSize:14}}>&larr;</button>
             <span style={{color:C.white,fontWeight:700,fontSize:15,minWidth:140,textAlign:"center"}}>{dayLabel}</span>
             <button onClick={()=>changeDate(1)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 12px",cursor:"pointer",fontSize:14}}>&rarr;</button>
             <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} style={{background:C.surface,border:`1px solid ${C.grid}`,color:C.text,borderRadius:6,padding:"6px 10px",fontSize:12}}/>
+            <div style={{flex:1}}/>
+            <div style={{display:"flex",alignItems:"center",gap:14,fontSize:11,color:C.muted}}>
+              <span style={{display:"inline-flex",alignItems:"center",gap:6}}>
+                <span style={{display:"inline-block",width:14,height:10,background:"rgba(46,204,113,0.5)",borderRadius:2}}/>
+                Drafting
+              </span>
+              <span style={{display:"inline-flex",alignItems:"center",gap:6}}>
+                <span style={{display:"inline-block",width:14,height:10,background:"rgba(155,89,182,0.5)",borderRadius:2}}/>
+                Proofreading
+              </span>
+            </div>
           </div>
           {!drafters.length?(
             <div style={{color:C.muted,textAlign:"center",padding:40}}>No drafter activity data for this date</div>
@@ -2213,6 +2234,7 @@
                 <tbody>
                   {drafters.map(d=>{
                     const row=grid[d.id]||{};
+                    const proofRow=proofGrid[d.id]||{};
                     const totalHours=hours.filter(h=>row[h]>0).length;
                     return(
                       <tr key={d.id}>
@@ -2221,9 +2243,28 @@
                         </td>
                         {hours.map(h=>{
                           const count=row[h]||0;
-                          const bg=count===0?"rgba(255,255,255,0.03)":count<=2?"rgba(46,204,113,0.25)":count<=5?"rgba(46,204,113,0.5)":"rgba(46,204,113,0.8)";
+                          const proof=proofRow[h]||0;
+                          const draft=count-proof;
+                          // Intensity scales with total count (same thresholds as before).
+                          const alpha=count===0?0:count<=2?0.25:count<=5?0.5:0.8;
+                          // Drafting = green (rgba(46,204,113,a))
+                          // Proofreading = purple (rgba(155,89,182,a)) — matches
+                          // the "in proofreading" purple used elsewhere in the
+                          // dashboard (Coral product chip, etc.).
+                          let bg;
+                          if(count===0)bg="rgba(255,255,255,0.03)";
+                          else if(proof===0)bg=`rgba(46,204,113,${alpha})`;
+                          else if(draft===0)bg=`rgba(155,89,182,${alpha})`;
+                          else{
+                            // Mixed cell: horizontal split, drafting on the left,
+                            // proofreading on the right, proportional to counts.
+                            const draftPct=Math.round((draft/count)*100);
+                            bg=`linear-gradient(to right, rgba(46,204,113,${alpha}) 0%, rgba(46,204,113,${alpha}) ${draftPct}%, rgba(155,89,182,${alpha}) ${draftPct}%, rgba(155,89,182,${alpha}) 100%)`;
+                          }
+                          const titleParts=[`${d.name} @ ${h}:00 — ${count} activit${count===1?"y":"ies"}`];
+                          if(proof>0)titleParts.push(`${draft} drafting · ${proof} proofreading`);
                           return(
-                            <td key={h} style={{padding:"6px 4px",borderBottom:`1px solid rgba(255,255,255,0.05)`,textAlign:"center",background:bg,borderRadius:3,transition:"background 0.2s"}} title={`${d.name} @ ${h}:00 — ${count} activities`}>
+                            <td key={h} style={{padding:"6px 4px",borderBottom:`1px solid rgba(255,255,255,0.05)`,textAlign:"center",background:bg,borderRadius:3,transition:"background 0.2s"}} title={titleParts.join(" — ")}>
                               {count>0?<span style={{color:C.white,fontWeight:600,fontSize:11}}>{count}</span>:<span style={{color:"rgba(255,255,255,0.1)"}}>&mdash;</span>}
                             </td>
                           );
