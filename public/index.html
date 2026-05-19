@@ -357,7 +357,10 @@
         const urgentStart=dateMarkedUrgent&&dateMarkedUrgent>=URGENT_CUTOVER?dateMarkedUrgent:draftingStart;
         // Consultant Query (stage 1223751330)
         const enteredConsultantQuery=parseHSDate(p.hs_v2_date_entered_1223751330);
-        // Exited Approved - Proof Reading (stage 1223620774)
+        // Approved - Proof Reading (stage 1223620774). Entered timestamp is
+        // the moment the proofreader signed off; used by the activity heatmap
+        // to credit the proof_reading__owner when they're also a drafter.
+        const enteredApproved=parseHSDate(p.hs_v2_date_entered_1223620774);
         const exitedApproved=parseHSDate(p.hs_v2_date_exited_1223620774);
         // Amendment fields
         const enteredAmendment=parseHSDate(p.hs_v2_date_entered_1338772492);
@@ -431,7 +434,7 @@
           enteredAppointmentOutcome,exitedAppointmentOutcome,
           origDraftsWithCustomer,origReadyForPrinting,origSentToCustomer,
           firstDWC,firstRFP,firstSentToCustomer,
-          enteredConsultantQuery,exitedApproved,
+          enteredConsultantQuery,enteredApproved,exitedApproved,
           enteredAmendment,exitedAmendment,amendmentSource,
           amendmentTurnaroundDays:enteredAmendment&&exitedAmendment?(exitedAmendment-enteredAmendment)/86400000:null,
           draftingTurnaroundDays:draftingStart&&exitedDrafting?(exitedDrafting-draftingStart)/86400000:null,
@@ -569,7 +572,7 @@
       chart5:'Drafts proofread (completed) and backlog per proofreader for the selected period. Completed: deals that exited "Required \u2014 Proof Reading" in the period. Backlog: deals that entered but have not yet exited by end of the period. Grouped by Proof Reading Owner.',
       chart6:'Bars: total standard drafts completed per period. Line: average turnaround in calendar days (first entry into "Drafting Instructions (Estate Planning)" \u2192 completion). Deals that completed before 12 Apr 2026: date exited "Drafting Instructions (Estate Planning)". Deals that complete from 12 Apr 2026 onwards: earliest of "Original Date Entered Drafts With Customer" or "Original Date Entered Ready For Printing". SLA: 10d internal, 28d customer.',
       chart7:'Query rate per drafter per period. Denominator: deals that exited "Required \u2014 Proof Reading" in the period, attributed to the drafter. Numerator (methodology split at 22/04/2026): before 22/04 \u2014 deals in the denominator with a drafting query reason populated. From 22/04 \u2014 deals whose workflow-stamped "Date Drafting Query" falls in the period. Rate capped at 100%. Green \u22645%, amber \u226410%, red >10%.',
-      chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour. Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
+      chart14:'Daily activity heatmap for drafters. Shows HubSpot engagements (notes, calls, emails, tasks) per hour, plus stage transitions (Drafts With Customer / Ready For Printing / Required Proof Reading / Consultant Query / Exited Approved) attributed to the deal\'s Drafting Owner. For drafters who also act as Proof Reading Owner (e.g. Neelam Ranchhod), two additional events are credited: entering "Approved Proof Reading" (sign-off) and entering "Drafting Query" after Required Proof Reading (sent back to drafter). Green intensity indicates activity level. Data covers the last 7 days. Use arrow buttons or date picker to navigate.',
       chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
       chart16:'Total amendments completed per drafter in the selected period, with each bar split by Amendment Type. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner and stacked by amendment_source. Amendments with no source set show in grey as "Not specified".',
@@ -2071,31 +2074,57 @@
           {key:"exitedApproved",label:"\u2192 Exited Approved"},
         ];
 
+        // Helper — push a stage event into grid + activities for a given owner.
+        const pushStageEvent=(oid,ts,deal,label)=>{
+          const dt=new Date(ts);
+          const dateStr=dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
+          if(dateStr!==selDate)return;
+          const hour=dt.getHours();
+          if(!grid[oid])grid[oid]={};
+          grid[oid][hour]=(grid[oid][hour]||0)+1;
+          if(!activitiesByOwner[oid])activitiesByOwner[oid]=[];
+          activitiesByOwner[oid].push({
+            id:deal.id,
+            ownerId:oid,
+            timestamp:dt.getTime(),
+            type:"Stage Move",
+            dealIds:[deal.id],
+            _stageLabel:label,
+            _dealName:deal.dealname
+          });
+        };
+
         (allDeals||[]).forEach(deal=>{
           const drafterLower=(deal.drafterName||"").trim().toLowerCase();
           const oid=nameToOwnerId[drafterLower];
-          if(!oid)return;
 
-          stageEvents.forEach(ev=>{
-            const ts=deal[ev.key];
-            if(!ts)return;
-            const dt=new Date(ts);
-            const dateStr=dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
-            if(dateStr!==selDate)return;
-            const hour=dt.getHours();
-            if(!grid[oid])grid[oid]={};
-            grid[oid][hour]=(grid[oid][hour]||0)+1;
-            if(!activitiesByOwner[oid])activitiesByOwner[oid]=[];
-            activitiesByOwner[oid].push({
-              id:deal.id,
-              ownerId:oid,
-              timestamp:dt.getTime(),
-              type:"Stage Move",
-              dealIds:[deal.id],
-              _stageLabel:ev.label,
-              _dealName:deal.dealname
+          // Drafter-attributed stage moves (existing behaviour).
+          if(oid){
+            stageEvents.forEach(ev=>{
+              const ts=deal[ev.key];
+              if(!ts)return;
+              pushStageEvent(oid,ts,deal,ev.label);
             });
-          });
+          }
+
+          // Proofreader-attributed stage moves: when the deal's
+          // proof_reading__owner is ALSO a known drafter (e.g. Neelam who
+          // does both roles), credit them for the proofreader's decisions.
+          //   - Entered "Approved - Proof Reading" → proofer signed off
+          //   - Entered "Drafting Query" when that entry is AFTER entering RP
+          //     → proofer queried the drafter (vs. drafter querying customer)
+          // Only fire when the proofer's owner ID is in drafterOwnerIds, so
+          // pure proofreaders aren't injected as heatmap rows.
+          const prooferLower=(deal.prooferName||"").trim().toLowerCase();
+          const proofOid=nameToOwnerId[prooferLower];
+          if(proofOid){
+            if(deal.enteredApproved){
+              pushStageEvent(proofOid,deal.enteredApproved,deal,"→ Approved Proof Reading");
+            }
+            if(deal.enteredDraftingQuery&&deal.enteredProofreading&&deal.enteredDraftingQuery>=deal.enteredProofreading){
+              pushStageEvent(proofOid,deal.enteredDraftingQuery,deal,"→ Drafting Query (Proofer)");
+            }
+          }
         });
 
         // Build drafter list — only known drafters

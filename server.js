@@ -33,7 +33,7 @@ const PROPERTIES = [
   "hs_v2_date_entered_1223620773", "hs_v2_date_exited_1223620773",
   "hs_v2_date_entered_1223620772",
   "hs_v2_date_entered_1223620778",
-  "hs_v2_date_exited_1223620774",
+  "hs_v2_date_entered_1223620774", "hs_v2_date_exited_1223620774",
   "hs_priority", "urgent_request_reason",
   "drafting_owner", "proof_reading__owner",
   "pipeline", "dealstage", "dealname",
