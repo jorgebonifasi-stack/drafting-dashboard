@@ -1491,7 +1491,7 @@
       );
     }
 
-    function SettingsPanel({open,onClose,standardTarget,setStandardTarget,overrides,setOverrides,drafterNames,proofTarget,setProofTarget,proofOverrides,setProofOverrides,prooferNames,saveStatus,saveError}){
+    function SettingsPanel({open,onClose,standardTarget,setStandardTarget,overrides,setOverrides,drafterNames,proofTarget,setProofTarget,proofOverrides,setProofOverrides,prooferNames,saveStatus,saveError,onSave}){
       const[newName,setNewName]=useState("");
       const[newProofName,setNewProofName]=useState("");
       if(!open)return null;
@@ -1563,7 +1563,13 @@
               <button onClick={()=>{if(newProofName.trim()){setProofOverrides(prev=>({...prev,[newProofName.trim()]:proofTarget}));setNewProofName("");}}} style={{...S.btn,fontSize:12}}>Add</button>
             </div>
 
-            <p style={{fontSize:11,color:C.text,opacity:0.5,marginTop:20}}>{"\u2605"} = custom override. Changes auto-save to the shared Google Sheet.</p>
+            <p style={{fontSize:11,color:C.text,opacity:0.5,marginTop:20,marginBottom:14}}>{"\u2605"} = custom override. Edits stay local until you click <strong>Save</strong> \u2014 the dashboard no longer auto-writes the Google Sheet, so manual sheet edits won't be silently overwritten.</p>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:10,paddingTop:12,borderTop:`1px solid ${C.border}`,marginTop:8}}>
+              <button onClick={onClose} style={{...S.btn,padding:"8px 16px"}} disabled={saveStatus==="saving"}>Close</button>
+              <button onClick={onSave} disabled={saveStatus==="saving"} style={{...S.btn,padding:"8px 18px",background:C.accent,color:C.white,border:`1px solid ${C.accent}`,fontWeight:700,opacity:saveStatus==="saving"?0.6:1}}>
+                {saveStatus==="saving"?"Saving\u2026":"Save changes"}
+              </button>
+            </div>
           </div>
         </React.Fragment>
       );
@@ -3167,7 +3173,6 @@
       const[targetsLoaded,setTargetsLoaded]=useState(false);
       const[saveStatus,setSaveStatus]=useState("idle"); // idle | saving | saved | error
       const[saveError,setSaveError]=useState(null);
-      const saveTimerRef=useRef(null);
 
       // Check auth status on mount
       useEffect(()=>{
@@ -3191,29 +3196,45 @@
          .finally(()=>setTargetsLoaded(true));
       },[]);
 
-      // Debounced save whenever targets change (after initial load)
+      // Explicit-save model: the user has to click "Save" in the Settings
+      // panel to push to the Google Sheet. No auto-save means the dashboard
+      // won't silently overwrite manual sheet edits. See saveTargets below.
+      const saveTargets=useCallback(()=>{
+        setSaveStatus("saving");setSaveError(null);
+        return fetch("/api/targets",{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            drafting:{default:standardTarget,overrides},
+            proofreading:{default:proofTarget,overrides:proofOverrides}
+          })
+        }).then(async r=>{
+          if(!r.ok){const e=await r.json().catch(()=>({error:r.statusText}));throw new Error(e.error||"Save failed");}
+          setSaveStatus("saved");
+          setTimeout(()=>setSaveStatus(prev=>prev==="saved"?"idle":prev),2000);
+        }).catch(err=>{
+          setSaveStatus("error");setSaveError(err.message||String(err));
+        });
+      },[standardTarget,overrides,proofTarget,proofOverrides]);
+
+      // Refetch targets from the sheet whenever Settings opens so the panel
+      // always reflects the latest values (other admins / manual sheet edits
+      // are picked up automatically). Discards any in-progress unsaved edits
+      // when reopening — fine for now since saves are explicit.
       useEffect(()=>{
-        if(!targetsLoaded)return;
-        if(saveTimerRef.current)clearTimeout(saveTimerRef.current);
-        saveTimerRef.current=setTimeout(()=>{
-          setSaveStatus("saving");setSaveError(null);
-          fetch("/api/targets",{
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({
-              drafting:{default:standardTarget,overrides},
-              proofreading:{default:proofTarget,overrides:proofOverrides}
-            })
-          }).then(async r=>{
-            if(!r.ok){const e=await r.json().catch(()=>({error:r.statusText}));throw new Error(e.error||"Save failed");}
-            setSaveStatus("saved");
-            setTimeout(()=>setSaveStatus(prev=>prev==="saved"?"idle":prev),2000);
-          }).catch(err=>{
-            setSaveStatus("error");setSaveError(err.message||String(err));
-          });
-        },800);
-        return()=>{if(saveTimerRef.current)clearTimeout(saveTimerRef.current);};
-      },[standardTarget,overrides,proofTarget,proofOverrides,targetsLoaded]);
+        if(!settingsOpen)return;
+        fetch("/api/targets").then(r=>r.json()).then(d=>{
+          if(d&&d.drafting){
+            if(Number.isFinite(d.drafting.default))setStandardTarget(d.drafting.default);
+            if(d.drafting.overrides)setOverrides(d.drafting.overrides);
+          }
+          if(d&&d.proofreading){
+            if(Number.isFinite(d.proofreading.default))setProofTarget(d.proofreading.default);
+            if(d.proofreading.overrides)setProofOverrides(d.proofreading.overrides);
+          }
+          setSaveStatus("idle");setSaveError(null);
+        }).catch(e=>console.error("Failed to reload targets on Settings open:",e));
+      },[settingsOpen]);
 
       // ── load data via server (serves from cache, or fetches fresh) ──
       const loadData=useCallback(async(force)=>{
@@ -3905,7 +3926,7 @@
             overrides={overrides} setOverrides={setOverrides} drafterNames={drafterNames}
             proofTarget={proofTarget} setProofTarget={setProofTarget}
             proofOverrides={proofOverrides} setProofOverrides={setProofOverrides} prooferNames={prooferNames}
-            saveStatus={saveStatus} saveError={saveError}/>
+            saveStatus={saveStatus} saveError={saveError} onSave={saveTargets}/>
         </div>
       );
     }
