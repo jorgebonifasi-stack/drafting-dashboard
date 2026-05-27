@@ -51,6 +51,29 @@
       accent:"#3498DB", border:"#333",
     };
 
+    // ─── Week scheme ────────────────────────────────────────────
+    // Weeks are Monday-Sunday (ISO) up to the cutover, then Saturday-Friday
+    // from the cutover onward. The Sat-Fri scheme keeps weekend drafting
+    // together with the following Mon-Fri proofreading in one reporting week
+    // (the incentive plan rewards the drafting work, which often happens on a
+    // Saturday and is proofread the next Monday). Sat-Fri bucket keys are
+    // prefixed "SF-" + the week-commencing Saturday's date (e.g. SF-2026-05-30)
+    // so they're distinguishable from ISO keys (e.g. 2026-W21).
+    const SAT_WEEK_CUTOVER=new Date(2026,4,30,0,0,0,0); // Sat 30 May 2026, local midnight
+    // The Saturday that opens the Sat-Fri week containing date d (local).
+    function saturdayOfWeek(d){
+      const x=new Date(d.getFullYear(),d.getMonth(),d.getDate(),0,0,0,0);
+      const daysSinceSat=(x.getDay()+1)%7; // Sat→0, Sun→1, Mon→2 … Fri→6
+      x.setDate(x.getDate()-daysSinceSat);
+      return x;
+    }
+    function isSatWeekBucket(b){return typeof b==="string"&&b.indexOf("SF-")===0;}
+    // Parse an "SF-YYYY-MM-DD" bucket key into a local-midnight Saturday Date.
+    function satBucketToDate(b){
+      const parts=b.split("-"); // ["SF","2026","05","30"]
+      return new Date(parseInt(parts[1]),parseInt(parts[2])-1,parseInt(parts[3]),0,0,0,0);
+    }
+
     // ─── ISO-week helpers ───────────────────────────────────────
     function isoWeek(d){
       const date=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
@@ -75,7 +98,14 @@
     function dateToBucket(d,gran){
       if(!d)return null;
       if(gran==="DoD") return d.toISOString().slice(0,10);
-      if(gran==="WoW"){const w=isoWeek(d),y=isoWeekYear(d);return`${y}-W${String(w).padStart(2,"0")}`;}
+      if(gran==="WoW"){
+        // From the cutover onward, use Saturday-Friday weeks.
+        if(d.getTime()>=SAT_WEEK_CUTOVER.getTime()){
+          const sat=saturdayOfWeek(d);
+          return`SF-${sat.getFullYear()}-${String(sat.getMonth()+1).padStart(2,"0")}-${String(sat.getDate()).padStart(2,"0")}`;
+        }
+        const w=isoWeek(d),y=isoWeekYear(d);return`${y}-W${String(w).padStart(2,"0")}`;
+      }
       return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     }
     function bucketLabel(bucket,gran){
@@ -85,6 +115,11 @@
         return`${days[d.getDay()]} ${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
       }
       if(gran==="WoW"){
+        if(isSatWeekBucket(bucket)){
+          const sat=satBucketToDate(bucket);
+          const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          return`w/c Sat ${sat.getDate()} ${months[sat.getMonth()]}`;
+        }
         const[y,wStr]=bucket.split("-W");
         const mon=mondayOfISOWeek(parseInt(y),parseInt(wStr));
         return`W${wStr} (${String(mon.getUTCMonth()+1).padStart(2,"0")}/${String(mon.getUTCDate()).padStart(2,"0")})`;
@@ -96,6 +131,10 @@
     function bucketEndDate(bucket,gran){
       if(gran==="DoD")return new Date(bucket+"T23:59:59.999");
       if(gran==="WoW"){
+        if(isSatWeekBucket(bucket)){
+          const sat=satBucketToDate(bucket);
+          const fri=new Date(sat);fri.setDate(fri.getDate()+6);fri.setHours(23,59,59,999);return fri;
+        }
         const[y,wStr]=bucket.split("-W");
         const mon=mondayOfISOWeek(parseInt(y),parseInt(wStr));
         const sun=new Date(mon);sun.setUTCDate(sun.getUTCDate()+6);sun.setUTCHours(23,59,59,999);return sun;
@@ -107,6 +146,7 @@
     function bucketStartDate(bucket,gran){
       if(gran==="DoD")return new Date(bucket+"T00:00:00Z");
       if(gran==="WoW"){
+        if(isSatWeekBucket(bucket))return satBucketToDate(bucket);
         const[y,wStr]=bucket.split("-W");
         return mondayOfISOWeek(parseInt(y),parseInt(wStr));
       }
@@ -122,6 +162,11 @@
         return new Date(y,m-1,d,0,0,0,0);
       }
       if(gran==="WoW"){
+        if(isSatWeekBucket(bucket)){
+          const sat=satBucketToDate(bucket);
+          const fri=new Date(sat);fri.setDate(fri.getDate()+6); // Friday = last day
+          return new Date(fri.getFullYear(),fri.getMonth(),fri.getDate(),0,0,0,0);
+        }
         const[y,wStr]=bucket.split("-W");
         const mon=mondayOfISOWeek(parseInt(y),parseInt(wStr));
         const sun=new Date(mon);sun.setUTCDate(sun.getUTCDate()+6);
@@ -2353,7 +2398,7 @@
           if(!counts[b])counts[b]={bucket:b,label:bucketLabel(b,gran),breached:0,close:0,warning:0,comfortable:0};
           counts[b][getStatus(r)]++;
         });
-        return Object.values(counts).sort((a,b)=>a.bucket.localeCompare(b.bucket));
+        return Object.values(counts).sort((a,b)=>bucketStartDate(a.bucket,gran)-bucketStartDate(b.bucket,gran));
       },[rows,gran,getBucketDate,getStatus]);
 
       const handleChartClick=useCallback(e=>{
@@ -3043,7 +3088,7 @@
           if(!counts[b])counts[b]={bucket:b,label:bucketLabel(b,gran),count:0};
           counts[b].count++;
         });
-        return Object.values(counts).sort((a,b)=>a.bucket.localeCompare(b.bucket));
+        return Object.values(counts).sort((a,b)=>bucketStartDate(a.bucket,gran)-bucketStartDate(b.bucket,gran));
       },[chartRows,gran]);
 
       const handleChartClick=useCallback(e=>{
@@ -3279,7 +3324,10 @@
           if(d.exitedDrafting)set.add(dateToBucket(d.exitedDrafting,gran));
           if(d.exitedProofreading)set.add(dateToBucket(d.exitedProofreading,gran));
         });
-        return[...set].sort().reverse();
+        // Chronological sort (newest first). Plain string sort would break
+        // across the Mon-Sun → Sat-Fri scheme change (SF- keys vs 2026-W keys),
+        // so sort by the bucket's actual start date.
+        return[...set].sort((a,b)=>bucketStartDate(b,gran)-bucketStartDate(a,gran));
       },[deals,gran]);
 
       useEffect(()=>{
