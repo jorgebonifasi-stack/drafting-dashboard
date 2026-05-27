@@ -753,22 +753,6 @@
     // partial bucket and lands in the full bucket (potentially a later week).
     const RP_STAGE_ID="1223620773";
     const AP_STAGE_ID="1223620774";
-    // ── One-off incentive adjustment (W21, May 2026) ──────────────
-    // Drafters worked Sat 23 / Sun 24 May 2026 — those deals ENTERED Required
-    // Proof Reading that weekend but weren't proofread until the following
-    // week, so their completion (DWC) date fell into W22. The incentive
-    // rewards the drafting work (done in W21), so any deal that entered
-    // proofreading on that weekend is credited to W21. Keyed on
-    // enteredProofreading per the proofreading export. WoW view only.
-    // Remove this block once W21 reporting is closed.
-    const WEEKEND_PROOF_DAYS=new Set(["2026-05-23","2026-05-24"]);
-    const WEEKEND_TARGET_BUCKET="2026-W21";
-    function enteredProofOnIncentiveWeekend(d){
-      if(!d.enteredProofreading)return false;
-      const x=d.enteredProofreading;
-      const key=`${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;
-      return WEEKEND_PROOF_DAYS.has(key);
-    }
     function Chart1({deals,gran,bucket,standardTarget,overrides}){
       const data=useMemo(()=>{
         const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
@@ -776,22 +760,15 @@
         deals.forEach(d=>{
           const drafter=d.drafterName;
           if(!drafter||drafter==="Unknown"||/^\d+$/.test(drafter))return;
-          // W21 incentive override (WoW only): weekend proofreading-entry deals
-          // are pinned to W21 for both segments.
-          const wkndW21=(gran==="WoW")&&enteredProofOnIncentiveWeekend(d);
-          // FULL segment: completed deals, bucketed by DWC date (or W21 override).
-          if(d.exitedDrafting){
-            const b=wkndW21?WEEKEND_TARGET_BUCKET:dateToBucket(d.exitedDrafting,gran);
-            if(b===bucket){
-              (counts[drafter]=counts[drafter]||{full:0,partial:0}).full++;
-              return;
-            }
+          // FULL segment: existing behaviour, bucketed by exitedDrafting (DWC).
+          if(d.exitedDrafting&&dateToBucket(d.exitedDrafting,gran)===bucket){
+            (counts[drafter]=counts[drafter]||{full:0,partial:0}).full++;
+            return;
           }
           // PARTIAL segment: deal is currently in RP or AP. Bucket by the
-          // date the drafter exited DI (or W21 override).
+          // date the drafter exited DI (their hand-off moment).
           if((d.dealstage===RP_STAGE_ID||d.dealstage===AP_STAGE_ID)&&d.nativeExitedDrafting){
-            const b=wkndW21?WEEKEND_TARGET_BUCKET:dateToBucket(d.nativeExitedDrafting,gran);
-            if(b===bucket){
+            if(dateToBucket(d.nativeExitedDrafting,gran)===bucket){
               (counts[drafter]=counts[drafter]||{full:0,partial:0}).partial++;
             }
           }
@@ -3359,18 +3336,12 @@
         const groups={}; // drafter → { full: [...], partial: [...] }
         deals.forEach(d=>{
           if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
-          // Mirror Chart1's W21 incentive override.
-          const wkndW21=(gran==="WoW")&&enteredProofOnIncentiveWeekend(d);
-          if(d.exitedDrafting){
-            const b=wkndW21?WEEKEND_TARGET_BUCKET:dateToBucket(d.exitedDrafting,gran);
-            if(b===selectedBucket){
-              (groups[d.drafterName]=groups[d.drafterName]||{full:[],partial:[]}).full.push(d);
-              return;
-            }
+          if(d.exitedDrafting&&dateToBucket(d.exitedDrafting,gran)===selectedBucket){
+            (groups[d.drafterName]=groups[d.drafterName]||{full:[],partial:[]}).full.push(d);
+            return;
           }
           if((d.dealstage===RP_STAGE_ID||d.dealstage===AP_STAGE_ID)&&d.nativeExitedDrafting){
-            const b=wkndW21?WEEKEND_TARGET_BUCKET:dateToBucket(d.nativeExitedDrafting,gran);
-            if(b===selectedBucket){
+            if(dateToBucket(d.nativeExitedDrafting,gran)===selectedBucket){
               (groups[d.drafterName]=groups[d.drafterName]||{full:[],partial:[]}).partial.push(d);
             }
           }
