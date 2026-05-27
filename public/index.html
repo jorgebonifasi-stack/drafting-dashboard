@@ -753,28 +753,6 @@
     // partial bucket and lands in the full bucket (potentially a later week).
     const RP_STAGE_ID="1223620773";
     const AP_STAGE_ID="1223620774";
-    // ── One-off incentive adjustment (W21, May 2026) ──────────────
-    // Drafters worked Sat 23 / Sun 24 May 2026 but those drafts weren't
-    // proofread until the following week, so their DWC date (and thus their
-    // "completed" bucket) fell into W22. Since the incentive rewards the
-    // drafting work — done in W21 — we credit any deal whose drafter exited
-    // Drafting Instructions on that weekend to W21 instead. Scoped to the
-    // WoW view only. Remove this block once W21 reporting is closed out.
-    const WEEKEND_DRAFT_DAYS=new Set(["2026-05-23","2026-05-24"]);
-    const WEEKEND_TARGET_BUCKET="2026-W21";
-    function weekendDraftBucketOverride(d,gran){
-      if(gran!=="WoW"||!d.nativeExitedDrafting)return null;
-      const x=d.nativeExitedDrafting;
-      const key=`${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;
-      return WEEKEND_DRAFT_DAYS.has(key)?WEEKEND_TARGET_BUCKET:null;
-    }
-    // The bucket a deal's COMPLETED credit belongs to — normally its DWC
-    // bucket, but overridden to W21 for the weekend-drafted incentive deals.
-    function completionBucket(d,gran){
-      const ov=weekendDraftBucketOverride(d,gran);
-      if(ov)return ov;
-      return d.exitedDrafting?dateToBucket(d.exitedDrafting,gran):null;
-    }
     function Chart1({deals,gran,bucket,standardTarget,overrides}){
       const data=useMemo(()=>{
         const mult=gran==="DoD"?1/5:gran==="MoM"?4.33:1;
@@ -782,9 +760,8 @@
         deals.forEach(d=>{
           const drafter=d.drafterName;
           if(!drafter||drafter==="Unknown"||/^\d+$/.test(drafter))return;
-          // FULL segment: completed deals, bucketed by DWC date — except the
-          // weekend-drafted incentive deals, which completionBucket() pins to W21.
-          if(d.exitedDrafting&&completionBucket(d,gran)===bucket){
+          // FULL segment: existing behaviour, bucketed by exitedDrafting (DWC).
+          if(d.exitedDrafting&&dateToBucket(d.exitedDrafting,gran)===bucket){
             (counts[drafter]=counts[drafter]||{full:0,partial:0}).full++;
             return;
           }
@@ -3359,9 +3336,7 @@
         const groups={}; // drafter → { full: [...], partial: [...] }
         deals.forEach(d=>{
           if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;
-          // Completed deals use completionBucket (weekend-drafted incentive
-          // deals pinned to W21); matches Chart1's bucketing exactly.
-          if(d.exitedDrafting&&completionBucket(d,gran)===selectedBucket){
+          if(d.exitedDrafting&&dateToBucket(d.exitedDrafting,gran)===selectedBucket){
             (groups[d.drafterName]=groups[d.drafterName]||{full:[],partial:[]}).full.push(d);
             return;
           }
