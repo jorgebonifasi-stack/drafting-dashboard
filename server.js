@@ -368,16 +368,27 @@ async function fetchAllDeals() {
     ]}]}
   ];
 
-  const [deals1, deals2, deals3] = await Promise.all([
+  // Batch 4: any deal in the Estate Planning pipeline, regardless of stage.
+  // Catches post-completion stages (Will Verified, Beacon Contacted, Closed
+  // Won, LPA with OPG, etc.) that the Macmillan follow-up queue needs but
+  // we haven't enumerated in batch3. Pipeline ID 56009273 = Estate Planning.
+  // Future-proof: if new stages get added to the pipeline, they're picked up
+  // automatically.
+  const batch4 = [
+    { filters: [{ propertyName: "pipeline", operator: "EQ", value: "56009273" }] }
+  ];
+
+  const [deals1, deals2, deals3, deals4] = await Promise.all([
     fetchDealsWithFilters(batch1),
     fetchDealsWithFilters(batch2),
-    fetchDealsWithFilters(batch3)
+    fetchDealsWithFilters(batch3),
+    fetchDealsWithFilters(batch4)
   ]);
 
   // Deduplicate by deal ID
   const seen = new Set();
   const merged = [];
-  [...deals1, ...deals2, ...deals3].forEach(d => {
+  [...deals1, ...deals2, ...deals3, ...deals4].forEach(d => {
     if (!seen.has(d.id)) {
       seen.add(d.id);
       merged.push(d);
