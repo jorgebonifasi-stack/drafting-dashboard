@@ -350,6 +350,9 @@ async function fetchDealsWithFilters(filterGroups) {
 async function fetchAllDeals() {
   // Batch 1: pipeline stage filters (max 5) — catches deals that have ever
   // entered specific stages (workflow-stamped via hs_v2_date_entered_*).
+  // Note: these timestamps survive cross-pipeline moves, so batch1/2 catch
+  // deals that no longer live in the EP pipeline but historically passed
+  // through these stages. Without them, audits of moved deals would miss.
   const batch1 = [
     { filters: [{ propertyName: "hs_v2_date_entered_1223620771", operator: "HAS_PROPERTY" }] },
     { filters: [{ propertyName: "hs_v2_date_entered_1223620773", operator: "HAS_PROPERTY" }] },
@@ -363,45 +366,47 @@ async function fetchAllDeals() {
     { filters: [{ propertyName: "hs_v2_date_entered_1223751329", operator: "HAS_PROPERTY" }] }
   ];
 
-  // Batch 3: deals CURRENTLY in any EP-pipeline working stage, by dealstage.
-  // Catches edge cases where the v2 entered timestamps never got stamped
-  // (bulk import, manual stage jumps, etc.) but the deal is sitting in a
-  // stage we care about — e.g. Macmillan deals that landed straight in
-  // Sent To Customer without their proofreading transitions logged.
-  const batch3 = [
-    { filters: [{ propertyName: "dealstage", operator: "IN", values: [
-      "1223620771", "1223620772", "1223620773", "1223620774",
-      "1223620775", "1223620776", "1223620777", "1223620778",
-      "1223751329", "1223751330", "1338772492"
-    ]}]}
-  ];
+  // (Former batch3 — dealstage IN [EP stage IDs] — was removed because it
+  // is a strict subset of batch4: every deal with one of those dealstage
+  // IDs is by definition in the EP pipeline (56009273), which batch4 already
+  // catches. Eliminating it cut one full paginated HubSpot fetch per refresh
+  // and reduced peak concurrent search-API calls.)
 
   // Batch 4: any deal in the Estate Planning pipeline, regardless of stage.
   // Catches post-completion stages (Will Verified, Beacon Contacted, Closed
-  // Won, LPA with OPG, etc.) that the Macmillan follow-up queue needs but
-  // we haven't enumerated in batch3. Pipeline ID 56009273 = Estate Planning.
-  // Future-proof: if new stages get added to the pipeline, they're picked up
-  // automatically.
+  // Won, LPA with OPG, etc.) that the Macmillan follow-up queue and audit
+  // need. Pipeline ID 56009273 = Estate Planning. Future-proof: new stages
+  // added to the pipeline are picked up automatically.
   const batch4 = [
     { filters: [{ propertyName: "pipeline", operator: "EQ", value: "56009273" }] }
   ];
 
-  const [deals1, deals2, deals3, deals4] = await Promise.all([
-    fetchDealsWithFilters(batch1),
-    fetchDealsWithFilters(batch2),
-    fetchDealsWithFilters(batch3),
-    fetchDealsWithFilters(batch4)
-  ]);
+  // Sequential, not parallel. HubSpot's CRM search API is rate-limited to
+  // 4 req/sec. Running 3 batches in parallel — each paginating up to 100
+  // pages — could fire ~12+ concurrent requests, triggering 429s. When two
+  // cache-miss fetches overlapped (e.g. background refresh + a user click)
+  // this doubled to ~24 concurrent requests and reliably 429'd, leaving the
+  // dashboard unusable until cache eventually populated. Serialising the
+  // batches gives a single in-flight paginated stream at any time, well
+  // under the limit. Slower per refresh (~30-45s vs ~10s) but the in-flight
+  // lock on fetchFreshData means callers share the same fetch anyway.
+  const deals1 = await fetchDealsWithFilters(batch1);
+  const deals2 = await fetchDealsWithFilters(batch2);
+  const deals4 = await fetchDealsWithFilters(batch4);
 
-  // Deduplicate by deal ID
+  // Stream-merge into the seen Set — no spread, no temporary concat array
+  // (previously briefly held 2x the data while merging).
   const seen = new Set();
   const merged = [];
-  [...deals1, ...deals2, ...deals3, ...deals4].forEach(d => {
+  const addUnique = (arr) => arr.forEach(d => {
     if (!seen.has(d.id)) {
       seen.add(d.id);
       merged.push(d);
     }
   });
+  addUnique(deals1);
+  addUnique(deals2);
+  addUnique(deals4);
 
   return merged;
 }
@@ -505,6 +510,27 @@ async function fetchDealStageLabels() {
 // properties to request per-deal.
 let DO_NOT_USE_STAGE_IDS = [];
 
+// Pipeline / stage label discovery is expensive (~1-2 HubSpot calls plus
+// label resolution) and the data rarely changes — stages get added /
+// renamed at most a few times a year. Cache for 24h so we don't repeat
+// it on every cold fetch. Previously this ran on every fetchFreshData
+// invocation, which was visible as the repeated `[Pipelines] Discovered
+// 5 DO NOT USE stage(s)` log line on every cache miss.
+let _stageLabelsCache = null;
+let _stageLabelsCachedAt = 0;
+const STAGE_LABELS_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function getCachedStageLabels() {
+  const now = Date.now();
+  if (_stageLabelsCache && (now - _stageLabelsCachedAt) < STAGE_LABELS_TTL_MS) {
+    return _stageLabelsCache;
+  }
+  const data = await fetchDealStageLabels().catch(() => ({ labels: {}, doNotUseStageIds: [] }));
+  _stageLabelsCache = data;
+  _stageLabelsCachedAt = now;
+  return data;
+}
+
 // Resolve owner IDs that don't appear in the list endpoints (active or
 // archived). Fully-removed HubSpot users sometimes drop out of both lists
 // but can still be fetched individually with archived=true. Updates the
@@ -548,14 +574,44 @@ async function resolveMissingOwners(deals, ownerMap) {
 }
 
 // ─── Fetch all fresh data ──────────────────────────────────────
+// In-flight lock: if a fetch is already running, every subsequent caller
+// joins the same Promise instead of starting their own. Previously, three
+// concurrent /api/deals requests during a cache-miss window (background
+// refresh + user load + retry) could spawn three full parallel fetches,
+// each firing 12+ HubSpot search-API calls simultaneously and tripping
+// the 4 req/sec rate limit. The 429 retry backoff then kept failing
+// fetches resident in memory for 40+ seconds, compounding pressure and
+// (we believe) triggering the Render OOM.
+//
+// With the lock, even a thundering herd of cache-miss callers produces
+// exactly one in-flight fetch. They all await the same result.
+let _fetchInFlight = null;
+
 async function fetchFreshData() {
+  if (_fetchInFlight) {
+    console.log(`[${new Date().toISOString()}] Fetch already in flight — joining existing promise`);
+    return _fetchInFlight;
+  }
+  _fetchInFlight = (async () => {
+    try {
+      return await _fetchFreshDataImpl();
+    } finally {
+      _fetchInFlight = null;
+    }
+  })();
+  return _fetchInFlight;
+}
+
+async function _fetchFreshDataImpl() {
   // Pipelines first — we need the DO NOT USE stage IDs to know which extra
   // per-deal properties to request. This is also what powers the audit's
   // "skip deals that have ever been in a DO NOT USE stage" filter.
-  const stageData = await fetchDealStageLabels().catch(() => ({ labels: {}, doNotUseStageIds: [] }));
+  // Cached for 24h (see STAGE_LABELS_TTL_MS); pipeline structure rarely
+  // changes and there's no value in re-fetching it on every cold deal pull.
+  const stageData = await getCachedStageLabels();
   DO_NOT_USE_STAGE_IDS = stageData.doNotUseStageIds || [];
   if (DO_NOT_USE_STAGE_IDS.length) {
-    console.log(`[Pipelines] Discovered ${DO_NOT_USE_STAGE_IDS.length} DO NOT USE stage(s) — will check history per deal`);
+    console.log(`[Pipelines] ${DO_NOT_USE_STAGE_IDS.length} DO NOT USE stage(s) loaded — will check history per deal`);
   }
 
   const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, slaBreachReasonOptions, regionOptions, macmillanFollowUpOptions] =
