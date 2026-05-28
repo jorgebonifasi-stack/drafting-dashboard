@@ -3160,8 +3160,9 @@
 
     // ─── Legacy Advisor — Macmillan Follow-Up Queue ────────────
     // Cohort: deals with Date of Appointment in the calendar month 6 months
-    // back from today (e.g. in June → all DoA Dec 1–31), region = "England
-    // & Wales", priority NOT High, and the follow-up outcome property
+    // back from today (e.g. in June → all DoA Dec 1–31), region IS NOT
+    // "Scotland" (Scotland is excluded; everything else qualifies including
+    // empty/null), priority NOT High, and the follow-up outcome property
     // (confirmed_will_has_been_signed__macmillan__v2) still empty. Once a
     // deal gets Yes / No / Called 3 times, it drops off the queue.
     //
@@ -3187,7 +3188,7 @@
         deals.forEach(d=>{
           // Cohort filters
           if(!d.leadSources||!d.leadSources.includes("Macmillan"))return;
-          if((d.region||"").trim()!=="England & Wales")return;
+          if((d.region||"").trim()==="Scotland")return;
           if(d.isUrgent)return; // Priority not High
           if((d.macmillanFollowUpOutcome||"").trim()!=="")return; // pending only
           if(!d.dateOfAppointment)return;
@@ -3269,7 +3270,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan Follow-Up Queue — {cohortWindow.monthLabel} appointments</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Deals with Date of Appointment in the calendar month 6 months back, region = "England & Wales", priority not High, and the follow-up outcome ("Confirmed will has been signed (Macmillan) v2") still unset. SLA = call within 6 months of appointment.
+                  Deals with Date of Appointment in the calendar month 6 months back, region is not "Scotland", priority not High, and the follow-up outcome ("Confirmed will has been signed (Macmillan) v2") still unset. SLA = call within 6 months of appointment.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
