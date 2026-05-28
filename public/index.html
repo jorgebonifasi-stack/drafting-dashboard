@@ -3174,12 +3174,16 @@
     }
 
     // ─── Legacy Advisor — Macmillan Follow-Up Queue ────────────
-    // Cohort: deals with Date of Appointment in the calendar month 6 months
-    // back from today (e.g. in June → all DoA Dec 1–31), region IS NOT
-    // "Scotland" (only Scotland excluded; blank/null and any other region
-    // qualify), priority NOT High, the deal has been through Drafts With
-    // Customer OR Ready For Printing (i.e. a draft actually exists), and the
-    // follow-up is still unresolved.
+    // Cohort: deals with Date of Appointment from the start of the calendar
+    // month 6 months back from today, onwards — rolling forward by one month
+    // every month (today 28 May 2026 → DoA >= 01 Nov 2025; on 1 Jun 2026 →
+    // DoA >= 01 Dec 2025). No upper bound on DoA: more recent appointments
+    // simply show as "comfortable" with more days remaining on the SLA.
+    //
+    // Additional filters: region IS NOT "Scotland" (only Scotland excluded;
+    // blank/null and any other region qualify), priority NOT High, the deal
+    // has been through Drafts With Customer OR Ready For Printing (i.e. a
+    // draft actually exists), and the follow-up is still unresolved.
     //
     // The stage-history filter (DWC / RFP) replaces the earlier hard-coded
     // Closed Lost exclusion. If a deal never reached drafting, there's no
@@ -3201,15 +3205,17 @@
     //   breached < 0  |  close ≤ 7  |  warning ≤ 21  |  comfortable > 21
     function MacmillanFollowUpTable({deals,stageLabels}){
       const[advisorFilter,setAdvisorFilter]=useState("__all__");
-      // Calendar month 6 months back from today, computed at component mount.
-      // (Today 28 May 2026 → cohort = 01 Nov 2025 to 30 Nov 2025; once we
-      // cross 1 June the cohort rolls to December.)
+      // Cohort start: first day of the calendar month 6 months back from
+      // today. Computed at component mount. Open-ended on the recent side —
+      // any appointment from this date onwards is in scope; deals with
+      // earlier appointments (>6 months past) are dropped from the queue.
+      // (Today 28 May 2026 → start = 01 Nov 2025; on 1 Jun 2026 → 01 Dec
+      // 2025, automatically rolling forward by one month.)
       const cohortWindow=useMemo(()=>{
         const today=new Date();
         const start=new Date(today.getFullYear(),today.getMonth()-6,1,0,0,0,0);
-        const end=new Date(today.getFullYear(),today.getMonth()-5,1,0,0,0,0); // exclusive
         const monthLabel=start.toLocaleDateString("en-GB",{month:"long",year:"numeric"});
-        return{start,end,monthLabel};
+        return{start,monthLabel};
       },[]);
 
       const allRows=useMemo(()=>{
@@ -3239,7 +3245,11 @@
           if(!d.firstDWC&&!d.firstRFP)return;
           if(!d.dateOfAppointment)return;
           const doa=new Date(d.dateOfAppointment);
-          if(doa<cohortWindow.start||doa>=cohortWindow.end)return;
+          // Open-ended on the recent side: any appointment from the cohort
+          // start onwards is in scope (more recent = more days remaining,
+          // which is fine). Only drop deals with appointments older than the
+          // 6-month-back floor.
+          if(doa<cohortWindow.start)return;
 
           // SLA: deadline = DoA + 6 calendar months (local time).
           const deadline=new Date(doa.getFullYear(),doa.getMonth()+6,doa.getDate(),0,0,0,0);
@@ -3350,9 +3360,9 @@
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`,marginBottom:16}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:14}}>
               <div>
-                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan Follow-Up Queue — {cohortWindow.monthLabel} appointments</div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan Follow-Up Queue — appointments from {cohortWindow.monthLabel} onwards</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Deals with Date of Appointment in the calendar month 6 months back, region is not "Scotland" (blank/null region also qualifies), priority not High, the deal has been through Drafts With Customer or Ready For Printing (so a draft exists), and none of the three "Macmillan Call N" properties marked "Yes". SLA = up to 3 call attempts within 6 months of appointment.
+                  Deals with Date of Appointment from {cohortWindow.monthLabel} onwards (rolling: 6 months back, no upper bound), region is not "Scotland" (blank/null region also qualifies), priority not High, the deal has been through Drafts With Customer or Ready For Printing (so a draft exists), and none of the three "Macmillan Call N" properties marked "Yes". SLA = up to 3 call attempts within 6 months of appointment.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -3379,7 +3389,7 @@
 
           <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
             {rows.length===0?(
-              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No pending Macmillan follow-ups for "+cohortWindow.monthLabel+" appointments.":"No deals match the active filters."}</div>
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No pending Macmillan follow-ups for appointments from "+cohortWindow.monthLabel+" onwards.":"No deals match the active filters."}</div>
             ):(
               <div style={{overflowX:"auto"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
