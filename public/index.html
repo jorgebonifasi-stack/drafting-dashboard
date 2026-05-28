@@ -423,6 +423,21 @@
         const region=rawRegion?((regionOptions||{})[rawRegion]||rawRegion):"";
         const rawMacFollowUp=(p.confirmed_will_has_been_signed__macmillan__v2||"").trim();
         const macmillanFollowUpOutcome=rawMacFollowUp?((macmillanFollowUpOptions||{})[rawMacFollowUp]||rawMacFollowUp):"";
+        // New 3-call SLA tracking. Each property is a Yes / No dropdown:
+        //   Yes   = call made, will-signing confirmed (or deal otherwise resolved)
+        //   No    = call attempted, no confirmation yet (no answer, voicemail, etc.)
+        //   blank = not yet attempted
+        // Normalize to lower-case "yes" / "no" / "" so downstream code can do
+        // simple equality checks without worrying about casing variants from HubSpot.
+        const normalizeYesNo=(v)=>{
+          const s=(v||"").toString().trim().toLowerCase();
+          if(s==="yes"||s==="true")return"yes";
+          if(s==="no"||s==="false")return"no";
+          return"";
+        };
+        const macmillanCall1=normalizeYesNo(p.macmillan_call_1);
+        const macmillanCall2=normalizeYesNo(p.macmillan_call_2);
+        const macmillanCall3=normalizeYesNo(p.macmillan_call_3);
         const dateOfAppointment=parseHSDate(p.date_of_appointment);
         // Workflow-stamped date: when drafting_query_reason was first populated (from 22/04/2026)
         const firstQueryDate=parseHSDate(p.date_drafting_query);
@@ -438,7 +453,7 @@
           wasInDoNotUse,
           leadSources,leadSourceTier3,leadSourceTier3List,products,hasWillProduct,hasLpaProduct,
           slaBreachReason,slaBreachReasons,
-          region,macmillanFollowUpOutcome,
+          region,macmillanFollowUpOutcome,macmillanCall1,macmillanCall2,macmillanCall3,
           dateOfAppointment,firstQueryDate,waiverSigned14d,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
@@ -3162,9 +3177,15 @@
     // Cohort: deals with Date of Appointment in the calendar month 6 months
     // back from today (e.g. in June → all DoA Dec 1–31), region IS NOT
     // "Scotland" (only Scotland excluded; blank/null and any other region
-    // qualify), priority NOT High, and the follow-up outcome property
-    // (confirmed_will_has_been_signed__macmillan__v2) still empty. Once a
-    // deal gets Yes / No / Called 3 times, it drops off the queue.
+    // qualify), priority NOT High, and the follow-up still unresolved.
+    //
+    // "Unresolved" means none of the three Macmillan Call N properties are
+    // set to "Yes" AND the legacy v2 outcome field is empty. (The legacy
+    // field is kept during transition so deals already marked there don't
+    // re-appear in the queue.) Once any of the three new calls flips to
+    // "Yes", the deal drops off the queue (SLA satisfied). Three "No"s
+    // means 3-attempt SLA exhausted — escalate, but the deal stays in the
+    // queue with an "Exhausted" flag until someone records a final outcome.
     //
     // SLA: 6 calendar months from DoA. Status thresholds use calendar days
     // remaining to the deadline (DoA + 6 months):
@@ -3196,7 +3217,16 @@
           // Exclude Scotland only; blank/null region is fine and stays in.
           if((d.region||"").trim()==="Scotland")return;
           if(d.isUrgent)return; // Priority not High
-          if((d.macmillanFollowUpOutcome||"").trim()!=="")return; // pending only
+          // Legacy field still used during transition — if it's set in the old
+          // v2 property, the deal was already resolved before we split into
+          // three call fields.
+          if((d.macmillanFollowUpOutcome||"").trim()!=="")return;
+          // New 3-call schema: drop deal from queue as soon as any call is
+          // marked "Yes" (will-signing confirmed / deal otherwise resolved).
+          const c1=d.macmillanCall1||"";
+          const c2=d.macmillanCall2||"";
+          const c3=d.macmillanCall3||"";
+          if(c1==="yes"||c2==="yes"||c3==="yes")return;
           if(EXCLUDED_STAGES.has(d.dealstage))return; // skip Closed Lost / DNC stages
           if(!d.dateOfAppointment)return;
           const doa=new Date(d.dateOfAppointment);
@@ -3206,6 +3236,18 @@
           const deadline=new Date(doa.getFullYear(),doa.getMonth()+6,doa.getDate(),0,0,0,0);
           const deadlineMidnight=new Date(deadline);deadlineMidnight.setHours(0,0,0,0);
           const calDaysRemaining=Math.round((deadlineMidnight-today)/86400000);
+
+          // Attempt accounting. An attempt has been made when the call is
+          // either "yes" or "no" (blank = not yet attempted). We only reach
+          // here if no "yes" exists, so attemptsMade = count of "no"s.
+          const attemptsMade=[c1,c2,c3].filter(v=>v==="no").length;
+          // Next-action label drives advisor workflow.
+          //   0 attempts → Call 1 due
+          //   1 attempt  → Call 2 due
+          //   2 attempts → Call 3 due
+          //   3 attempts → all three exhausted, escalate
+          const nextAction=attemptsMade>=3?"Escalate (3/3 exhausted)":`Call ${attemptsMade+1} due`;
+
           out.push({
             id:d.id,
             dealname:d.dealname,
@@ -3214,14 +3256,23 @@
             deadline,
             calDaysRemaining,
             region:d.region||"",
-            outcome:d.macmillanFollowUpOutcome||"",
-            stage:(stageLabels&&stageLabels[d.dealstage])||d.dealstage||"—"
+            stage:(stageLabels&&stageLabels[d.dealstage])||d.dealstage||"—",
+            call1:c1,
+            call2:c2,
+            call3:c3,
+            attemptsMade,
+            nextAction,
+            exhausted:attemptsMade>=3
           });
         });
         // Most urgent first (smallest days remaining = closest to / past deadline).
-        out.sort((a,b)=>(a.calDaysRemaining??1e9)-(b.calDaysRemaining??1e9));
+        // Exhausted-SLA deals bubble to the very top regardless of days left.
+        out.sort((a,b)=>{
+          if(a.exhausted!==b.exhausted)return a.exhausted?-1:1;
+          return(a.calDaysRemaining??1e9)-(b.calDaysRemaining??1e9);
+        });
         return out;
-      },[deals,cohortWindow]);
+      },[deals,cohortWindow,stageLabels]);
 
       const advisorOptions=useMemo(()=>{
         const set=new Set();
@@ -3252,14 +3303,28 @@
 
       // Status counts for the summary tiles.
       const counts=useMemo(()=>{
-        const c={breached:0,close:0,warning:0,comfortable:0};
-        rows.forEach(r=>{c[statusFor(r.calDaysRemaining)]++;});
+        const c={breached:0,close:0,warning:0,comfortable:0,exhausted:0};
+        rows.forEach(r=>{
+          c[statusFor(r.calDaysRemaining)]++;
+          if(r.exhausted)c.exhausted++;
+        });
         return c;
       },[rows]);
 
+      // Pretty-print a single call field for the table and CSV. Blank fields
+      // get an em-dash; Yes/No are upper-cased for legibility.
+      const fmtCall=v=>v==="yes"?"Yes":v==="no"?"No":"—";
+
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Legacy Advisor","Region","Deal Stage","Date of Appointment","SLA Deadline (DoA + 6mo)","Cal Days Remaining","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.advisor,r.region,r.stage,fmtDate(r.appointment),fmtDate(r.deadline),r.calDaysRemaining==null?"":r.calDaysRemaining,HS_BASE+r.id])];
+        const hdr=["Deal ID","Deal Name","Legacy Advisor","Region","Deal Stage","Date of Appointment","SLA Deadline (DoA + 6mo)","Cal Days Remaining","Call 1","Call 2","Call 3","Attempts Made","Next Action","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[
+          r.id,r.dealname,r.advisor,r.region,r.stage,
+          fmtDate(r.appointment),fmtDate(r.deadline),
+          r.calDaysRemaining==null?"":r.calDaysRemaining,
+          fmtCall(r.call1),fmtCall(r.call2),fmtCall(r.call3),
+          `${r.attemptsMade}/3`,r.nextAction,
+          HS_BASE+r.id
+        ])];
         const adSuffix=advisorFilter==="__all__"?"":`_${advisorFilter.replace(/\s+/g,"_")}`;
         downloadCSV(`legacy_advisor_macmillan_followup${adSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,advisorFilter]);
@@ -3278,7 +3343,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan Follow-Up Queue — {cohortWindow.monthLabel} appointments</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Deals with Date of Appointment in the calendar month 6 months back, region is not "Scotland" (blank/null region also qualifies), priority not High, and the follow-up outcome ("Confirmed will has been signed (Macmillan) v2") still unset. SLA = call within 6 months of appointment.
+                  Deals with Date of Appointment in the calendar month 6 months back, region is not "Scotland" (blank/null region also qualifies), priority not High, and none of the three "Macmillan Call N" properties marked "Yes". SLA = up to 3 call attempts within 6 months of appointment.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -3299,6 +3364,7 @@
               {tile("Close (≤7d)",counts.close,C.amber)}
               {tile("Warning (≤21d)",counts.warning,"#F1C40F")}
               {tile("Comfortable",counts.comfortable,C.green)}
+              {tile("3/3 exhausted",counts.exhausted,C.red)}
             </div>
           </div>
 
@@ -3316,25 +3382,46 @@
                       <th style={{padding:"10px 12px",fontWeight:600}}>Deal Stage</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Call 1</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Call 2</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Call 3</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Attempts</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Next Action</th>
                       <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Days Remaining</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map(r=>(
-                      <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
-                        <td style={{padding:"10px 12px"}}>
-                          <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
-                        </td>
-                        <td style={{padding:"10px 12px"}}>{r.advisor}</td>
-                        <td style={{padding:"10px 12px"}}>{r.region||"—"}</td>
-                        <td style={{padding:"10px 12px"}}>{r.stage}</td>
-                        <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
-                        <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
-                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calDaysRemaining)}}>
-                          {r.calDaysRemaining==null?"—":r.calDaysRemaining<0?`${r.calDaysRemaining}d (breached)`:`${r.calDaysRemaining}d`}
-                        </td>
-                      </tr>
-                    ))}
+                    {rows.map(r=>{
+                      // Each call cell gets a colour cue: green for Yes, amber
+                      // for No (attempt logged but unresolved), faded for blank.
+                      const callStyle=v=>({
+                        padding:"10px 12px",
+                        textAlign:"center",
+                        fontWeight:v?700:400,
+                        color:v==="yes"?C.green:v==="no"?C.amber:C.text,
+                        opacity:v?1:0.5
+                      });
+                      return(
+                        <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                          <td style={{padding:"10px 12px"}}>
+                            <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                          </td>
+                          <td style={{padding:"10px 12px"}}>{r.advisor}</td>
+                          <td style={{padding:"10px 12px"}}>{r.region||"—"}</td>
+                          <td style={{padding:"10px 12px"}}>{r.stage}</td>
+                          <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
+                          <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
+                          <td style={callStyle(r.call1)}>{fmtCall(r.call1)}</td>
+                          <td style={callStyle(r.call2)}>{fmtCall(r.call2)}</td>
+                          <td style={callStyle(r.call3)}>{fmtCall(r.call3)}</td>
+                          <td style={{padding:"10px 12px",textAlign:"center",fontWeight:600,color:r.exhausted?C.red:C.text}}>{r.attemptsMade}/3</td>
+                          <td style={{padding:"10px 12px",color:r.exhausted?C.red:C.text,fontWeight:r.exhausted?700:400}}>{r.nextAction}</td>
+                          <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calDaysRemaining)}}>
+                            {r.calDaysRemaining==null?"—":r.calDaysRemaining<0?`${r.calDaysRemaining}d (breached)`:`${r.calDaysRemaining}d`}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

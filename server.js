@@ -63,9 +63,17 @@ const PROPERTIES = [
   "consultant_query_reason",
   "legacy_advisor__owner",
   // Legacy Advisor → Macmillan follow-up queue: deals 6 months past
-  // appointment, region = "England & Wales", non-urgent. Outcome property
-  // tracks Yes / No / Called 3 times — empty means still in the queue.
-  "region", "confirmed_will_has_been_signed__macmillan__v2",
+  // appointment, region IS NOT Scotland, non-urgent.
+  //
+  // The legacy single-field tracker (confirmed_will_has_been_signed__macmillan__v2)
+  // is being replaced by three dedicated call-attempt properties so we can
+  // track the 3-attempt SLA explicitly. During the transition we read both —
+  // a deal drops out of the queue if EITHER the legacy field is set OR any
+  // of the three new calls is marked "Yes". Once HubSpot data is fully
+  // migrated, the v2 property can be removed from this list.
+  "region",
+  "confirmed_will_has_been_signed__macmillan__v2",
+  "macmillan_call_1", "macmillan_call_2", "macmillan_call_3",
   "hs_v2_date_entered_1223620776", "hs_v2_date_exited_1223620776",
   // Cumulative time in completion stages (used by audit heuristic when
   // original_date_entered_<stage> isn't populated — see processDeals).
