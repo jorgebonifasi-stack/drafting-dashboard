@@ -4638,6 +4638,56 @@
           willsCount:wills.length,willsMet,willsPct,willsEligible,lpasCount:lpas.length,lpasMet,lpasPct,lpasEligible};
       },[rows]);
 
+      // ─── Macmillan phone-call SLA compliance ──────────────────
+      // SLA: up to 3 call attempts within 6 months of Date of Appointment.
+      // Compliant = at least one Macmillan Call N = "Yes" (signing confirmed
+      // or otherwise resolved) OR all three Macmillan Call N = "No" (full
+      // 3-attempt effort logged). Anything else after 6 months has passed
+      // is a breach — we didn't fully discharge the SLA.
+      //
+      // Cohort filters mirror the Macmillan Follow-Up Queue: Macmillan lead
+      // source, region ≠ Scotland, priority ≠ High, deal reached DWC or RFP
+      // (a draft exists). Additional gate: DoA + 6 months has passed (the
+      // SLA window has fully closed and the deal can be judged). The audit
+      // date range applies to DoA (not draft End date), which is the natural
+      // anchor for this SLA.
+      //
+      // The legacy v2 outcome field is deliberately ignored — only the new
+      // macmillan_call_1/2/3 properties count toward compliance.
+      const macmillanCallStats=useMemo(()=>{
+        if(!leadFilter.has("Macmillan"))return null;
+        const today=new Date();today.setHours(0,0,0,0);
+        const start=fromMonth?monthStart(fromMonth):null;
+        const end=toMonth?monthEnd(toMonth):null;
+        let total=0,withYes=0,with3Nos=0;
+        deals.forEach(d=>{
+          if(!(d.leadSources||[]).includes("Macmillan"))return;
+          if(!d.dateOfAppointment)return;
+          if((d.region||"").trim()==="Scotland")return;
+          if(d.isUrgent)return;
+          if(!d.firstDWC&&!d.firstRFP)return;
+          const doa=new Date(d.dateOfAppointment);
+          if(start&&doa<start)return;
+          if(end&&doa>end)return;
+          // 6-month SLA deadline; only count cohorts whose window has closed.
+          const deadline=new Date(doa.getFullYear(),doa.getMonth()+6,doa.getDate());
+          deadline.setHours(0,0,0,0);
+          if(deadline>today)return;
+          total++;
+          const c1=d.macmillanCall1||"";
+          const c2=d.macmillanCall2||"";
+          const c3=d.macmillanCall3||"";
+          const hasYes=c1==="yes"||c2==="yes"||c3==="yes";
+          const threeNos=c1==="no"&&c2==="no"&&c3==="no";
+          if(hasYes)withYes++;
+          else if(threeNos)with3Nos++;
+        });
+        const compliant=withYes+with3Nos;
+        const breached=total-compliant;
+        const pct=total>0?Math.round((compliant/total)*100):null;
+        return{total,compliant,breached,withYes,with3Nos,pct};
+      },[deals,fromMonth,toMonth,leadFilter]);
+
       // Exclusive selection — clicking a lead-source pill switches to it
       // and deselects everything else. We never allow an empty selection
       // because the audit needs a single SLA rule (Macmillan or Coral) to
@@ -4752,6 +4802,22 @@
                     <div style={{...cardValue,color:stats.urgPct==null?C.text:stats.urgPct>=90?C.green:stats.urgPct>=75?C.amber:C.red}}>{stats.urgPct==null?"—":`${stats.urgPct}%`}</div>
                     <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgEligible===0?"No urgent deals":`${stats.urgMet} of ${stats.urgEligible} met`}{stats.urgCount>stats.urgEligible?` · ${stats.urgCount-stats.urgEligible} excl`:""}</div>
                   </div>
+                  {macmillanCallStats&&(
+                    <div style={card} title="Macmillan phone-call SLA: up to 3 call attempts within 6 months of appointment. Compliant when any Macmillan Call N = 'Yes' OR all three = 'No'. Cohort is independent of the drafting SLA tiles above — it uses DoA (not draft End date) as the anchor and only includes deals where DoA + 6mo has already passed.">
+                      <div style={cardLabel}>Phone-Call SLA %</div>
+                      <div style={{...cardValue,color:macmillanCallStats.pct==null?C.text:macmillanCallStats.pct>=90?C.green:macmillanCallStats.pct>=75?C.amber:C.red}}>{macmillanCallStats.pct==null?"—":`${macmillanCallStats.pct}%`}</div>
+                      <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
+                        {macmillanCallStats.total===0
+                          ?"No DoA cohorts past 6mo in this range"
+                          :`${macmillanCallStats.compliant} of ${macmillanCallStats.total} compliant`}
+                      </div>
+                      {macmillanCallStats.total>0&&(
+                        <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:2}}>
+                          {macmillanCallStats.withYes} via Yes · {macmillanCallStats.with3Nos} via 3 attempts
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </React.Fragment>
               )}
             </div>
