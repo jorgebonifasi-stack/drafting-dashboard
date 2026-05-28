@@ -3169,7 +3169,12 @@
     // SLA: 6 calendar months from DoA. Status thresholds use calendar days
     // remaining to the deadline (DoA + 6 months):
     //   breached < 0  |  close ≤ 7  |  warning ≤ 21  |  comfortable > 21
-    function MacmillanFollowUpTable({deals}){
+    function MacmillanFollowUpTable({deals,stageLabels}){
+      // Closed Lost (and any other "do not contact" stages) — never queue
+      // these even if they otherwise match the cohort. The stage ID was
+      // identified from a debug-endpoint inspection of three deals stuck in
+      // it (test deal + two real ones); confirmed by the user as Closed Lost.
+      const EXCLUDED_STAGES=new Set(["112034602"]);
       const[advisorFilter,setAdvisorFilter]=useState("__all__");
       // Calendar month 6 months back from today, computed at component mount.
       // (Today 28 May 2026 → cohort = 01 Nov 2025 to 30 Nov 2025; once we
@@ -3192,6 +3197,7 @@
           if((d.region||"").trim()==="Scotland")return;
           if(d.isUrgent)return; // Priority not High
           if((d.macmillanFollowUpOutcome||"").trim()!=="")return; // pending only
+          if(EXCLUDED_STAGES.has(d.dealstage))return; // skip Closed Lost / DNC stages
           if(!d.dateOfAppointment)return;
           const doa=new Date(d.dateOfAppointment);
           if(doa<cohortWindow.start||doa>=cohortWindow.end)return;
@@ -3208,7 +3214,8 @@
             deadline,
             calDaysRemaining,
             region:d.region||"",
-            outcome:d.macmillanFollowUpOutcome||""
+            outcome:d.macmillanFollowUpOutcome||"",
+            stage:(stageLabels&&stageLabels[d.dealstage])||d.dealstage||"—"
           });
         });
         // Most urgent first (smallest days remaining = closest to / past deadline).
@@ -3251,8 +3258,8 @@
       },[rows]);
 
       const exportCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Legacy Advisor","Region","Date of Appointment","SLA Deadline (DoA + 6mo)","Cal Days Remaining","HubSpot Link"];
-        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.advisor,r.region,fmtDate(r.appointment),fmtDate(r.deadline),r.calDaysRemaining==null?"":r.calDaysRemaining,HS_BASE+r.id])];
+        const hdr=["Deal ID","Deal Name","Legacy Advisor","Region","Deal Stage","Date of Appointment","SLA Deadline (DoA + 6mo)","Cal Days Remaining","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.advisor,r.region,r.stage,fmtDate(r.appointment),fmtDate(r.deadline),r.calDaysRemaining==null?"":r.calDaysRemaining,HS_BASE+r.id])];
         const adSuffix=advisorFilter==="__all__"?"":`_${advisorFilter.replace(/\s+/g,"_")}`;
         downloadCSV(`legacy_advisor_macmillan_followup${adSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,advisorFilter]);
@@ -3306,6 +3313,7 @@
                       <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Legacy Advisor</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Region</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Deal Stage</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
                       <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
                       <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Days Remaining</th>
@@ -3319,6 +3327,7 @@
                         </td>
                         <td style={{padding:"10px 12px"}}>{r.advisor}</td>
                         <td style={{padding:"10px 12px"}}>{r.region||"—"}</td>
+                        <td style={{padding:"10px 12px"}}>{r.stage}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
                         <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
                         <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calDaysRemaining)}}>
@@ -3994,7 +4003,7 @@
           {view==="sla"&&<StandardSLATable deals={deals} stageLabels={stageLabels}/>}
           {view==="macmillan-sla"&&<MacmillanSLATable deals={deals} stageLabels={stageLabels}/>}
           {view==="legacy-advisor-sla"&&<LegacyAdvisorSLATable deals={deals} stageLabels={stageLabels}/>}
-          {view==="legacy-advisor-macmillan"&&<MacmillanFollowUpTable deals={deals}/>}
+          {view==="legacy-advisor-macmillan"&&<MacmillanFollowUpTable deals={deals} stageLabels={stageLabels}/>}
           {view==="audit"&&<AuditDashboard embedded={true} sharedDeals={deals} sharedLastRefresh={lastRefresh}/>}
 
           {view==="legacy-advisor"&&<>
