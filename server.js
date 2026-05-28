@@ -372,13 +372,35 @@ async function fetchAllDeals() {
   // catches. Eliminating it cut one full paginated HubSpot fetch per refresh
   // and reduced peak concurrent search-API calls.)
 
-  // Batch 4: any deal in the Estate Planning pipeline, regardless of stage.
-  // Catches post-completion stages (Will Verified, Beacon Contacted, Closed
-  // Won, LPA with OPG, etc.) that the Macmillan follow-up queue and audit
-  // need. Pipeline ID 56009273 = Estate Planning. Future-proof: new stages
-  // added to the pipeline are picked up automatically.
+  // Batch 4: any deal in the Estate Planning pipeline created within the
+  // last RECENCY_MONTHS, regardless of stage. Catches post-completion stages
+  // (Will Verified, Beacon Contacted, Closed Won, LPA with OPG, etc.) that
+  // the Macmillan follow-up queue and audit need. Pipeline ID 56009273 =
+  // Estate Planning.
+  //
+  // Recency filter rationale: the dashboard's longest active window is the
+  // Macmillan follow-up SLA at 6 months from appointment; drafting SLAs are
+  // days-to-weeks; audit history typically <= 12 months. 18 months gives
+  // generous headroom while excluding years of stale Closed Won / Closed
+  // Lost deals that the catch-all was hauling into memory on every refresh.
+  //
+  // Deals older than the cutoff that genuinely matter still come through
+  // batch1/2 via their hs_v2_date_entered_<stage> timestamps, which survive
+  // cross-pipeline moves and predate this filter. So the audit doesn't lose
+  // historical deals it relies on — only the post-completion long-tail in
+  // batch4 (the noisy bit) gets trimmed.
+  const RECENCY_MONTHS = 18;
+  const recencyCutoff = new Date();
+  recencyCutoff.setMonth(recencyCutoff.getMonth() - RECENCY_MONTHS);
+  recencyCutoff.setHours(0, 0, 0, 0);
+  const recencyCutoffMs = String(recencyCutoff.getTime());
+  console.log(`[Fetch] batch4 recency filter: createdate >= ${recencyCutoff.toISOString().slice(0, 10)} (${RECENCY_MONTHS}mo)`);
+
   const batch4 = [
-    { filters: [{ propertyName: "pipeline", operator: "EQ", value: "56009273" }] }
+    { filters: [
+      { propertyName: "pipeline", operator: "EQ", value: "56009273" },
+      { propertyName: "createdate", operator: "GTE", value: recencyCutoffMs }
+    ]}
   ];
 
   // Sequential, not parallel. HubSpot's CRM search API is rate-limited to
