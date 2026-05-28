@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dream Drafting Team Suggestion Box</title>
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --dream-bg: #1a1033;
+    --dream-mid: #241647;
+    --dream-surface: rgba(255,255,255,0.06);
+    --dream-surface-hover: rgba(255,255,255,0.09);
+    --dream-border: rgba(255,255,255,0.08);
+    --dream-border-focus: rgba(192,160,255,0.5);
+    --lavender: #c8a8ff;
+    --lavender-soft: rgba(200,168,255,0.12);
+    --pink: #ffa8d4;
+    --pink-soft: rgba(255,168,212,0.1);
+    --aqua: #88e8dc;
+    --aqua-soft: rgba(136,232,220,0.1);
+    --peach: #ffcba4;
+    --text: #ede6ff;
+    --text-dim: #a89ec4;
+    --text-faint: #6e6488;
+    --star: #ffe8a8;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Quicksand', sans-serif;
+    background: var(--dream-bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1rem;
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  .bg-layer {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background: 
+      radial-gradient(ellipse at 25% 20%, rgba(160,100,255,0.15) 0%, transparent 55%),
+      radial-gradient(ellipse at 75% 70%, rgba(255,130,200,0.1) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 90%, rgba(100,200,230,0.08) 0%, transparent 45%),
+      radial-gradient(ellipse at 10% 80%, rgba(255,200,160,0.06) 0%, transparent 40%);
+  }
+
+  .stars {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    overflow: hidden;
+  }
+
+  .star {
+    position: absolute;
+    width: 3px;
+    height: 3px;
+    background: var(--star);
+    border-radius: 50%;
+    animation: twinkle var(--dur) ease-in-out infinite;
+    opacity: 0;
+  }
+
+  @keyframes twinkle {
+    0%, 100% { opacity: 0.1; transform: scale(0.8); }
+    50% { opacity: 0.8; transform: scale(1.2); }
+  }
+
+  .octopus-container {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    overflow: hidden;
+  }
+
+  .floating-octo {
+    position: absolute;
+    animation: floatOcto var(--dur) ease-in-out infinite;
+    opacity: var(--opa, 0.15);
+  }
+
+  @keyframes floatOcto {
+    0%, 100% { transform: translate(0, 0) rotate(var(--r1, 0deg)); }
+    25% { transform: translate(var(--dx, 10px), var(--dy, -15px)) rotate(var(--r2, 5deg)); }
+    50% { transform: translate(var(--dx2, -5px), var(--dy2, -25px)) rotate(var(--r1, 0deg)); }
+    75% { transform: translate(var(--dx3, 8px), var(--dy3, -10px)) rotate(var(--r3, -3deg)); }
+  }
+
+  .container {
+    width: 100%;
+    max-width: 520px;
+    position: relative;
+    z-index: 1;
+    animation: dreamIn 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  @keyframes dreamIn {
+    from { opacity: 0; transform: translateY(40px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  @keyframes gentleBob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+
+  @keyframes shimmer {
+    0% { background-position: -200% center; }
+    100% { background-position: 200% center; }
+  }
+
+  .header {
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+
+  .header-octo {
+    margin-bottom: 1rem;
+    animation: gentleBob 4s ease-in-out infinite;
+    display: inline-block;
+  }
+
+  h1 {
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 600;
+    font-style: italic;
+    font-size: 2.4rem;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+    margin-bottom: 0.5rem;
+    background: linear-gradient(135deg, var(--lavender) 0%, var(--pink) 40%, var(--aqua) 80%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+  }
+
+  .card {
+    background: rgba(36, 22, 71, 0.6);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--dream-border);
+    border-radius: 28px;
+    padding: 2.25rem;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 10%;
+    right: 10%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--lavender), var(--pink), transparent);
+    opacity: 0.3;
+  }
+
+  .card::after {
+    content: '';
+    position: absolute;
+    bottom: -40px;
+    right: -40px;
+    width: 120px;
+    height: 120px;
+    background: radial-gradient(circle, rgba(255,168,212,0.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .field { margin-bottom: 1.4rem; }
+
+  label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 0.55rem;
+  }
+
+  textarea, input[type="text"], select {
+    width: 100%;
+    padding: 0.85rem 1rem;
+    background: var(--dream-surface);
+    border: 1.5px solid var(--dream-border);
+    border-radius: 16px;
+    font-family: 'Quicksand', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text);
+    outline: none;
+    transition: all 0.3s ease;
+  }
+
+  textarea:hover, input:hover, select:hover {
+    background: var(--dream-surface-hover);
+    border-color: rgba(255,255,255,0.12);
+  }
+
+  textarea:focus, input:focus, select:focus {
+    border-color: var(--dream-border-focus);
+    box-shadow: 0 0 0 3px var(--lavender-soft), 0 0 20px var(--lavender-soft);
+  }
+
+  textarea {
+    min-height: 140px;
+    resize: vertical;
+    line-height: 1.7;
+  }
+
+  textarea::placeholder, input::placeholder {
+    color: var(--text-faint);
+    font-weight: 400;
+  }
+
+  select {
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a89ec4' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 1rem center;
+    padding-right: 2.5rem;
+  }
+
+  select option { background: var(--dream-mid); color: var(--text); }
+
+  .char-count {
+    text-align: right;
+    font-size: 0.7rem;
+    color: var(--text-faint);
+    margin-top: 0.35rem;
+  }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.9rem 1.1rem;
+    background: var(--dream-surface);
+    border: 1.5px solid var(--dream-border);
+    border-radius: 16px;
+    margin-bottom: 1.4rem;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.25s;
+  }
+
+  .toggle-row:hover {
+    background: var(--dream-surface-hover);
+    border-color: rgba(255,255,255,0.12);
+  }
+
+  .toggle-left {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .toggle-badge {
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.3s;
+    font-size: 1.1rem;
+  }
+
+  .toggle-badge.anon { background: var(--lavender-soft); }
+  .toggle-badge.named { background: var(--aqua-soft); }
+
+  .toggle-info strong {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .toggle-info span {
+    font-size: 0.75rem;
+    color: var(--text-faint);
+  }
+
+  .switch {
+    width: 46px;
+    height: 26px;
+    border-radius: 13px;
+    position: relative;
+    flex-shrink: 0;
+    transition: background 0.35s;
+    background: var(--lavender);
+  }
+
+  .switch.named { background: var(--aqua); }
+
+  .switch::after {
+    content: '';
+    width: 20px;
+    height: 20px;
+    background: white;
+    border-radius: 50%;
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  }
+
+  .switch.named::after { transform: translateX(20px); }
+
+  .name-slide {
+    overflow: hidden;
+    max-height: 0;
+    opacity: 0;
+    transition: max-height 0.4s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.3s, margin 0.3s;
+    margin-bottom: 0;
+  }
+
+  .name-slide.open {
+    max-height: 100px;
+    opacity: 1;
+    margin-bottom: 1.4rem;
+  }
+
+  .btn-submit {
+    width: 100%;
+    padding: 1rem;
+    border: none;
+    border-radius: 16px;
+    font-family: 'Quicksand', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 700;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.3s;
+    background: linear-gradient(135deg, var(--lavender), var(--pink));
+    color: var(--dream-bg);
+    letter-spacing: 0.02em;
+  }
+
+  .btn-submit::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+    background-size: 200% 100%;
+    animation: shimmer 4s ease-in-out infinite;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .btn-submit:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 30px rgba(200,168,255,0.3), 0 2px 12px rgba(255,168,212,0.2);
+  }
+
+  .btn-submit:hover:not(:disabled)::before { opacity: 1; }
+  .btn-submit:active:not(:disabled) { transform: translateY(0); }
+  .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-submit.sending { background: var(--text-faint); }
+
+  .error-msg {
+    background: var(--pink-soft);
+    border: 1px solid rgba(255,168,212,0.2);
+    color: var(--pink);
+    padding: 0.75rem 1rem;
+    border-radius: 14px;
+    font-size: 0.82rem;
+    margin-bottom: 1.25rem;
+    display: none;
+  }
+
+  .success-view { text-align: center; padding: 2rem 1rem; display: none; }
+
+  @keyframes popIn {
+    0% { opacity: 0; transform: scale(0.7) rotate(-5deg); }
+    60% { transform: scale(1.05) rotate(2deg); }
+    100% { opacity: 1; transform: scale(1) rotate(0); }
+  }
+
+  .success-view.visible {
+    display: block;
+    animation: popIn 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .success-octo {
+    margin-bottom: 1.25rem;
+    animation: gentleBob 3s ease-in-out infinite;
+    display: inline-block;
+  }
+
+  .success-view h2 {
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 600;
+    font-style: italic;
+    font-size: 1.7rem;
+    margin-bottom: 0.4rem;
+    background: linear-gradient(135deg, var(--lavender), var(--pink));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .success-view p {
+    color: var(--text-dim);
+    font-size: 0.88rem;
+    margin-bottom: 1.75rem;
+    line-height: 1.5;
+  }
+
+  .btn-again {
+    display: inline-block;
+    padding: 0.65rem 1.6rem;
+    background: var(--dream-surface);
+    border: 1.5px solid var(--dream-border);
+    border-radius: 14px;
+    font-family: 'Quicksand', sans-serif;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.25s;
+  }
+
+  .btn-again:hover {
+    background: var(--dream-surface-hover);
+    border-color: rgba(255,255,255,0.14);
+  }
+
+  .footer {
+    text-align: center;
+    margin-top: 2rem;
+    font-size: 0.7rem;
+    color: var(--text-faint);
+    letter-spacing: 0.05em;
+  }
+
+  .form-view.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="bg-layer"></div>
+<div class="stars" id="stars"></div>
+<div class="octopus-container" id="floatingOctos"></div>
+
+<div class="container">
+  <div class="header">
+    <div class="header-octo">
+      <svg width="80" height="80" viewBox="0 0 120 120" fill="none">
+        <ellipse cx="60" cy="42" rx="32" ry="28" fill="url(#hg)" />
+        <ellipse cx="48" cy="40" rx="7" ry="8" fill="white" />
+        <ellipse cx="72" cy="40" rx="7" ry="8" fill="white" />
+        <ellipse cx="49" cy="41" rx="4" ry="5" fill="#2a1050" />
+        <ellipse cx="73" cy="41" rx="4" ry="5" fill="#2a1050" />
+        <circle cx="51" cy="39" r="1.5" fill="white" />
+        <circle cx="75" cy="39" r="1.5" fill="white" />
+        <ellipse cx="40" cy="48" rx="5" ry="3" fill="rgba(255,168,212,0.35)" />
+        <ellipse cx="80" cy="48" rx="5" ry="3" fill="rgba(255,168,212,0.35)" />
+        <path d="M54 50 Q60 56 66 50" stroke="#2a1050" stroke-width="1.8" fill="none" stroke-linecap="round" />
+        <path d="M32 58 Q24 75 28 90 Q30 95 34 90 Q38 82 36 68" fill="url(#t1)" opacity="0.9" />
+        <path d="M40 62 Q32 82 36 98 Q38 103 42 98 Q46 88 42 72" fill="url(#t2)" opacity="0.9" />
+        <path d="M50 65 Q48 85 50 100 Q52 105 54 100 Q56 88 52 74" fill="url(#t1)" opacity="0.85" />
+        <path d="M60 66 Q60 88 60 102 Q62 107 64 102 Q64 88 62 74" fill="url(#t2)" opacity="0.9" />
+        <path d="M70 65 Q72 85 70 100 Q68 105 66 100 Q64 88 68 74" fill="url(#t1)" opacity="0.85" />
+        <path d="M80 62 Q88 82 84 98 Q82 103 78 98 Q74 88 78 72" fill="url(#t2)" opacity="0.9" />
+        <path d="M88 58 Q96 75 92 90 Q90 95 86 90 Q82 82 84 68" fill="url(#t1)" opacity="0.9" />
+        <path d="M52 18 L54 12 L56 18" stroke="var(--star)" stroke-width="1.5" fill="none" stroke-linecap="round" opacity="0.7" />
+        <path d="M62 15 L64 9 L66 15" stroke="var(--star)" stroke-width="1.5" fill="none" stroke-linecap="round" opacity="0.5" />
+        <circle cx="45" cy="30" r="2.5" fill="rgba(255,255,255,0.1)" />
+        <circle cx="70" cy="28" r="3" fill="rgba(255,255,255,0.08)" />
+        <circle cx="58" cy="25" r="2" fill="rgba(255,255,255,0.1)" />
+        <defs>
+          <linearGradient id="hg" x1="28" y1="14" x2="92" y2="70">
+            <stop offset="0%" stop-color="#c8a8ff" />
+            <stop offset="50%" stop-color="#e0a0d8" />
+            <stop offset="100%" stop-color="#ffa8d4" />
+          </linearGradient>
+          <linearGradient id="t1" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#c8a8ff" />
+            <stop offset="100%" stop-color="#88e8dc" />
+          </linearGradient>
+          <linearGradient id="t2" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#ffa8d4" />
+            <stop offset="100%" stop-color="#c8a8ff" />
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
+    <h1>Dream Drafting Team<br>Suggestion Box</h1>
+    <p class="subtitle">Every great idea starts with a whisper</p>
+  </div>
+
+  <div class="card">
+    <div class="error-msg" id="errorMsg"></div>
+
+    <div class="form-view" id="formView">
+      <div class="field">
+        <label>Category</label>
+        <select id="category">
+          <option value="Process/Workflow">Process/Workflow</option>
+          <option value="Team">Team</option>
+          <option value="Upskilling">Upskilling</option>
+          <option value="Misc.">Misc.</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Your Suggestion</label>
+        <textarea id="suggestion" placeholder="Let your ideas float to the surface..." maxlength="2000"></textarea>
+        <div class="char-count"><span id="charCount">0</span> / 2,000</div>
+      </div>
+
+      <div class="toggle-row" id="toggleRow">
+        <div class="toggle-left">
+          <div class="toggle-badge anon" id="toggleBadge">🫧</div>
+          <div class="toggle-info">
+            <strong id="toggleTitle">Submit Anonymously</strong>
+            <span id="toggleDesc">Float your idea in quietly</span>
+          </div>
+        </div>
+        <div class="switch" id="toggleSwitch"></div>
+      </div>
+
+      <div class="name-slide" id="nameSlide">
+        <label>Your Name</label>
+        <input type="text" id="name" placeholder="Who's dreaming this up?" />
+      </div>
+
+      <button class="btn-submit" id="submitBtn" onclick="submitSuggestion()">
+        Send It Into the Deep ✨
+      </button>
+    </div>
+
+    <div class="success-view" id="successView">
+      <div class="success-octo">
+        <svg width="70" height="70" viewBox="0 0 120 120" fill="none">
+          <ellipse cx="60" cy="42" rx="32" ry="28" fill="url(#hg2)" />
+          <ellipse cx="40" cy="48" rx="5" ry="3" fill="rgba(255,168,212,0.35)" />
+          <ellipse cx="80" cy="48" rx="5" ry="3" fill="rgba(255,168,212,0.35)" />
+          <path d="M44 40 Q48 36 52 40" stroke="#2a1050" stroke-width="2" fill="none" stroke-linecap="round" />
+          <path d="M68 40 Q72 36 76 40" stroke="#2a1050" stroke-width="2" fill="none" stroke-linecap="round" />
+          <path d="M50 50 Q60 60 70 50" stroke="#2a1050" stroke-width="2" fill="none" stroke-linecap="round" />
+          <path d="M32 58 Q24 75 28 90 Q30 95 34 90 Q38 82 36 68" fill="url(#t3)" opacity="0.9" />
+          <path d="M42 63 Q36 82 40 95 Q42 99 44 95 Q46 85 44 72" fill="url(#t4)" opacity="0.9" />
+          <path d="M55 66 Q54 84 56 96 Q58 100 60 96 Q60 84 58 74" fill="url(#t3)" opacity="0.85" />
+          <path d="M65 66 Q66 84 64 96 Q62 100 60 96 Q60 84 62 74" fill="url(#t4)" opacity="0.85" />
+          <path d="M78 63 Q84 82 80 95 Q78 99 76 95 Q74 85 76 72" fill="url(#t3)" opacity="0.9" />
+          <path d="M88 58 Q96 75 92 90 Q90 95 86 90 Q82 82 84 68" fill="url(#t4)" opacity="0.9" />
+          <defs>
+            <linearGradient id="hg2" x1="28" y1="14" x2="92" y2="70">
+              <stop offset="0%" stop-color="#88e8dc" />
+              <stop offset="100%" stop-color="#c8a8ff" />
+            </linearGradient>
+            <linearGradient id="t3" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#88e8dc" />
+              <stop offset="100%" stop-color="#ffa8d4" />
+            </linearGradient>
+            <linearGradient id="t4" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#c8a8ff" />
+              <stop offset="100%" stop-color="#88e8dc" />
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <h2>Idea Received!</h2>
+      <p>Your suggestion is swimming its way to us.<br>Thank you for making waves!</p>
+      <button class="btn-again" onclick="resetForm()">Drop Another Idea 🫧</button>
+    </div>
+  </div>
+
+  <div class="footer">Made with 🐙 by the Dream Drafting Team</div>
+</div>
+
+<script>
+  // ⬇️ STEP 5: Paste your Apps Script Web App URL here
+  const SCRIPT_URL = 'https://script.google.com/a/macros/octopuslegacy.com/s/AKfycbxd-THdHFdefrJNTwxPGYw6WyTcO-9CrtK_Qw3iTDSjWYDcMoeJxtDfqo7hm-rqmcTdfw/exec';
+
+  // Stars
+  const starsEl = document.getElementById('stars');
+  for (let i = 0; i < 60; i++) {
+    const s = document.createElement('div');
+    s.className = 'star';
+    s.style.left = Math.random() * 100 + '%';
+    s.style.top = Math.random() * 100 + '%';
+    s.style.setProperty('--dur', (2 + Math.random() * 4) + 's');
+    s.style.animationDelay = Math.random() * 4 + 's';
+    const sz = (1.5 + Math.random() * 2.5) + 'px';
+    s.style.width = sz;
+    s.style.height = sz;
+    starsEl.appendChild(s);
+  }
+
+  // Floating mini octopuses
+  const octoContainer = document.getElementById('floatingOctos');
+  const miniOctos = [
+    { x: '8%', y: '15%', size: 40, opa: 0.08, dur: 12 },
+    { x: '85%', y: '25%', size: 35, opa: 0.06, dur: 15 },
+    { x: '15%', y: '75%', size: 30, opa: 0.07, dur: 10 },
+    { x: '78%', y: '70%', size: 45, opa: 0.05, dur: 14 },
+    { x: '50%', y: '85%', size: 25, opa: 0.06, dur: 11 },
+  ];
+
+  miniOctos.forEach(o => {
+    const div = document.createElement('div');
+    div.className = 'floating-octo';
+    div.style.left = o.x;
+    div.style.top = o.y;
+    div.style.setProperty('--dur', o.dur + 's');
+    div.style.setProperty('--opa', o.opa);
+    div.style.setProperty('--dx', (Math.random() * 20 - 10) + 'px');
+    div.style.setProperty('--dy', (-10 - Math.random() * 20) + 'px');
+    div.style.setProperty('--dx2', (Math.random() * 15 - 7) + 'px');
+    div.style.setProperty('--dy2', (-15 - Math.random() * 15) + 'px');
+    div.style.setProperty('--dx3', (Math.random() * 12 - 6) + 'px');
+    div.style.setProperty('--dy3', (-5 - Math.random() * 10) + 'px');
+    div.style.setProperty('--r1', (Math.random() * 6 - 3) + 'deg');
+    div.style.setProperty('--r2', (Math.random() * 8 - 4) + 'deg');
+    div.style.setProperty('--r3', (Math.random() * 6 - 3) + 'deg');
+    div.innerHTML = `<svg width="${o.size}" height="${o.size}" viewBox="0 0 120 120" fill="none">
+      <ellipse cx="60" cy="42" rx="30" ry="26" fill="var(--lavender)" opacity="0.6"/>
+      <circle cx="50" cy="40" r="3" fill="white" opacity="0.5"/>
+      <circle cx="70" cy="40" r="3" fill="white" opacity="0.5"/>
+      <path d="M35 58 Q28 72 32 85" stroke="var(--lavender)" stroke-width="3" fill="none" opacity="0.4" stroke-linecap="round"/>
+      <path d="M50 64 Q48 78 50 90" stroke="var(--pink)" stroke-width="3" fill="none" opacity="0.3" stroke-linecap="round"/>
+      <path d="M70 64 Q72 78 70 90" stroke="var(--lavender)" stroke-width="3" fill="none" opacity="0.3" stroke-linecap="round"/>
+      <path d="M85 58 Q92 72 88 85" stroke="var(--pink)" stroke-width="3" fill="none" opacity="0.4" stroke-linecap="round"/>
+    </svg>`;
+    octoContainer.appendChild(div);
+  });
+
+  // Form logic
+  let isAnonymous = true;
+
+  document.getElementById('toggleRow').addEventListener('click', () => {
+    isAnonymous = !isAnonymous;
+    const sw = document.getElementById('toggleSwitch');
+    const badge = document.getElementById('toggleBadge');
+    const title = document.getElementById('toggleTitle');
+    const desc = document.getElementById('toggleDesc');
+    const nameSlide = document.getElementById('nameSlide');
+
+    if (isAnonymous) {
+      sw.classList.remove('named');
+      badge.classList.remove('named');
+      badge.classList.add('anon');
+      badge.textContent = '🫧';
+      title.textContent = 'Submit Anonymously';
+      desc.textContent = 'Float your idea in quietly';
+      nameSlide.classList.remove('open');
+    } else {
+      sw.classList.add('named');
+      badge.classList.remove('anon');
+      badge.classList.add('named');
+      badge.textContent = '🐙';
+      title.textContent = 'Include My Name';
+      desc.textContent = 'Put a tentacle on it';
+      nameSlide.classList.add('open');
+    }
+  });
+
+  document.getElementById('suggestion').addEventListener('input', function() {
+    document.getElementById('charCount').textContent = this.value.length;
+  });
+
+  function showError(msg) {
+    const el = document.getElementById('errorMsg');
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(() => { el.style.display = 'none'; }, 5000);
+  }
+
+  function submitSuggestion() {
+    const suggestion = document.getElementById('suggestion').value.trim();
+    const category = document.getElementById('category').value;
+    const name = isAnonymous ? 'Anonymous' : document.getElementById('name').value.trim();
+
+    if (!suggestion) { showError('Please share a suggestion before sending!'); return; }
+    if (!isAnonymous && !name) { showError('Please enter your name or switch to anonymous.'); return; }
+
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.classList.add('sending');
+    btn.textContent = 'Sending...';
+
+    try {
+      const params = new URLSearchParams({
+        suggestion: suggestion,
+        category: category,
+        name: name,
+        timestamp: new Date().toISOString()
+      });
+
+      const url = SCRIPT_URL + '?' + params.toString();
+      const img = new Image();
+      img.onload = img.onerror = function() {
+        document.getElementById('formView').classList.add('hidden');
+        document.getElementById('successView').classList.add('visible');
+      };
+      img.src = url;
+
+      setTimeout(() => {
+        if (!document.getElementById('successView').classList.contains('visible')) {
+          document.getElementById('formView').classList.add('hidden');
+          document.getElementById('successView').classList.add('visible');
+        }
+      }, 3000);
+
+    } catch (err) {
+      showError('Something went wrong. Please try again!');
+      btn.disabled = false;
+      btn.classList.remove('sending');
+      btn.textContent = 'Send It Into the Deep ✨';
+    }
+  }
+
+  function resetForm() {
+    document.getElementById('suggestion').value = '';
+    document.getElementById('name').value = '';
+    document.getElementById('charCount').textContent = '0';
+    document.getElementById('category').selectedIndex = 0;
+    if (!isAnonymous) document.getElementById('toggleRow').click();
+
+    document.getElementById('formView').classList.remove('hidden');
+    document.getElementById('successView').classList.remove('visible');
+
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = false;
+    btn.classList.remove('sending');
+    btn.textContent = 'Send It Into the Deep ✨';
+  }
+</script>
+</body>
+</html>

@@ -3165,6 +3165,7 @@
       const[proofTarget,setProofTarget]=useState(DEFAULT_PROOF_TARGET);
       const[proofOverrides,setProofOverrides]=useState({...DEFAULT_PROOF_OVERRIDES});
       const[generating,setGenerating]=useState(false);
+      const[feedbackOpen,setFeedbackOpen]=useState(false);
       const[draftingOwnerOpts,setDraftingOwnerOpts]=useState({});
       const[stageLabels,setStageLabels]=useState({});
       const[view,setView]=useState("graphs");
@@ -3782,14 +3783,9 @@
                   {availableBuckets.map(b=>(<option key={b} value={b}>{bucketLabel(b,gran)}</option>))}
                 </select>
               )}
-              {view==="graphs"&&(
-                <button style={{...S.btn,background:"#7C3AED",color:"#fff",border:"1px solid #9333EA"}} disabled={generating||loading} onClick={async()=>{
-                  setGenerating(true);
-                  try{await generateSlides(gran,selectedBucket);}catch(err){alert("Slide generation failed: "+err.message);}finally{setGenerating(false);}
-                }} title="Generate PPTX Slides">
-                  {generating?"\u23F3 Generating...":"\uD83D\uDCCA Generate Slides"}
-                </button>
-              )}
+              <button style={{...S.btn,background:"#7C3AED",color:"#fff",border:"1px solid #9333EA"}} onClick={()=>setFeedbackOpen(true)} title="Share feedback with the team">
+                {"\uD83D\uDCAC Feedback"}
+              </button>
               {view==="graphs"&&<button style={S.btn} onClick={()=>setSettingsOpen(true)} title="Target Settings">&#9881;&#65039;</button>}
               <button style={S.btn} onClick={()=>loadData(true)} disabled={loading} title="Force refresh from HubSpot">
                 {loading?"\u23F3":"\uD83D\uDD04"} Refresh
@@ -3927,6 +3923,17 @@
             proofTarget={proofTarget} setProofTarget={setProofTarget}
             proofOverrides={proofOverrides} setProofOverrides={setProofOverrides} prooferNames={prooferNames}
             saveStatus={saveStatus} saveError={saveError} onSave={saveTargets}/>
+
+          {/* Feedback modal — iframes the Dream Drafting Team Suggestion Box
+              (public/feedback.html, served auth-gated via express.static). */}
+          {feedbackOpen&&(
+            <div onClick={()=>setFeedbackOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+              <div onClick={e=>e.stopPropagation()} style={{position:"relative",width:"100%",maxWidth:580,height:"min(820px, 92vh)",borderRadius:24,overflow:"hidden",background:"#1a1033",boxShadow:"0 20px 80px rgba(0,0,0,0.5)"}}>
+                <button onClick={()=>setFeedbackOpen(false)} title="Close" style={{position:"absolute",top:10,right:10,zIndex:2,width:32,height:32,borderRadius:16,border:"none",background:"rgba(255,255,255,0.12)",color:"#ede6ff",cursor:"pointer",fontSize:16,fontWeight:700,lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+                <iframe src="/feedback.html" title="Feedback" style={{width:"100%",height:"100%",border:0,display:"block"}}/>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
