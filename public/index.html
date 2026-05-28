@@ -3177,7 +3177,16 @@
     // Cohort: deals with Date of Appointment in the calendar month 6 months
     // back from today (e.g. in June → all DoA Dec 1–31), region IS NOT
     // "Scotland" (only Scotland excluded; blank/null and any other region
-    // qualify), priority NOT High, and the follow-up still unresolved.
+    // qualify), priority NOT High, the deal has been through Drafts With
+    // Customer OR Ready For Printing (i.e. a draft actually exists), and the
+    // follow-up is still unresolved.
+    //
+    // The stage-history filter (DWC / RFP) replaces the earlier hard-coded
+    // Closed Lost exclusion. If a deal never reached drafting, there's no
+    // will to follow up on — chasing it would just be noise. Conversely a
+    // Closed Lost deal that DID reach drafting will reappear here until an
+    // advisor records the final outcome via Macmillan Call N or the legacy
+    // v2 outcome field.
     //
     // "Unresolved" means none of the three Macmillan Call N properties are
     // set to "Yes" AND the legacy v2 outcome field is empty. (The legacy
@@ -3191,11 +3200,6 @@
     // remaining to the deadline (DoA + 6 months):
     //   breached < 0  |  close ≤ 7  |  warning ≤ 21  |  comfortable > 21
     function MacmillanFollowUpTable({deals,stageLabels}){
-      // Closed Lost (and any other "do not contact" stages) — never queue
-      // these even if they otherwise match the cohort. The stage ID was
-      // identified from a debug-endpoint inspection of three deals stuck in
-      // it (test deal + two real ones); confirmed by the user as Closed Lost.
-      const EXCLUDED_STAGES=new Set(["112034602"]);
       const[advisorFilter,setAdvisorFilter]=useState("__all__");
       // Calendar month 6 months back from today, computed at component mount.
       // (Today 28 May 2026 → cohort = 01 Nov 2025 to 30 Nov 2025; once we
@@ -3227,7 +3231,12 @@
           const c2=d.macmillanCall2||"";
           const c3=d.macmillanCall3||"";
           if(c1==="yes"||c2==="yes"||c3==="yes")return;
-          if(EXCLUDED_STAGES.has(d.dealstage))return; // skip Closed Lost / DNC stages
+          // Stage-history gate: only include deals that have actually reached
+          // drafting. If a deal never entered Drafts With Customer or Ready
+          // For Printing, no will exists to follow up on — chasing it would
+          // be noise. Both fields are populated by processDeals from the
+          // hs_v2_date_entered_<stage> timestamps and are Date | null.
+          if(!d.firstDWC&&!d.firstRFP)return;
           if(!d.dateOfAppointment)return;
           const doa=new Date(d.dateOfAppointment);
           if(doa<cohortWindow.start||doa>=cohortWindow.end)return;
@@ -3343,7 +3352,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan Follow-Up Queue — {cohortWindow.monthLabel} appointments</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Deals with Date of Appointment in the calendar month 6 months back, region is not "Scotland" (blank/null region also qualifies), priority not High, and none of the three "Macmillan Call N" properties marked "Yes". SLA = up to 3 call attempts within 6 months of appointment.
+                  Deals with Date of Appointment in the calendar month 6 months back, region is not "Scotland" (blank/null region also qualifies), priority not High, the deal has been through Drafts With Customer or Ready For Printing (so a draft exists), and none of the three "Macmillan Call N" properties marked "Yes". SLA = up to 3 call attempts within 6 months of appointment.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
