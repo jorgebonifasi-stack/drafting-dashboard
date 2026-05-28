@@ -3160,9 +3160,9 @@
 
     // ─── Legacy Advisor — Macmillan Follow-Up Queue ────────────
     // Cohort: deals with Date of Appointment in the calendar month 6 months
-    // back from today (e.g. in June → all DoA Dec 1–31), region IS SET and
-    // IS NOT "Scotland" (Scotland and blank/null both excluded), priority
-    // NOT High, and the follow-up outcome property
+    // back from today (e.g. in June → all DoA Dec 1–31), region IS NOT
+    // "Scotland" (only Scotland excluded; blank/null and any other region
+    // qualify), priority NOT High, and the follow-up outcome property
     // (confirmed_will_has_been_signed__macmillan__v2) still empty. Once a
     // deal gets Yes / No / Called 3 times, it drops off the queue.
     //
@@ -3188,11 +3188,8 @@
         deals.forEach(d=>{
           // Cohort filters
           if(!d.leadSources||!d.leadSources.includes("Macmillan"))return;
-          // Region must be set AND not be "Scotland". Blank/null region
-          // means the deal is ineligible for the follow-up queue (region
-          // determines legal regime — we need to know it explicitly).
-          const reg=(d.region||"").trim();
-          if(!reg||reg==="Scotland")return;
+          // Exclude Scotland only; blank/null region is fine and stays in.
+          if((d.region||"").trim()==="Scotland")return;
           if(d.isUrgent)return; // Priority not High
           if((d.macmillanFollowUpOutcome||"").trim()!=="")return; // pending only
           if(!d.dateOfAppointment)return;
@@ -3274,7 +3271,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan Follow-Up Queue — {cohortWindow.monthLabel} appointments</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Deals with Date of Appointment in the calendar month 6 months back, region is set and is not "Scotland", priority not High, and the follow-up outcome ("Confirmed will has been signed (Macmillan) v2") still unset. SLA = call within 6 months of appointment.
+                  Deals with Date of Appointment in the calendar month 6 months back, region is not "Scotland" (blank/null region also qualifies), priority not High, and the follow-up outcome ("Confirmed will has been signed (Macmillan) v2") still unset. SLA = call within 6 months of appointment.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
