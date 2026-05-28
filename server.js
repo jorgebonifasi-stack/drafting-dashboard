@@ -62,6 +62,10 @@ const PROPERTIES = [
   "have_they_signed_the_14_day_waiver_",
   "consultant_query_reason",
   "legacy_advisor__owner",
+  // Legacy Advisor → Macmillan follow-up queue: deals 6 months past
+  // appointment, region = "England & Wales", non-urgent. Outcome property
+  // tracks Yes / No / Called 3 times — empty means still in the queue.
+  "region", "confirmed_will_has_been_signed__macmillan__v2",
   "hs_v2_date_entered_1223620776", "hs_v2_date_exited_1223620776",
   // Cumulative time in completion stages (used by audit heuristic when
   // original_date_entered_<stage> isn't populated — see processDeals).
@@ -520,7 +524,7 @@ async function fetchFreshData() {
     console.log(`[Pipelines] Discovered ${DO_NOT_USE_STAGE_IDS.length} DO NOT USE stage(s) — will check history per deal`);
   }
 
-  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, slaBreachReasonOptions] =
+  const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, slaBreachReasonOptions, regionOptions, macmillanFollowUpOptions] =
     await Promise.all([
       fetchAllDeals(),
       fetchOwners(),
@@ -534,7 +538,9 @@ async function fetchFreshData() {
       fetchPropertyOptions("legacy_advisor__owner").catch(() => ({})),
       fetchPropertyOptions("have_they_signed_the_14_day_waiver_").catch(() => ({})),
       fetchPropertyOptions("lead_source_tier_3").catch(() => ({})),
-      fetchPropertyOptions("sla_breach_reason").catch(() => ({}))
+      fetchPropertyOptions("sla_breach_reason").catch(() => ({})),
+      fetchPropertyOptions("region").catch(() => ({})),
+      fetchPropertyOptions("confirmed_will_has_been_signed__macmillan__v2").catch(() => ({}))
     ]);
   // paid_line_items_summary is multi-line text, not an enum, so there are
   // no options to resolve. Send an empty map for backwards compatibility
@@ -561,6 +567,8 @@ async function fetchFreshData() {
     leadSourceTier3Options,
     productOptions,
     slaBreachReasonOptions,
+    regionOptions,
+    macmillanFollowUpOptions,
     stageLabels: stageData.labels || {},
     doNotUseStageIds: DO_NOT_USE_STAGE_IDS,
     dealExclusions: DRAFTER_EXCLUSIONS

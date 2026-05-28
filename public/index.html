@@ -264,7 +264,7 @@
     }
 
     // ─── process raw deals from server ──────────────────────────
-    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,waiverOptions,dealExclusions,doNotUseStageIds,leadSourceTier3Options,productOptions,slaBreachReasonOptions){
+    function processDeals(rawDeals,ownerMap,draftingOwnerOptions,proofOwnerOptions,queryReasonOptions,urgentReasonOptions,amendmentSourceOptions,leadSourceOptions,consultantQueryReasonOptions,legacyAdvisorOptions,waiverOptions,dealExclusions,doNotUseStageIds,leadSourceTier3Options,productOptions,slaBreachReasonOptions,regionOptions,macmillanFollowUpOptions){
       // Pre-compute the property keys to check for any "DO NOT USE" stage entry.
       // If any of these are populated on a deal, the deal has historically lived
       // in an archive pipeline (e.g. "DO NOT USE - Will Appointments") and the
@@ -416,6 +416,13 @@
         const rawSlaBreach=p.sla_breach_reason||"";
         const slaBreachReasons=rawSlaBreach?rawSlaBreach.split(";").map(v=>(slaBreachReasonOptions||{})[v.trim()]||v.trim()).filter(Boolean):[];
         const slaBreachReason=slaBreachReasons.join(", ");
+        // Region (e.g. "England & Wales") and Macmillan follow-up outcome —
+        // both single-select. Empty outcome means the deal is still in the
+        // Legacy Advisor → Macmillan follow-up queue.
+        const rawRegion=(p.region||"").trim();
+        const region=rawRegion?((regionOptions||{})[rawRegion]||rawRegion):"";
+        const rawMacFollowUp=(p.confirmed_will_has_been_signed__macmillan__v2||"").trim();
+        const macmillanFollowUpOutcome=rawMacFollowUp?((macmillanFollowUpOptions||{})[rawMacFollowUp]||rawMacFollowUp):"";
         const dateOfAppointment=parseHSDate(p.date_of_appointment);
         // Workflow-stamped date: when drafting_query_reason was first populated (from 22/04/2026)
         const firstQueryDate=parseHSDate(p.date_drafting_query);
@@ -431,6 +438,7 @@
           wasInDoNotUse,
           leadSources,leadSourceTier3,leadSourceTier3List,products,hasWillProduct,hasLpaProduct,
           slaBreachReason,slaBreachReasons,
+          region,macmillanFollowUpOutcome,
           dateOfAppointment,firstQueryDate,waiverSigned14d,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
@@ -3150,6 +3158,181 @@
       );
     }
 
+    // ─── Legacy Advisor — Macmillan Follow-Up Queue ────────────
+    // Cohort: deals with Date of Appointment in the calendar month 6 months
+    // back from today (e.g. in June → all DoA Dec 1–31), region = "England
+    // & Wales", priority NOT High, and the follow-up outcome property
+    // (confirmed_will_has_been_signed__macmillan__v2) still empty. Once a
+    // deal gets Yes / No / Called 3 times, it drops off the queue.
+    //
+    // SLA: 6 calendar months from DoA. Status thresholds use calendar days
+    // remaining to the deadline (DoA + 6 months):
+    //   breached < 0  |  close ≤ 7  |  warning ≤ 21  |  comfortable > 21
+    function MacmillanFollowUpTable({deals}){
+      const[advisorFilter,setAdvisorFilter]=useState("__all__");
+      // Calendar month 6 months back from today, computed at component mount.
+      // (Today 28 May 2026 → cohort = 01 Nov 2025 to 30 Nov 2025; once we
+      // cross 1 June the cohort rolls to December.)
+      const cohortWindow=useMemo(()=>{
+        const today=new Date();
+        const start=new Date(today.getFullYear(),today.getMonth()-6,1,0,0,0,0);
+        const end=new Date(today.getFullYear(),today.getMonth()-5,1,0,0,0,0); // exclusive
+        const monthLabel=start.toLocaleDateString("en-GB",{month:"long",year:"numeric"});
+        return{start,end,monthLabel};
+      },[]);
+
+      const allRows=useMemo(()=>{
+        const today=new Date();today.setHours(0,0,0,0);
+        const out=[];
+        deals.forEach(d=>{
+          // Cohort filters
+          if(!d.leadSources||!d.leadSources.includes("Macmillan"))return;
+          if((d.region||"").trim()!=="England & Wales")return;
+          if(d.isUrgent)return; // Priority not High
+          if((d.macmillanFollowUpOutcome||"").trim()!=="")return; // pending only
+          if(!d.dateOfAppointment)return;
+          const doa=new Date(d.dateOfAppointment);
+          if(doa<cohortWindow.start||doa>=cohortWindow.end)return;
+
+          // SLA: deadline = DoA + 6 calendar months (local time).
+          const deadline=new Date(doa.getFullYear(),doa.getMonth()+6,doa.getDate(),0,0,0,0);
+          const deadlineMidnight=new Date(deadline);deadlineMidnight.setHours(0,0,0,0);
+          const calDaysRemaining=Math.round((deadlineMidnight-today)/86400000);
+          out.push({
+            id:d.id,
+            dealname:d.dealname,
+            advisor:d.legacyAdvisor||"Unassigned",
+            appointment:new Date(doa),
+            deadline,
+            calDaysRemaining,
+            region:d.region||"",
+            outcome:d.macmillanFollowUpOutcome||""
+          });
+        });
+        // Most urgent first (smallest days remaining = closest to / past deadline).
+        out.sort((a,b)=>(a.calDaysRemaining??1e9)-(b.calDaysRemaining??1e9));
+        return out;
+      },[deals,cohortWindow]);
+
+      const advisorOptions=useMemo(()=>{
+        const set=new Set();
+        allRows.forEach(r=>set.add(r.advisor));
+        return Array.from(set).sort((a,b)=>{
+          if(a==="Unassigned")return 1;
+          if(b==="Unassigned")return -1;
+          return a.localeCompare(b);
+        });
+      },[allRows]);
+
+      const rows=useMemo(()=>(
+        advisorFilter==="__all__"?allRows:allRows.filter(r=>r.advisor===advisorFilter)
+      ),[allRows,advisorFilter]);
+
+      // Per-day thresholds for the SLA countdown colouring.
+      const statusFor=n=>{
+        if(n==null)return"comfortable";
+        if(n<0)return"breached";
+        if(n<=7)return"close";
+        if(n<=21)return"warning";
+        return"comfortable";
+      };
+      const rowColor=n=>{
+        const s=statusFor(n);
+        return s==="breached"?C.red:s==="close"?C.amber:s==="warning"?"#F1C40F":C.green;
+      };
+
+      // Status counts for the summary tiles.
+      const counts=useMemo(()=>{
+        const c={breached:0,close:0,warning:0,comfortable:0};
+        rows.forEach(r=>{c[statusFor(r.calDaysRemaining)]++;});
+        return c;
+      },[rows]);
+
+      const exportCSV=useCallback(()=>{
+        const hdr=["Deal ID","Deal Name","Legacy Advisor","Region","Date of Appointment","SLA Deadline (DoA + 6mo)","Cal Days Remaining","HubSpot Link"];
+        const lines=[hdr,...rows.map(r=>[r.id,r.dealname,r.advisor,r.region,fmtDate(r.appointment),fmtDate(r.deadline),r.calDaysRemaining==null?"":r.calDaysRemaining,HS_BASE+r.id])];
+        const adSuffix=advisorFilter==="__all__"?"":`_${advisorFilter.replace(/\s+/g,"_")}`;
+        downloadCSV(`legacy_advisor_macmillan_followup${adSuffix}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[rows,advisorFilter]);
+
+      const tile=(label,value,color)=>(
+        <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px 16px",minWidth:120,flex:1}}>
+          <div style={{fontSize:10,letterSpacing:1,textTransform:"uppercase",color:C.text,opacity:0.6,fontWeight:600}}>{label}</div>
+          <div style={{fontSize:26,fontWeight:700,color,marginTop:4,lineHeight:1}}>{value}</div>
+        </div>
+      );
+
+      return(
+        <div style={{padding:"16px 24px"}}>
+          <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`,marginBottom:16}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12,marginBottom:14}}>
+              <div>
+                <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan Follow-Up Queue — {cohortWindow.monthLabel} appointments</div>
+                <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
+                  Deals with Date of Appointment in the calendar month 6 months back, region = "England & Wales", priority not High, and the follow-up outcome ("Confirmed will has been signed (Macmillan) v2") still unset. SLA = call within 6 months of appointment.
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                <label style={{fontSize:12,color:C.text,opacity:0.7}}>Legacy Advisor</label>
+                <select style={S.select} value={advisorFilter} onChange={e=>setAdvisorFilter(e.target.value)}>
+                  <option value="__all__">All ({allRows.length})</option>
+                  {advisorOptions.map(name=>(
+                    <option key={name} value={name}>{name} ({allRows.filter(r=>r.advisor===name).length})</option>
+                  ))}
+                </select>
+                <span style={{fontSize:12,color:C.text,opacity:0.7}}>{rows.length} deal{rows.length===1?"":"s"}</span>
+                <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"⬇"} CSV</button>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+              {tile("Total in queue",rows.length,C.white)}
+              {tile("Breached",counts.breached,C.red)}
+              {tile("Close (≤7d)",counts.close,C.amber)}
+              {tile("Warning (≤21d)",counts.warning,"#F1C40F")}
+              {tile("Comfortable",counts.comfortable,C.green)}
+            </div>
+          </div>
+
+          <div style={{background:C.surface,borderRadius:12,padding:"20px 20px 16px",border:`1px solid ${C.border}`}}>
+            {rows.length===0?(
+              <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>{allRows.length===0?"No pending Macmillan follow-ups for "+cohortWindow.monthLabel+" appointments.":"No deals match the active filters."}</div>
+            ):(
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                  <thead>
+                    <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Legacy Advisor</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Region</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
+                      <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
+                      <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Days Remaining</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r=>(
+                      <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                        <td style={{padding:"10px 12px"}}>
+                          <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                        </td>
+                        <td style={{padding:"10px 12px"}}>{r.advisor}</td>
+                        <td style={{padding:"10px 12px"}}>{r.region||"—"}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
+                        <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
+                        <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calDaysRemaining)}}>
+                          {r.calDaysRemaining==null?"—":r.calDaysRemaining<0?`${r.calDaysRemaining}d (breached)`:`${r.calDaysRemaining}d`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     function Dashboard(){
       const[loading,setLoading]=useState(true);
       const[error,setError]=useState(null);
@@ -3259,7 +3442,7 @@
           setTotalRaw(rawDeals.length);
           setDraftingOwnerOpts(draftingOpts);
           setStageLabels(stageLbls);
-          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,waiverOpts,exclusions,result.doNotUseStageIds||[],result.leadSourceTier3Options||{},result.productOptions||{},result.slaBreachReasonOptions||{}));
+          setDeals(processDeals(rawDeals,ownerMap,draftingOpts,proofOpts,queryReasonOpts,urgentReasonOpts,amendmentSourceOpts,leadSourceOpts,consultantQueryReasonOpts,legacyAdvisorOpts,waiverOpts,exclusions,result.doNotUseStageIds||[],result.leadSourceTier3Options||{},result.productOptions||{},result.slaBreachReasonOptions||{},result.regionOptions||{},result.macmillanFollowUpOptions||{}));
           const cachedAt=result._cachedAt?new Date(Number(result._cachedAt)):new Date();
           setLastRefresh(cachedAt);
         }catch(err){
@@ -3743,7 +3926,8 @@
                   ]},
                   "legacy-advisor":{label:"Legacy Advisor",defaultView:"legacy-advisor",subs:[
                     {key:"legacy-advisor",label:"Metrics"},
-                    {key:"legacy-advisor-sla",label:"SLA"}
+                    {key:"legacy-advisor-sla",label:"SLA"},
+                    {key:"legacy-advisor-macmillan",label:"Macmillan"}
                   ]},
                   reporting:{label:"Reporting",defaultView:"audit",subs:[
                     {key:"audit",label:"SLA Audit"}
@@ -3751,7 +3935,7 @@
                 };
                 const VIEW_TO_SECTION={
                   graphs:"drafting",sla:"drafting","macmillan-sla":"drafting",
-                  "legacy-advisor":"legacy-advisor","legacy-advisor-sla":"legacy-advisor",
+                  "legacy-advisor":"legacy-advisor","legacy-advisor-sla":"legacy-advisor","legacy-advisor-macmillan":"legacy-advisor",
                   audit:"reporting"
                 };
                 const activeSection=VIEW_TO_SECTION[view]||"drafting";
@@ -3808,6 +3992,7 @@
           {view==="sla"&&<StandardSLATable deals={deals} stageLabels={stageLabels}/>}
           {view==="macmillan-sla"&&<MacmillanSLATable deals={deals} stageLabels={stageLabels}/>}
           {view==="legacy-advisor-sla"&&<LegacyAdvisorSLATable deals={deals} stageLabels={stageLabels}/>}
+          {view==="legacy-advisor-macmillan"&&<MacmillanFollowUpTable deals={deals}/>}
           {view==="audit"&&<AuditDashboard embedded={true} sharedDeals={deals} sharedLastRefresh={lastRefresh}/>}
 
           {view==="legacy-advisor"&&<>
@@ -3971,7 +4156,9 @@
             result.doNotUseStageIds||[],
             result.leadSourceTier3Options||{},
             result.productOptions||{},
-            result.slaBreachReasonOptions||{}
+            result.slaBreachReasonOptions||{},
+            result.regionOptions||{},
+            result.macmillanFollowUpOptions||{}
           ));
           setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
           setError(null);
@@ -4115,7 +4302,9 @@
             result.doNotUseStageIds||[],
             result.leadSourceTier3Options||{},
             result.productOptions||{},
-            result.slaBreachReasonOptions||{}
+            result.slaBreachReasonOptions||{},
+            result.regionOptions||{},
+            result.macmillanFollowUpOptions||{}
           ));
           setLastRefresh(result._cachedAt?new Date(Number(result._cachedAt)):new Date());
         }catch(e){setError(e.message||String(e));}
