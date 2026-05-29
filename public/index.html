@@ -812,7 +812,15 @@
             const total=c.full+c.partial;
             const wt=overrides[name]??standardTarget;
             const target=Math.round(wt*mult);
-            return{name,full:c.full,partial:c.partial,count:total,target,state:perfState(total,target),isCustom:name in overrides};
+            // Partial-target drafters are evaluated against a lower bar than
+            // the global target line shows. Surface their personal target on
+            // the bar label ("X / Y") so the chart doesn't make 0/30 look
+            // like 0/80 at a glance. Full-target drafters keep the clean
+            // single number — they're already measured against the global
+            // reference line.
+            const isPartialTarget=overrides[name]!==undefined&&overrides[name]<standardTarget;
+            const displayCount=isPartialTarget?`${total} / ${target}`:`${total}`;
+            return{name,full:c.full,partial:c.partial,count:total,target,displayCount,state:perfState(total,target),isCustom:name in overrides};
           }).sort((a,b)=>b.count-a.count);
       },[deals,gran,bucket,standardTarget,overrides]);
 
@@ -838,7 +846,7 @@
             </Bar>
             <Bar dataKey="partial" name="In proofreading" stackId="completion" radius={[0,6,6,0]} barSize={22}>
               {data.map((entry,i)=>(<Cell key={i} fill={perfColorLight(entry.state)}/>))}
-              <LabelList dataKey="count" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
+              <LabelList dataKey="displayCount" position="right" fill={C.white} fontSize={12} fontWeight={600}/>
             </Bar>
           </BarChart>
         </ResponsiveContainer>
