@@ -796,8 +796,18 @@
             }
           }
         });
+        // Pre-seed drafters with a "partial target" (override < standard) so
+        // they appear in the chart even when their bucket count is zero.
+        // These are part-time / reduced-hours staff being tracked at a lower
+        // expected output, and we want their progress visible every week
+        // rather than disappearing the moment they have a slow start.
+        Object.keys(overrides).forEach(name=>{
+          if(overrides[name]<standardTarget&&!(name in counts)){
+            counts[name]={full:0,partial:0};
+          }
+        });
         return Object.entries(counts)
-          .filter(([,c])=>(c.full+c.partial)>=1)
+          .filter(([name,c])=>(c.full+c.partial)>=1||(overrides[name]!==undefined&&overrides[name]<standardTarget))
           .map(([name,c])=>{
             const total=c.full+c.partial;
             const wt=overrides[name]??standardTarget;
@@ -3655,8 +3665,16 @@
             }
           }
         });
+        // Pre-seed partial-target drafters (override < standard) with empty
+        // groups so they appear in the table even with zero completions —
+        // matches the Chart1 behaviour.
+        Object.keys(overrides).forEach(name=>{
+          if(overrides[name]<standardTarget&&!(name in groups)){
+            groups[name]={full:[],partial:[]};
+          }
+        });
         const rows=Object.entries(groups)
-          .filter(([,g])=>(g.full.length+g.partial.length)>=1)
+          .filter(([name,g])=>(g.full.length+g.partial.length)>=1||(overrides[name]!==undefined&&overrides[name]<standardTarget))
           .map(([name,g])=>{
             const total=g.full.length+g.partial.length;
             const t=Math.round((overrides[name]??standardTarget)*mult);
