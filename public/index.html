@@ -3216,13 +3216,14 @@
     // advisor records the final outcome via Macmillan Call N or the legacy
     // v2 outcome field.
     //
-    // "Unresolved" means none of the three Macmillan Call N properties are
-    // set to "Yes" AND the legacy v2 outcome field is empty. (The legacy
-    // field is kept during transition so deals already marked there don't
-    // re-appear in the queue.) Once any of the three new calls flips to
-    // "Yes", the deal drops off the queue (SLA satisfied). Three "No"s
-    // means 3-attempt SLA exhausted — escalate, but the deal stays in the
-    // queue with an "Exhausted" flag until someone records a final outcome.
+    // "Unresolved" means at least one of the three Macmillan Call N
+    // properties is still blank AND the legacy v2 outcome field is empty.
+    // (The legacy field is kept during transition so deals already marked
+    // there don't re-appear in the queue.) The SLA is "3/3 calls done" —
+    // the deal stays in the queue until every Call 1/2/3 field has a
+    // recorded value (Yes or No, any combination). An early "Yes" on Call 1
+    // does NOT drop the deal — the advisor is expected to record outcomes
+    // for all three call slots so the SLA paper trail is complete.
     //
     // SLA: 6 calendar months from DoA. Status thresholds use calendar days
     // remaining to the deadline (DoA + 6 months):
@@ -3255,12 +3256,17 @@
           // v2 property, the deal was already resolved before we split into
           // three call fields.
           if((d.macmillanFollowUpOutcome||"").trim()!=="")return;
-          // New 3-call schema: drop deal from queue as soon as any call is
-          // marked "Yes" (will-signing confirmed / deal otherwise resolved).
+          // New 3-call schema: drop deal from queue once ALL THREE Call N
+          // fields have a recorded value (Yes or No, any combination). The
+          // SLA isn't satisfied until "3/3 calls done", so a single Yes on
+          // Call 1 doesn't end the obligation — the advisor still needs to
+          // record outcomes for Calls 2 and 3 (typically "Yes" follow-ups
+          // or "N/A — already signed" via a Yes).
           const c1=d.macmillanCall1||"";
           const c2=d.macmillanCall2||"";
           const c3=d.macmillanCall3||"";
-          if(c1==="yes"||c2==="yes"||c3==="yes")return;
+          const filledCount=[c1,c2,c3].filter(v=>v==="yes"||v==="no").length;
+          if(filledCount>=3)return;
           // Stage-history gate: only include deals that have actually reached
           // drafting. If a deal never entered Drafts With Customer or Ready
           // For Printing, no will exists to follow up on — chasing it would
@@ -3280,16 +3286,16 @@
           const deadlineMidnight=new Date(deadline);deadlineMidnight.setHours(0,0,0,0);
           const calDaysRemaining=Math.round((deadlineMidnight-today)/86400000);
 
-          // Attempt accounting. An attempt has been made when the call is
-          // either "yes" or "no" (blank = not yet attempted). We only reach
-          // here if no "yes" exists, so attemptsMade = count of "no"s.
-          const attemptsMade=[c1,c2,c3].filter(v=>v==="no").length;
+          // Attempt accounting. An attempt has been made for any call that
+          // has a recorded value (Yes or No). The queue can never display
+          // 3/3 — that would have been dropped above — so attemptsMade is
+          // always 0, 1, or 2 for visible rows.
+          const attemptsMade=filledCount;
           // Next-action label drives advisor workflow.
           //   0 attempts → Call 1 due
           //   1 attempt  → Call 2 due
           //   2 attempts → Call 3 due
-          //   3 attempts → all three exhausted, escalate
-          const nextAction=attemptsMade>=3?"Escalate (3/3 exhausted)":`Call ${attemptsMade+1} due`;
+          const nextAction=`Call ${attemptsMade+1} due`;
 
           out.push({
             id:d.id,
@@ -3304,16 +3310,13 @@
             call2:c2,
             call3:c3,
             attemptsMade,
-            nextAction,
-            exhausted:attemptsMade>=3
+            nextAction
           });
         });
-        // Most urgent first (smallest days remaining = closest to / past deadline).
-        // Exhausted-SLA deals bubble to the very top regardless of days left.
-        out.sort((a,b)=>{
-          if(a.exhausted!==b.exhausted)return a.exhausted?-1:1;
-          return(a.calDaysRemaining??1e9)-(b.calDaysRemaining??1e9);
-        });
+        // Most urgent first: smallest days remaining = closest to / past
+        // deadline. (Previously bubbled "exhausted" rows to the top, but
+        // exhausted = 3/3 now drops the deal — so no longer needed.)
+        out.sort((a,b)=>(a.calDaysRemaining??1e9)-(b.calDaysRemaining??1e9));
         return out;
       },[deals,cohortWindow,stageLabels]);
 
@@ -3346,11 +3349,8 @@
 
       // Status counts for the summary tiles.
       const counts=useMemo(()=>{
-        const c={breached:0,close:0,warning:0,comfortable:0,exhausted:0};
-        rows.forEach(r=>{
-          c[statusFor(r.calDaysRemaining)]++;
-          if(r.exhausted)c.exhausted++;
-        });
+        const c={breached:0,close:0,warning:0,comfortable:0};
+        rows.forEach(r=>{c[statusFor(r.calDaysRemaining)]++;});
         return c;
       },[rows]);
 
@@ -3386,7 +3386,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan Follow-Up Queue — appointments from {cohortWindow.monthLabel} onwards</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Deals with Date of Appointment from {cohortWindow.monthLabel} onwards (rolling: 6 months back, no upper bound), region is not "Scotland" (blank/null region also qualifies), priority not High, the deal has been through Drafts With Customer or Ready For Printing (so a draft exists), and none of the three "Macmillan Call N" properties marked "Yes". SLA = up to 3 call attempts within 6 months of appointment.
+                  Deals with Date of Appointment from {cohortWindow.monthLabel} onwards (rolling: 6 months back, no upper bound), region is not "Scotland" (blank/null region also qualifies), priority not High, the deal has been through Drafts With Customer or Ready For Printing (so a draft exists), and at least one of the three "Macmillan Call N" properties is still blank. The SLA is "3/3 calls done" — the deal stays in the queue until all three call fields have a recorded value (Yes or No), to ensure a full SLA paper trail.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -3407,7 +3407,6 @@
               {tile("Close (≤7d)",counts.close,C.amber)}
               {tile("Warning (≤21d)",counts.warning,"#F1C40F")}
               {tile("Comfortable",counts.comfortable,C.green)}
-              {tile("3/3 exhausted",counts.exhausted,C.red)}
             </div>
           </div>
 
@@ -3459,8 +3458,8 @@
                           <td style={callStyle(r.call1)}>{fmtCall(r.call1)}</td>
                           <td style={callStyle(r.call2)}>{fmtCall(r.call2)}</td>
                           <td style={callStyle(r.call3)}>{fmtCall(r.call3)}</td>
-                          <td style={{padding:"10px 12px",textAlign:"center",fontWeight:600,color:r.exhausted?C.red:C.text}}>{r.attemptsMade}/3</td>
-                          <td style={{padding:"10px 12px",color:r.exhausted?C.red:C.text,fontWeight:r.exhausted?700:400}}>{r.nextAction}</td>
+                          <td style={{padding:"10px 12px",textAlign:"center",fontWeight:600,color:C.text}}>{r.attemptsMade}/3</td>
+                          <td style={{padding:"10px 12px",color:C.text}}>{r.nextAction}</td>
                           <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:rowColor(r.calDaysRemaining)}}>
                             {r.calDaysRemaining==null?"—":r.calDaysRemaining<0?`${r.calDaysRemaining}d (breached)`:`${r.calDaysRemaining}d`}
                           </td>
@@ -4673,11 +4672,16 @@
       },[rows]);
 
       // ─── Macmillan phone-call SLA compliance ──────────────────
-      // SLA: up to 3 call attempts within 6 months of Date of Appointment.
-      // Compliant = at least one Macmillan Call N = "Yes" (signing confirmed
-      // or otherwise resolved) OR all three Macmillan Call N = "No" (full
-      // 3-attempt effort logged). Anything else after 6 months has passed
-      // is a breach — we didn't fully discharge the SLA.
+      // SLA: 3 call attempts logged within 6 months of Date of Appointment.
+      // Compliant = ALL THREE Macmillan Call N properties have a recorded
+      // value (Yes or No, any combination). A single Yes on Call 1 with
+      // blanks on Calls 2/3 is NOT compliant — the SLA paper trail isn't
+      // complete until every slot is recorded. Anything with at least one
+      // blank field after 6 months has passed is a breach.
+      //
+      // Sub-stats (still kept for visibility):
+      //   - "via Yes":  fully filled deals where at least one Call N = Yes
+      //   - "via 3 No's": fully filled deals where all three Call N = No
       //
       // Cohort filters mirror the Macmillan Follow-Up Queue: Macmillan lead
       // source, region ≠ Scotland, priority ≠ High, deal reached DWC or RFP
@@ -4711,10 +4715,16 @@
           const c1=d.macmillanCall1||"";
           const c2=d.macmillanCall2||"";
           const c3=d.macmillanCall3||"";
-          const hasYes=c1==="yes"||c2==="yes"||c3==="yes";
-          const threeNos=c1==="no"&&c2==="no"&&c3==="no";
-          if(hasYes)withYes++;
-          else if(threeNos)with3Nos++;
+          // Compliant = all three Call N fields have a recorded value
+          // (Yes or No). The breakdown into "via Yes" / "via 3 No's" is
+          // kept as a useful sub-stat: deals fully filled where at least
+          // one Yes was recorded vs deals where all three came back No.
+          const filledCount=[c1,c2,c3].filter(v=>v==="yes"||v==="no").length;
+          if(filledCount===3){
+            const hasYes=c1==="yes"||c2==="yes"||c3==="yes";
+            if(hasYes)withYes++;
+            else with3Nos++;
+          }
         });
         const compliant=withYes+with3Nos;
         const breached=total-compliant;
@@ -4837,7 +4847,7 @@
                     <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgEligible===0?"No urgent deals":`${stats.urgMet} of ${stats.urgEligible} met`}{stats.urgCount>stats.urgEligible?` · ${stats.urgCount-stats.urgEligible} excl`:""}</div>
                   </div>
                   {macmillanCallStats&&(
-                    <div style={card} title="Macmillan phone-call SLA: up to 3 call attempts within 6 months of appointment. Compliant when any Macmillan Call N = 'Yes' OR all three = 'No'. Cohort is independent of the drafting SLA tiles above — it uses DoA (not draft End date) as the anchor and only includes deals where DoA + 6mo has already passed.">
+                    <div style={card} title="Macmillan phone-call SLA: 3 call outcomes recorded within 6 months of appointment. Compliant when ALL THREE Macmillan Call N fields have a value (Yes or No, any combination) — a single Yes on Call 1 with blanks on Calls 2/3 is NOT compliant; the SLA paper trail must be complete. Cohort uses DoA (not draft End date) as the anchor and only includes deals where DoA + 6mo has already passed.">
                       <div style={cardLabel}>Phone-Call SLA %</div>
                       <div style={{...cardValue,color:macmillanCallStats.pct==null?C.text:macmillanCallStats.pct>=90?C.green:macmillanCallStats.pct>=75?C.amber:C.red}}>{macmillanCallStats.pct==null?"—":`${macmillanCallStats.pct}%`}</div>
                       <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
