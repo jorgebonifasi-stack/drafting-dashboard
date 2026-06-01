@@ -74,7 +74,16 @@
     // ─── date bucket helpers ────────────────────────────────────
     function dateToBucket(d,gran){
       if(!d)return null;
-      if(gran==="DoD") return d.toISOString().slice(0,10);
+      if(gran==="DoD") {
+        // Use LOCAL Y/M/D — parseHSDate now anchors date-only values to
+        // local midnight, so the bucket key must follow the same convention.
+        // toISOString() would shift to UTC and produce off-by-one days for
+        // viewers in positive-offset timezones (e.g. UK BST mid-summer).
+        const y=d.getFullYear();
+        const m=String(d.getMonth()+1).padStart(2,"0");
+        const day=String(d.getDate()).padStart(2,"0");
+        return `${y}-${m}-${day}`;
+      }
       if(gran==="WoW"){const w=isoWeek(d),y=isoWeekYear(d);return`${y}-W${String(w).padStart(2,"0")}`;}
       return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     }
@@ -133,17 +142,36 @@
     }
 
     // ─── parse HubSpot timestamp ────────────────────────────────
+    // HubSpot serialises "date" fields (date_of_appointment, original_date_
+    // entered_*, etc.) as a Unix millisecond timestamp pinned to UTC
+    // midnight. JS Date is timezone-aware, so a UTC-midnight value reads
+    // as the PREVIOUS calendar day in any browser running in a negative-
+    // offset timezone (e.g. US users see "24 Apr" for a UK 25 Apr
+    // appointment, and the working-day calc shifts by one too — leading
+    // to deals showing as Breached for one viewer and Met for another).
+    //
+    // Fix: when we detect "exact UTC midnight" (the date-only signature),
+    // re-anchor the Date to LOCAL midnight on the same calendar day. That
+    // makes the calendar date timezone-stable across viewers without
+    // requiring a timezone library or rewriting every downstream calc.
+    //
+    // Real datetime stamps (workflow transitions with non-zero hours)
+    // have rich time-of-day data and pass through unchanged.
     function parseHSDate(v){
       if(!v)return null;
-      // Try ISO string first
-      const asDate=new Date(v);
-      if(!isNaN(asDate.getTime()))return asDate;
-      // Try epoch
-      const n=parseInt(v,10);
-      if(isNaN(n))return null;
-      if(n>1e12)return new Date(n);
-      if(n>1e9)return new Date(n*1000);
-      return null;
+      let d=new Date(v);
+      if(isNaN(d.getTime())){
+        const n=parseInt(v,10);
+        if(isNaN(n))return null;
+        d = n>1e12 ? new Date(n) : (n>1e9 ? new Date(n*1000) : null);
+        if(!d)return null;
+      }
+      // Date-only detection: exact UTC midnight on the dot. Re-anchor to
+      // local midnight on the same Y/M/D.
+      if(d.getUTCHours()===0&&d.getUTCMinutes()===0&&d.getUTCSeconds()===0&&d.getUTCMilliseconds()===0){
+        return new Date(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),0,0,0,0);
+      }
+      return d;
     }
 
     // ─── productivity status thresholds ────────────────────────
