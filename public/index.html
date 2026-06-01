@@ -3199,15 +3199,18 @@
 
     // ─── Legacy Advisor — Macmillan Follow-Up Queue ────────────
     // Cohort: deals with Date of Appointment from the start of the calendar
-    // month 6 months back from today, onwards — rolling forward by one month
-    // every month (today 28 May 2026 → DoA >= 01 Nov 2025; on 1 Jun 2026 →
-    // DoA >= 01 Dec 2025). No upper bound on DoA: more recent appointments
-    // simply show as "comfortable" with more days remaining on the SLA.
+    // month 7 months back from today, onwards — rolling forward by one month
+    // every month. The 7-month floor (vs the 6-month SLA window itself)
+    // gives a one-month tail so deals just past the SLA deadline still
+    // appear long enough for the advisor to record the 3 calls.
     //
     // Additional filters: region IS NOT "Scotland" (only Scotland excluded;
-    // blank/null and any other region qualify), priority NOT High, the deal
-    // has been through Drafts With Customer OR Ready For Printing (i.e. a
-    // draft actually exists), and the follow-up is still unresolved.
+    // blank/null and any other region qualify), the deal currently has a
+    // draft in customer hands (either a workflow-stamped DWC/RFP entry
+    // timestamp OR currently sitting in DWC / RDWC / RFP / Sent To Customer
+    // — the second condition catches bulk-imported / migrated deals whose
+    // entry timestamps never got populated), and the follow-up is still
+    // unresolved. High-priority deals are included (same SLA applies).
     //
     // The stage-history filter (DWC / RFP) replaces the earlier hard-coded
     // Closed Lost exclusion. If a deal never reached drafting, there's no
@@ -3230,15 +3233,21 @@
     //   breached < 0  |  close ≤ 7  |  warning ≤ 21  |  comfortable > 21
     function MacmillanFollowUpTable({deals,stageLabels}){
       const[advisorFilter,setAdvisorFilter]=useState("__all__");
-      // Cohort start: first day of the calendar month 6 months back from
+      // Cohort start: first day of the calendar month 7 months back from
       // today. Computed at component mount. Open-ended on the recent side —
-      // any appointment from this date onwards is in scope; deals with
-      // earlier appointments (>6 months past) are dropped from the queue.
-      // (Today 28 May 2026 → start = 01 Nov 2025; on 1 Jun 2026 → 01 Dec
-      // 2025, automatically rolling forward by one month.)
+      // any appointment from this date onwards is in scope.
+      //
+      // Why 7 not 6: the SLA window is 6 months from DoA, so deals whose
+      // DoA was exactly 6 months ago are right at the breach line. A
+      // 6-month floor would pop those deals off the queue the day the
+      // calendar month rolls (e.g. on 1 Jun a deal with DoA 26 Nov 2025
+      // would disappear even though the advisor still needs to record the
+      // 3 calls for the audit trail). The 7-month floor gives a one-month
+      // tail so just-breached deals remain visible long enough to be closed
+      // out properly.
       const cohortWindow=useMemo(()=>{
         const today=new Date();
-        const start=new Date(today.getFullYear(),today.getMonth()-6,1,0,0,0,0);
+        const start=new Date(today.getFullYear(),today.getMonth()-7,1,0,0,0,0);
         const monthLabel=start.toLocaleDateString("en-GB",{month:"long",year:"numeric"});
         return{start,monthLabel};
       },[]);
@@ -3246,12 +3255,17 @@
       const allRows=useMemo(()=>{
         const today=new Date();today.setHours(0,0,0,0);
         const out=[];
+        // Stage IDs that mean "a draft has been sent to the customer or beyond" —
+        // used as a fallback when workflow-stamped entry timestamps are missing
+        // (typical of bulk-imported / migrated deals).
+        const POST_DWC_STAGES=new Set(["1223620775","1223620776","1223620777","1223620778"]);
         deals.forEach(d=>{
           // Cohort filters
           if(!d.leadSources||!d.leadSources.includes("Macmillan"))return;
           // Exclude Scotland only; blank/null region is fine and stays in.
           if((d.region||"").trim()==="Scotland")return;
-          if(d.isUrgent)return; // Priority not High
+          // (Priority filter intentionally removed — High-priority Macmillan
+          // deals follow the same 3-call SLA and need to be in this queue.)
           // Legacy field still used during transition — if it's set in the old
           // v2 property, the deal was already resolved before we split into
           // three call fields.
@@ -3267,12 +3281,15 @@
           const c3=d.macmillanCall3||"";
           const filledCount=[c1,c2,c3].filter(v=>v==="yes"||v==="no").length;
           if(filledCount>=3)return;
-          // Stage-history gate: only include deals that have actually reached
-          // drafting. If a deal never entered Drafts With Customer or Ready
-          // For Printing, no will exists to follow up on — chasing it would
-          // be noise. Both fields are populated by processDeals from the
-          // hs_v2_date_entered_<stage> timestamps and are Date | null.
-          if(!d.firstDWC&&!d.firstRFP)return;
+          // Draft-exists gate. Include the deal if EITHER:
+          //   (a) a workflow-stamped DWC / RFP entry timestamp is set, OR
+          //   (b) the deal is currently sitting in a post-DWC stage (DWC /
+          //       RDWC / RFP / Sent To Customer) — catches bulk-imported
+          //       deals whose entry timestamps never got populated by the
+          //       HubSpot workflow.
+          // The point is "a draft exists" — either signal is sufficient.
+          const hasDraft=d.firstDWC||d.firstRFP||POST_DWC_STAGES.has(d.dealstage);
+          if(!hasDraft)return;
           if(!d.dateOfAppointment)return;
           const doa=new Date(d.dateOfAppointment);
           // Open-ended on the recent side: any appointment from the cohort
@@ -3386,7 +3403,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Macmillan Follow-Up Queue — appointments from {cohortWindow.monthLabel} onwards</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Deals with Date of Appointment from {cohortWindow.monthLabel} onwards (rolling: 6 months back, no upper bound), region is not "Scotland" (blank/null region also qualifies), priority not High, the deal has been through Drafts With Customer or Ready For Printing (so a draft exists), and at least one of the three "Macmillan Call N" properties is still blank. The SLA is "3/3 calls done" — the deal stays in the queue until all three call fields have a recorded value (Yes or No), to ensure a full SLA paper trail.
+                  Deals with Date of Appointment from {cohortWindow.monthLabel} onwards (rolling: 7 months back to give a one-month tail past the SLA), region is not "Scotland" (blank/null region also qualifies), the deal currently has a draft in customer hands (workflow-stamped DWC/RFP entry OR currently in DWC / RDWC / RFP / Sent To Customer — the latter catches migrated deals missing workflow stamps), and at least one of the three "Macmillan Call N" properties is still blank. The SLA is "3/3 calls done" — the deal stays in the queue until all three call fields have a recorded value (Yes or No), to ensure a full SLA paper trail. High-priority deals are included.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -4684,11 +4701,13 @@
       //   - "via 3 No's": fully filled deals where all three Call N = No
       //
       // Cohort filters mirror the Macmillan Follow-Up Queue: Macmillan lead
-      // source, region ≠ Scotland, priority ≠ High, deal reached DWC or RFP
-      // (a draft exists). Additional gate: DoA + 6 months has passed (the
-      // SLA window has fully closed and the deal can be judged). The audit
-      // date range applies to DoA (not draft End date), which is the natural
-      // anchor for this SLA.
+      // source, region ≠ Scotland, and "a draft exists" (workflow-stamped
+      // DWC/RFP entry OR currently in DWC / RDWC / RFP / Sent To Customer,
+      // to catch bulk-imported deals missing entry timestamps).
+      // High-priority deals are included — same 3-call SLA applies.
+      // Additional gate: DoA + 6 months has passed (the SLA window has
+      // fully closed and the deal can be judged). The audit date range
+      // applies to DoA (not draft End date), the natural anchor for this SLA.
       //
       // The legacy v2 outcome field is deliberately ignored — only the new
       // macmillan_call_1/2/3 properties count toward compliance.
@@ -4697,13 +4716,19 @@
         const today=new Date();today.setHours(0,0,0,0);
         const start=fromMonth?monthStart(fromMonth):null;
         const end=toMonth?monthEnd(toMonth):null;
+        // Same draft-exists relaxation as the queue: workflow timestamps OR
+        // currently in a post-DWC stage. Keeps audit population aligned with
+        // queue population.
+        const POST_DWC_STAGES=new Set(["1223620775","1223620776","1223620777","1223620778"]);
         let total=0,withYes=0,with3Nos=0;
         deals.forEach(d=>{
           if(!(d.leadSources||[]).includes("Macmillan"))return;
           if(!d.dateOfAppointment)return;
           if((d.region||"").trim()==="Scotland")return;
-          if(d.isUrgent)return;
-          if(!d.firstDWC&&!d.firstRFP)return;
+          // (Priority filter intentionally removed — High-priority Macmillan
+          // deals follow the same 3-call SLA, same as in the queue.)
+          const hasDraft=d.firstDWC||d.firstRFP||POST_DWC_STAGES.has(d.dealstage);
+          if(!hasDraft)return;
           const doa=new Date(d.dateOfAppointment);
           if(start&&doa<start)return;
           if(end&&doa>end)return;
