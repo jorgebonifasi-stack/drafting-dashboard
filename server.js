@@ -271,8 +271,42 @@ async function writeTargetsToSheet(payload) {
 }
 
 // ─── In-memory cache ─────────────────────────────────────────────
-let cache = { data: null, timestamp: 0 };
+// Cache shape:
+//   buffer:    Buffer holding the JSON.stringify()'d response body, ready
+//              to ship to the client byte-for-byte. Pre-serialised once per
+//              fetch (not per request) to avoid the per-request 20MB
+//              JSON.stringify spike that was causing OOMs under concurrent
+//              /api/deals load on the 512MB Render starter tier.
+//   dealCount: deals.length, captured so we can log it without keeping
+//              the giant V8 object tree resident alongside the Buffer.
+//   timestamp: ms epoch when the Buffer was produced (== _cachedAt baked
+//              into the Buffer; surfaced separately so cache-validity
+//              checks don't need to parse the JSON back out).
+let cache = { buffer: null, dealCount: 0, timestamp: 0 };
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// Serialise `data` once and store it as the bytes we'll ship on /api/deals.
+// _cachedAt is baked into the buffer so each request just streams the
+// pre-built bytes — no per-request stringify, no per-request object spread.
+function setCachedData(data) {
+  const now = Date.now();
+  const wrapped = Object.assign({}, data, { _cachedAt: String(now) });
+  const json = JSON.stringify(wrapped);
+  cache = {
+    buffer: Buffer.from(json, "utf8"),
+    dealCount: (data && data.deals && data.deals.length) || 0,
+    timestamp: now
+  };
+}
+
+// Stream the cached bytes directly to the client. Multiple concurrent
+// /api/deals callers share the same Buffer reference (no per-request copy
+// of the 20MB payload), which is the whole reason we did this.
+function serveCachedData(res) {
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Length", cache.buffer.length);
+  res.end(cache.buffer);
+}
 
 // ─── Helper: sleep ──────────────────────────────────────────────
 function sleep(ms) {
@@ -620,7 +654,14 @@ async function fetchFreshData() {
   }
   _fetchInFlight = (async () => {
     try {
-      return await _fetchFreshDataImpl();
+      const data = await _fetchFreshDataImpl();
+      // Serialise the response into the cache Buffer *once* per fetch,
+      // before any concurrent caller gets a chance to do its own stringify.
+      // The handler then just streams cache.buffer; the in-memory V8 object
+      // tree (`data`) is held only briefly by this IIFE scope and gets GC'd
+      // once the Promise's awaiters complete.
+      setCachedData(data);
+      return data;
     } finally {
       _fetchInFlight = null;
     }
@@ -836,12 +877,11 @@ app.get("/api/tv-deals", async (req, res) => {
   try {
     if (!HUBSPOT_TOKEN) return res.status(500).json({ error: "HUBSPOT_API_KEY not set" });
     const now = Date.now();
-    if (cache.data && (now - cache.timestamp) < CACHE_TTL_MS) {
-      return res.json({ ...cache.data, _cachedAt: String(cache.timestamp) });
+    if (cache.buffer && (now - cache.timestamp) < CACHE_TTL_MS) {
+      return serveCachedData(res);
     }
-    const data = await fetchFreshData();
-    cache = { data, timestamp: now };
-    res.json({ ...data, _cachedAt: String(now) });
+    await fetchFreshData();
+    serveCachedData(res);
   } catch (err) {
     console.error("/api/tv-deals error:", err.message);
     res.status(500).json({ error: err.message });
@@ -853,7 +893,7 @@ app.use(requireAuth, express.static(path.join(__dirname, "public")));
 
 // ─── API Routes ─────────────────────────────────────────────────
 
-// GET /api/deals — serves cached data or fetches fresh
+// GET /api/deals — serves cached Buffer or fetches fresh
 app.get("/api/deals", requireAuth, async (req, res) => {
   try {
     if (!HUBSPOT_TOKEN) {
@@ -861,16 +901,19 @@ app.get("/api/deals", requireAuth, async (req, res) => {
     }
 
     const now = Date.now();
-    if (cache.data && (now - cache.timestamp) < CACHE_TTL_MS) {
-      return res.json({ ...cache.data, _cachedAt: String(cache.timestamp) });
+    if (cache.buffer && (now - cache.timestamp) < CACHE_TTL_MS) {
+      return serveCachedData(res);
     }
 
     console.log("[" + new Date().toISOString() + "] Cache miss — fetching fresh data from HubSpot...");
-    const data = await fetchFreshData();
-    cache = { data, timestamp: now };
-    console.log("[" + new Date().toISOString() + "] Fetched " + data.deals.length + " deals, cached.");
+    // fetchFreshData populates cache.buffer via setCachedData inside its
+    // in-flight wrapper — see comment on _fetchInFlight. We don't need the
+    // returned data object here; cache.buffer / cache.dealCount are the
+    // source of truth from this point onwards.
+    await fetchFreshData();
+    console.log("[" + new Date().toISOString() + "] Fetched " + cache.dealCount + " deals, cached.");
 
-    res.json({ ...data, _cachedAt: String(now) });
+    serveCachedData(res);
   } catch (err) {
     console.error("Error fetching deals:", err.message);
     res.status(500).json({ error: err.message });
@@ -885,12 +928,12 @@ app.post("/api/deals/refresh", requireAuth, async (req, res) => {
     }
 
     console.log("[" + new Date().toISOString() + "] Force refresh requested...");
-    const data = await fetchFreshData();
-    const now = Date.now();
-    cache = { data, timestamp: now };
-    console.log("[" + new Date().toISOString() + "] Fetched " + data.deals.length + " deals, cached.");
+    // Bypass the cache-age check and force a new fetch. The in-flight lock
+    // still de-dupes if multiple force-refresh requests overlap.
+    await fetchFreshData();
+    console.log("[" + new Date().toISOString() + "] Fetched " + cache.dealCount + " deals, cached.");
 
-    res.json({ ...data, _cachedAt: String(now) });
+    serveCachedData(res);
   } catch (err) {
     console.error("Error refreshing deals:", err.message);
     res.status(500).json({ error: err.message });
@@ -1229,9 +1272,10 @@ app.get("/api/debug/deal/:id", requireAuth, requireAdmin, async (req, res) => {
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
-    cached: !!cache.data,
+    cached: !!cache.buffer,
     cacheAge: cache.timestamp ? Math.round((Date.now() - cache.timestamp) / 1000) + "s" : null,
-    dealCount: cache.data ? cache.data.deals.length : 0
+    dealCount: cache.dealCount,
+    cachedBytes: cache.buffer ? cache.buffer.length : 0
   });
 });
 
@@ -1245,9 +1289,10 @@ async function backgroundRefresh() {
   if (!HUBSPOT_TOKEN) return;
   try {
     console.log("[" + new Date().toISOString() + "] Background cache refresh...");
-    const data = await fetchFreshData();
-    cache = { data, timestamp: Date.now() };
-    console.log("[" + new Date().toISOString() + "] Background refresh done — " + data.deals.length + " deals.");
+    // fetchFreshData internally calls setCachedData — the buffer is
+    // populated before this resolves. No need to reassign cache here.
+    await fetchFreshData();
+    console.log("[" + new Date().toISOString() + "] Background refresh done — " + cache.dealCount + " deals (" + cache.buffer.length + " bytes cached).");
   } catch (err) {
     console.error("Background refresh failed:", err.message);
   }
