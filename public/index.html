@@ -51,24 +51,27 @@
       accent:"#3498DB", border:"#333",
     };
 
-    // ─── ISO-week helpers ───────────────────────────────────────
-    function isoWeek(d){
-      const date=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
-      date.setUTCDate(date.getUTCDate()+4-(date.getUTCDay()||7));
-      const yearStart=new Date(Date.UTC(date.getUTCFullYear(),0,1));
-      return Math.ceil(((date-yearStart)/86400000+1)/7);
-    }
-    function isoWeekYear(d){
-      const date=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
-      date.setUTCDate(date.getUTCDate()+4-(date.getUTCDay()||7));
-      return date.getUTCFullYear();
-    }
-    function mondayOfISOWeek(year,week){
-      const jan4=new Date(Date.UTC(year,0,4));
-      const dow=jan4.getUTCDay()||7;
-      const mon=new Date(jan4);
-      mon.setUTCDate(jan4.getUTCDate()-dow+1+(week-1)*7);
-      return mon;
+    // ─── Saturday-anchored week helpers ─────────────────────────
+    // Week starts on Saturday and runs through the following Friday.
+    // Anchored to 30 May 2026 (a Saturday) per Ops decision; every prior
+    // and future week aligns to that grid. WoW bucket keys are the
+    // Saturday's local date in YYYY-MM-DD form, which avoids the
+    // ambiguity of ISO week numbers under a non-Mon-Sun scheme.
+    //
+    // JS Date.getDay() values: Sun=0, Mon=1, Tue=2, Wed=3, Thu=4, Fri=5, Sat=6.
+    // To get the Saturday on-or-before any date, subtract:
+    //   Sat (6) → 0    (today is already Saturday)
+    //   Sun (0) → 1
+    //   Mon (1) → 2
+    //   ...
+    //   Fri (5) → 6
+    // i.e. offset = (dow + 1) % 7
+    function saturdayOfWeek(d){
+      const local=new Date(d.getFullYear(),d.getMonth(),d.getDate(),0,0,0,0);
+      const dow=local.getDay();
+      const offset=(dow+1)%7;
+      local.setDate(local.getDate()-offset);
+      return local;
     }
 
     // ─── date bucket helpers ────────────────────────────────────
@@ -84,30 +87,38 @@
         const day=String(d.getDate()).padStart(2,"0");
         return `${y}-${m}-${day}`;
       }
-      if(gran==="WoW"){const w=isoWeek(d),y=isoWeekYear(d);return`${y}-W${String(w).padStart(2,"0")}`;}
+      if(gran==="WoW"){
+        // Saturday-anchored week. Bucket key = Saturday's local date.
+        const sat=saturdayOfWeek(d);
+        const y=sat.getFullYear();
+        const m=String(sat.getMonth()+1).padStart(2,"0");
+        const day=String(sat.getDate()).padStart(2,"0");
+        return `${y}-${m}-${day}`;
+      }
       return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     }
     function bucketLabel(bucket,gran){
+      const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
       if(gran==="DoD"){
         const d=new Date(bucket+"T00:00:00");
         const days=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
         return`${days[d.getDay()]} ${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
       }
       if(gran==="WoW"){
-        const[y,wStr]=bucket.split("-W");
-        const mon=mondayOfISOWeek(parseInt(y),parseInt(wStr));
-        return`W${wStr} (${String(mon.getUTCMonth()+1).padStart(2,"0")}/${String(mon.getUTCDate()).padStart(2,"0")})`;
+        // bucket = Saturday's date "YYYY-MM-DD". Label shows the Saturday
+        // since that's the start day under the Sat-Fri scheme.
+        const[y,m,d]=bucket.split("-").map(Number);
+        return `Wk of ${String(d).padStart(2,"0")} ${months[m-1]}`;
       }
       const[y,m]=bucket.split("-");
-      const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
       return`${months[parseInt(m)-1]} ${y}`;
     }
     function bucketEndDate(bucket,gran){
       if(gran==="DoD")return new Date(bucket+"T23:59:59.999");
       if(gran==="WoW"){
-        const[y,wStr]=bucket.split("-W");
-        const mon=mondayOfISOWeek(parseInt(y),parseInt(wStr));
-        const sun=new Date(mon);sun.setUTCDate(sun.getUTCDate()+6);sun.setUTCHours(23,59,59,999);return sun;
+        // Saturday + 6 days = the following Friday, end of day.
+        const[y,m,d]=bucket.split("-").map(Number);
+        return new Date(y,m-1,d+6,23,59,59,999);
       }
       const[y,m]=bucket.split("-");
       return new Date(parseInt(y),parseInt(m),0,23,59,59,999);
@@ -116,8 +127,9 @@
     function bucketStartDate(bucket,gran){
       if(gran==="DoD")return new Date(bucket+"T00:00:00Z");
       if(gran==="WoW"){
-        const[y,wStr]=bucket.split("-W");
-        return mondayOfISOWeek(parseInt(y),parseInt(wStr));
+        // Saturday at UTC midnight. Used vs UTC CUTOVER_DATE constants.
+        const[y,m,d]=bucket.split("-").map(Number);
+        return new Date(Date.UTC(y,m-1,d));
       }
       const[y,m]=bucket.split("-");
       return new Date(Date.UTC(parseInt(y),parseInt(m)-1,1));
@@ -131,10 +143,9 @@
         return new Date(y,m-1,d,0,0,0,0);
       }
       if(gran==="WoW"){
-        const[y,wStr]=bucket.split("-W");
-        const mon=mondayOfISOWeek(parseInt(y),parseInt(wStr));
-        const sun=new Date(mon);sun.setUTCDate(sun.getUTCDate()+6);
-        return new Date(sun.getUTCFullYear(),sun.getUTCMonth(),sun.getUTCDate(),0,0,0,0);
+        // Friday (Saturday + 6) at local midnight.
+        const[y,m,d]=bucket.split("-").map(Number);
+        return new Date(y,m-1,d+6,0,0,0,0);
       }
       const[y,m]=bucket.split("-").map(Number);
       // Day 0 of next month = last day of current month, in local time
