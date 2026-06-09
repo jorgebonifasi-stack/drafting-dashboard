@@ -2071,8 +2071,18 @@
           if(!b)return;
           const entryDay=new Date(d.enteredAppointmentOutcome);entryDay.setHours(0,0,0,0);
           const exitDay=new Date(exit);exitDay.setHours(0,0,0,0);
-          const bizDays=calcBusinessDaysUK(entryDay,exitDay);
-          if(bizDays==null||bizDays<0)return;
+          // calcBusinessDaysUK returns null when end <= start. Two distinct
+          // cases for us: same-day entry+exit (SLA MET — count as 0 biz
+          // days, the deal moved through in well under a day) vs reversed
+          // dates (exit before entry — bad data, skip). Previously the bug
+          // was silently dropping same-day = SLA-met deals, inflating the
+          // average wildly because only slow deals survived.
+          let bizDays=calcBusinessDaysUK(entryDay,exitDay);
+          if(bizDays===null){
+            if(entryDay.getTime()===exitDay.getTime())bizDays=0;
+            else return; // reversed timestamps — bad data
+          }
+          if(bizDays<0)return;
           (completed[b]=completed[b]||{total:0,bizDays:[]});
           completed[b].total++;
           completed[b].bizDays.push(bizDays);
@@ -4041,8 +4051,15 @@
           if(!b)return;
           const entryDay=new Date(d.enteredAppointmentOutcome);entryDay.setHours(0,0,0,0);
           const exitDay=new Date(exit);exitDay.setHours(0,0,0,0);
-          const bizDays=calcBusinessDaysUK(entryDay,exitDay);
-          if(bizDays==null||bizDays<0)return;
+          // Same-day = SLA met = 0 biz days. See Chart17 for the full
+          // explanation. Without this, ~3/4 of deals (the fast ones) were
+          // silently dropped from both the chart and this table.
+          let bizDays=calcBusinessDaysUK(entryDay,exitDay);
+          if(bizDays===null){
+            if(entryDay.getTime()===exitDay.getTime())bizDays=0;
+            else return;
+          }
+          if(bizDays<0)return;
           (grouped[b]=grouped[b]||[]).push({deal:d,bizDays,isOpen});
         });
         const rows=uniq.map(bucket=>{
