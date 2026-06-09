@@ -645,6 +645,7 @@
       chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
       chart16:'Total amendments completed per drafter in the selected period, with each bar split by Amendment Type. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner and stacked by amendment_source. Amendments with no source set show in grey as "Not specified".',
+      chart17:'Average business-day turnaround for deals in "Appointment Outcome (Estate Planning)". Bucketed by exit date — deals currently still sitting in the stage are treated as "exited today" (running clock) so stale Outcomes inflate the current bucket and become visible. Working days exclude weekends + UK (England & Wales) bank holidays. SLA: 1 business day (red dashed line; green band below).',
       cWorkload:'Open deals per drafter, broken down by SLA status. Counts deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, Approved — Proof Reading, or Amendment Requested. SLA evaluated per deal: drafting deals use 28 calendar days from the latest of Date of Appointment / original drafting-instructions date (+14 cal days if the 14-day waiver is not signed); amendment deals use 10 business days for Client amendments or 1 business day otherwise. Drafters with fewer than 10 open deals are hidden to keep the chart focused on the people carrying meaningful load. Sorted by Breached count descending, then total descending.',
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
@@ -682,6 +683,7 @@
       c13:[{key:"label",label:"Period"},{key:"count",label:"Deals"}],
       c15:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
       c16:[{key:"name",label:"Drafter"},{key:"count",label:"Amendments"}],
+      c17:[{key:"label",label:"Period"},{key:"total",label:"Total Deals"},{key:"avgBizDays",label:"Avg Biz Days"}],
       cWorkload:[{key:"name",label:"Drafter"},{key:"breached",label:"Breached"},{key:"close",label:"Close"},{key:"warning",label:"Warning"},{key:"comfortable",label:"Comfortable"},{key:"total",label:"Total"},{key:"breachedPct",label:"Breached %"}],
       la1:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Active in RDWC"}],
       la2:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Exited RDWC"}],
@@ -703,6 +705,7 @@
       c13:[{key:"dealname",label:"Deal"},{key:"date",label:"Date Entered"}],
       c15:[{key:"dealname",label:"Deal"},{key:"reasons",label:"Consultant Query Reason"}],
       c16:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered Amendment"},{key:"exited",label:"Exited Amendment"},{key:"source",label:"Source"}],
+      c17:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"bizDays",label:"Biz Days"}],
       cWorkload:[{key:"dealname",label:"Deal"},{key:"stage",label:"Stage"},{key:"state",label:"SLA State"},{key:"daysRemaining",label:"Days Remaining"}],
       la1:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered RDWC"}],
       la2:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Biz Days"}],
@@ -2024,6 +2027,80 @@
             </Bar>
             <Line type="monotone" dataKey="ma" name="3-Period Avg" stroke={C.amber} strokeWidth={2.5} dot={{fill:C.amber,r:4}} activeDot={{r:6}} connectNulls/>
           </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 17: Appointment Outcome — Avg Turnaround ──────
+    // Measures how long deals sit in "Appointment Outcome" (stage
+    // 1223751329) before being processed out. SLA = 1 business day
+    // (red reference line; green band below).
+    //
+    // Cohort:
+    //   - Any deal with hs_v2_date_entered_1223751329 populated.
+    //   - "Exit" date = real exit timestamp if the deal has left the
+    //     stage; otherwise treated as "exited today" (running clock).
+    //     This deliberately inflates the current bucket when deals are
+    //     stuck in Appointment Outcome — the spike is the SLA breach
+    //     signal Ops wanted to see.
+    // Bucketed by exit date (real or running-clock today).
+    // Y-axis: average business days per bucket. Mon-Fri minus UK bank
+    // holidays via calcBusinessDaysUK — same convention as the urgent
+    // and audit charts so the unit means the same thing everywhere.
+    function Chart17({deals,gran}){
+      const data=useMemo(()=>{
+        const now=new Date();
+        const today=new Date(now.getFullYear(),now.getMonth(),now.getDate(),0,0,0,0);
+        const periodsBack=gran==="DoD"?25:gran==="WoW"?10:8;
+        const buckets=[];
+        for(let i=periodsBack-1;i>=0;i--){
+          const d=new Date(now);
+          if(gran==="DoD")d.setDate(d.getDate()-i);
+          else if(gran==="WoW")d.setDate(d.getDate()-i*7);
+          else d.setMonth(d.getMonth()-i);
+          buckets.push(dateToBucket(d,gran));
+        }
+        const seen=new Set();
+        const uniq=buckets.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+
+        const completed={};
+        deals.forEach(d=>{
+          if(!d.enteredAppointmentOutcome)return;
+          const exit=d.exitedAppointmentOutcome||today;
+          const b=dateToBucket(exit,gran);
+          if(!b)return;
+          const entryDay=new Date(d.enteredAppointmentOutcome);entryDay.setHours(0,0,0,0);
+          const exitDay=new Date(exit);exitDay.setHours(0,0,0,0);
+          const bizDays=calcBusinessDaysUK(entryDay,exitDay);
+          if(bizDays==null||bizDays<0)return;
+          (completed[b]=completed[b]||{total:0,bizDays:[]});
+          completed[b].total++;
+          completed[b].bizDays.push(bizDays);
+        });
+
+        return uniq.map(bucket=>{
+          const c=completed[bucket]||{total:0,bizDays:[]};
+          const avgBizDays=c.bizDays.length?parseFloat((c.bizDays.reduce((s,v)=>s+v,0)/c.bizDays.length).toFixed(1)):null;
+          return{bucket,label:bucketLabel(bucket,gran),total:c.total,avgBizDays};
+        });
+      },[deals,gran]);
+
+      const maxAvg=Math.max(...data.map(d=>d.avgBizDays||0),2);
+
+      return(
+        <ResponsiveContainer width="100%" height={340}>
+          <LineChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+            <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
+            <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
+            <YAxis tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} domain={[0,Math.ceil(maxAvg*1.2)]} label={{value:"Avg Biz Days",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
+            <ReferenceArea y1={0} y2={1} fill={C.green} fillOpacity={0.08}/>
+            <ReferenceLine y={1} stroke={C.red} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"1 Biz Day SLA",position:"insideBottomRight",fill:C.red,fontSize:12,fontWeight:700}}/>
+            <Line type="linear" dataKey="avgBizDays" name="Avg Turnaround" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:1,color:C.green},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
+              <LabelList dataKey="avgBizDays" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}d`:""} offset={12}/>
+            </Line>
+          </LineChart>
         </ResponsiveContainer>
       );
     }
@@ -3945,6 +4022,47 @@
         return{rows,detailMap};
       },[deals,gran]);
 
+      // c17: Appointment Outcome Avg Turnaround — same bucketing pattern
+      // as c10. Includes deals still in the stage (running-clock exit = today)
+      // so the current bucket reflects stuck deals.
+      const c17Table=useMemo(()=>{
+        const now=new Date();
+        const today=new Date(now.getFullYear(),now.getMonth(),now.getDate(),0,0,0,0);
+        const pb=gran==="DoD"?25:gran==="WoW"?10:8;
+        const bkts=[];
+        for(let i=pb-1;i>=0;i--){const d=new Date(now);if(gran==="DoD")d.setDate(d.getDate()-i);else if(gran==="WoW")d.setDate(d.getDate()-i*7);else d.setMonth(d.getMonth()-i);bkts.push(dateToBucket(d,gran));}
+        const seen=new Set();const uniq=bkts.filter(b=>{if(seen.has(b))return false;seen.add(b);return true;});
+        const grouped={};
+        deals.forEach(d=>{
+          if(!d.enteredAppointmentOutcome)return;
+          const isOpen=!d.exitedAppointmentOutcome;
+          const exit=d.exitedAppointmentOutcome||today;
+          const b=dateToBucket(exit,gran);
+          if(!b)return;
+          const entryDay=new Date(d.enteredAppointmentOutcome);entryDay.setHours(0,0,0,0);
+          const exitDay=new Date(exit);exitDay.setHours(0,0,0,0);
+          const bizDays=calcBusinessDaysUK(entryDay,exitDay);
+          if(bizDays==null||bizDays<0)return;
+          (grouped[b]=grouped[b]||[]).push({deal:d,bizDays,isOpen});
+        });
+        const rows=uniq.map(bucket=>{
+          const arr=grouped[bucket]||[];
+          const avg=arr.length?parseFloat((arr.reduce((s,x)=>s+x.bizDays,0)/arr.length).toFixed(1)):null;
+          return{_key:bucket,label:bucketLabel(bucket,gran),total:arr.length,avgBizDays:avg!=null?avg+"d":"—"};
+        });
+        const detailMap={};
+        uniq.forEach(b=>{
+          detailMap[b]=(grouped[b]||[]).map(x=>({
+            id:x.deal.id,
+            dealname:x.deal.dealname,
+            entered:fmtDate(x.deal.enteredAppointmentOutcome),
+            exited:x.isOpen?"Still in stage":fmtDate(x.deal.exitedAppointmentOutcome),
+            bizDays:x.bizDays+"d"
+          }));
+        });
+        return{rows,detailMap};
+      },[deals,gran]);
+
       const c11Table=useMemo(()=>{
         const groups={};
         deals.forEach(d=>{if(!d.exitedAmendment||d.amendmentTurnaroundDays==null||dateToBucket(d.exitedAmendment,gran)!==selectedBucket)return;if(!d.drafterName||d.drafterName==="Unknown"||/^\d+$/.test(d.drafterName))return;(groups[d.drafterName]=groups[d.drafterName]||[]).push(d);});
@@ -4309,6 +4427,11 @@
             <ChartCard chartId="chart-13" title={"Appointment Outcome \u2014 Deals Exited"} infoText={INFO.chart13} columns={T_COLS.c13} rows={c13Table.rows} detailMap={c13Table.detailMap} detailCols={T_DCOLS.c13} csvName={`appointment_outcome_${gran}.csv`}>
               <Chart13 deals={deals} gran={gran}/>
             </ChartCard>
+            <ChartCard chartId="chart-17" title={"Appointment Outcome \u2014 Avg Turnaround"} infoText={INFO.chart17} columns={T_COLS.c17} rows={c17Table.rows} detailMap={c17Table.detailMap} detailCols={T_DCOLS.c17} csvName={`appointment_outcome_turnaround_${gran}.csv`}>
+              <Chart17 deals={deals} gran={gran}/>
+            </ChartCard>
+          </div>
+          <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-15" title={"Consultant Query Rate \u2014 Trend"} infoText={INFO.chart15} columns={T_COLS.c15} rows={c15Table.rows} detailMap={c15Table.detailMap} detailCols={T_DCOLS.c15} csvName={`consultant_query_rate_${gran}.csv`}>
               <Chart15 deals={deals} gran={gran}/>
             </ChartCard>
