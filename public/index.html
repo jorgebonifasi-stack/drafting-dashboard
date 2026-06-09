@@ -2873,8 +2873,20 @@
           let amendmentSource="";
 
           if(isAmendment){
-            if(!d.enteredAmendment)return;
-            anchor=new Date(d.enteredAmendment);anchor.setHours(0,0,0,0);
+            // Anchor priority:
+            //   1. enteredAmendment (hs_v2_date_entered_1338772492) — the
+            //      workflow stamp recording when the deal entered Amendment
+            //      Requested. Preferred when present.
+            //   2. date_of_appointment — fallback for bulk-imported or
+            //      manually-moved deals where the workflow never fired and
+            //      the stamp is missing. Less precise than the actual
+            //      amendment-entry moment, but keeps the deal visible
+            //      (typically as breached, which is the right signal: it's
+            //      been sitting unactioned for a while).
+            // Only drop when BOTH are missing — no usable anchor at all.
+            const amendAnchor=d.enteredAmendment||d.dateOfAppointment;
+            if(!amendAnchor)return;
+            anchor=new Date(amendAnchor);anchor.setHours(0,0,0,0);
             amendmentSource=d.amendmentSource||"";
             const isClientAmend=amendmentSource.trim().toLowerCase()==="client amendment";
             slaTargetDays=isClientAmend?10:1;
