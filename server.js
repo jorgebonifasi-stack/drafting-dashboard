@@ -1268,6 +1268,112 @@ app.get("/api/debug/deal/:id", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// GET /api/debug/missing-entry-stamps
+// Lists deals that have an exit timestamp on "Appointment Outcome (Estate
+// Planning)" (hs_v2_date_exited_1223751329) but no entry timestamp
+// (hs_v2_date_entered_1223751329 is null). This is the 329-deal class of
+// bulk-imported / migrated deals that show up in Chart 13's count but get
+// silently dropped from Chart 17's avg-turnaround calculation, because we
+// can't compute "entry → exit" without an entry.
+//
+// Query params:
+//   week  — filter to a specific Saturday-anchored week (YYYY-MM-DD)
+//   limit — max deals in `deals` array (default 500). The `count` /
+//           `byExitWeek` totals are NOT limited.
+//
+// Reads from the live cache (which is the same data the dashboard sees).
+// Admin only — no point exposing per-deal owner names to all signed-in users.
+app.get("/api/debug/missing-entry-stamps", requireAuth, requireAdmin, (req, res) => {
+  if (!cache.buffer) {
+    return res.status(503).json({ error: "Deals cache not populated yet — try again in a few seconds" });
+  }
+  const AO_STAGE = "1223751329";
+  const ENTRY_PROP = `hs_v2_date_entered_${AO_STAGE}`;
+  const EXIT_PROP = `hs_v2_date_exited_${AO_STAGE}`;
+
+  try {
+    // Parse the cached buffer back into a usable object. Done on demand
+    // because this endpoint is admin-only / low-frequency.
+    const cached = JSON.parse(cache.buffer.toString("utf8"));
+    const deals = cached.deals || [];
+    const ownerMap = cached.ownerMap || {};
+    const stageLabels = cached.stageLabels || {};
+
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit || "500", 10) || 500, 5000));
+    const weekFilter = req.query.week || null;
+
+    // Saturday-anchored week key matching the dashboard's WoW bucketing.
+    // Saturday = day 6; offset = (dow + 1) % 7 days back to nearest Sat.
+    const satWeekKey = (msStr) => {
+      const ms = parseInt(msStr, 10);
+      if (isNaN(ms)) return null;
+      const d = new Date(ms);
+      // Use UTC day-of-week for consistency on the server (no TZ drift).
+      const dow = d.getUTCDay();
+      const offset = (dow + 1) % 7;
+      const sat = new Date(d);
+      sat.setUTCDate(sat.getUTCDate() - offset);
+      const y = sat.getUTCFullYear();
+      const m = String(sat.getUTCMonth() + 1).padStart(2, "0");
+      const day = String(sat.getUTCDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    };
+
+    const byExitWeek = {};
+    const matches = [];
+    const todayMs = Date.now();
+
+    for (const d of deals) {
+      const p = d.properties || {};
+      const exitedRaw = p[EXIT_PROP];
+      const enteredRaw = p[ENTRY_PROP];
+      if (!exitedRaw) continue;     // didn't exit AO → not in scope
+      if (enteredRaw) continue;     // has entry stamp → already counted in Chart 17
+
+      const wk = satWeekKey(exitedRaw);
+      if (!wk) continue;
+      byExitWeek[wk] = (byExitWeek[wk] || 0) + 1;
+      if (weekFilter && wk !== weekFilter) continue;
+
+      const exitMs = parseInt(exitedRaw, 10);
+      const daysAgo = Math.round((todayMs - exitMs) / 86400000);
+      const ownerId = p.drafting_owner;
+      matches.push({
+        id: d.id,
+        dealname: p.dealname,
+        dealstage: p.dealstage,
+        stageLabel: stageLabels[p.dealstage] || p.dealstage || null,
+        drafter: ownerId ? (ownerMap[ownerId] || ownerId) : null,
+        exitedAt: new Date(exitMs).toISOString().slice(0, 10),
+        exitedWeek: wk,
+        daysAgo,
+        hubspotLink: `https://app.hubspot.com/contacts/4385478/record/0-3/${d.id}`
+      });
+    }
+
+    // Total count is across ALL weeks even when filtering, so the user can
+    // see "this week is X of total Y" without re-querying.
+    const totalCount = Object.values(byExitWeek).reduce((s, v) => s + v, 0);
+
+    // Newest exits first — usually what you want for backfilling.
+    matches.sort((a, b) => b.exitedAt.localeCompare(a.exitedAt));
+
+    res.json({
+      count: totalCount,
+      cacheAge: cache.timestamp ? Math.round((Date.now() - cache.timestamp) / 1000) + "s" : null,
+      cachedDealsScanned: deals.length,
+      byExitWeek,
+      weekFilter,
+      limitApplied: limit,
+      returnedDealsCount: Math.min(matches.length, limit),
+      deals: matches.slice(0, limit)
+    });
+  } catch (e) {
+    console.error("[/api/debug/missing-entry-stamps] error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({
