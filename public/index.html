@@ -645,7 +645,7 @@
       chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
       chart16:'Total amendments completed per drafter in the selected period, with each bar split by Amendment Type. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner and stacked by amendment_source. Amendments with no source set show in grey as "Not specified".',
-      chart17:'Average business-day turnaround for deals in "Appointment Outcome (Estate Planning)". Bucketed by exit date — deals currently still sitting in the stage are treated as "exited today" (running clock) so stale Outcomes inflate the current bucket and become visible. Working days exclude weekends + UK (England & Wales) bank holidays. SLA: 1 business day (red dashed line; green band below).',
+      chart17:'Appointment Outcome (Estate Planning) turnaround. Left axis (dots): average business days per bucket — green ≤1, red >1. Right axis (amber line): % of deals in that bucket that breached the 1-business-day SLA (turnaround >1 biz day). Bucketed by exit date; deals still in stage are treated as "exited today" (running clock) so stale Outcomes inflate the current bucket. Same-day entry+exit counts as 0 biz days (SLA met). Working days exclude weekends + UK (England & Wales) bank holidays.',
       cWorkload:'Open deals per drafter, broken down by SLA status. Counts deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, Approved — Proof Reading, or Amendment Requested. SLA evaluated per deal: drafting deals use 28 calendar days from the latest of Date of Appointment / original drafting-instructions date (+14 cal days if the 14-day waiver is not signed); amendment deals use 10 business days for Client amendments or 1 business day otherwise. Drafters with fewer than 10 open deals are hidden to keep the chart focused on the people carrying meaningful load. Sorted by Breached count descending, then total descending.',
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
@@ -683,7 +683,7 @@
       c13:[{key:"label",label:"Period"},{key:"count",label:"Deals"}],
       c15:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
       c16:[{key:"name",label:"Drafter"},{key:"count",label:"Amendments"}],
-      c17:[{key:"label",label:"Period"},{key:"total",label:"Total Deals"},{key:"avgBizDays",label:"Avg Biz Days"}],
+      c17:[{key:"label",label:"Period"},{key:"total",label:"Total Deals"},{key:"breached",label:"Breached"},{key:"breachedPct",label:"% Breached"},{key:"avgBizDays",label:"Avg Biz Days"}],
       cWorkload:[{key:"name",label:"Drafter"},{key:"breached",label:"Breached"},{key:"close",label:"Close"},{key:"warning",label:"Warning"},{key:"comfortable",label:"Comfortable"},{key:"total",label:"Total"},{key:"breachedPct",label:"Breached %"}],
       la1:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Active in RDWC"}],
       la2:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Exited RDWC"}],
@@ -705,7 +705,7 @@
       c13:[{key:"dealname",label:"Deal"},{key:"date",label:"Date Entered"}],
       c15:[{key:"dealname",label:"Deal"},{key:"reasons",label:"Consultant Query Reason"}],
       c16:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered Amendment"},{key:"exited",label:"Exited Amendment"},{key:"source",label:"Source"}],
-      c17:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"bizDays",label:"Biz Days"}],
+      c17:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"bizDays",label:"Biz Days"},{key:"slaStatus",label:"SLA"}],
       cWorkload:[{key:"dealname",label:"Deal"},{key:"stage",label:"Stage"},{key:"state",label:"SLA State"},{key:"daysRemaining",label:"Days Remaining"}],
       la1:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered RDWC"}],
       la2:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Biz Days"}],
@@ -2074,24 +2074,26 @@
           // calcBusinessDaysUK returns null when end <= start. Two distinct
           // cases for us: same-day entry+exit (SLA MET — count as 0 biz
           // days, the deal moved through in well under a day) vs reversed
-          // dates (exit before entry — bad data, skip). Previously the bug
-          // was silently dropping same-day = SLA-met deals, inflating the
-          // average wildly because only slow deals survived.
+          // dates (exit before entry — bad data, skip).
           let bizDays=calcBusinessDaysUK(entryDay,exitDay);
           if(bizDays===null){
             if(entryDay.getTime()===exitDay.getTime())bizDays=0;
             else return; // reversed timestamps — bad data
           }
           if(bizDays<0)return;
-          (completed[b]=completed[b]||{total:0,bizDays:[]});
+          (completed[b]=completed[b]||{total:0,bizDays:[],breached:0});
           completed[b].total++;
           completed[b].bizDays.push(bizDays);
+          // SLA = 1 biz day. Breach = strictly more than 1 (consistent with
+          // makeSLALine which colours dots green ≤1, red >1).
+          if(bizDays>1)completed[b].breached++;
         });
 
         return uniq.map(bucket=>{
-          const c=completed[bucket]||{total:0,bizDays:[]};
+          const c=completed[bucket]||{total:0,bizDays:[],breached:0};
           const avgBizDays=c.bizDays.length?parseFloat((c.bizDays.reduce((s,v)=>s+v,0)/c.bizDays.length).toFixed(1)):null;
-          return{bucket,label:bucketLabel(bucket,gran),total:c.total,avgBizDays};
+          const breachedPct=c.total>0?parseFloat(((c.breached/c.total)*100).toFixed(1)):null;
+          return{bucket,label:bucketLabel(bucket,gran),total:c.total,breached:c.breached,avgBizDays,breachedPct};
         });
       },[deals,gran]);
 
@@ -2099,18 +2101,24 @@
 
       return(
         <ResponsiveContainer width="100%" height={340}>
-          <LineChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
+          <ComposedChart data={data} margin={{top:20,right:50,left:10,bottom:10}}>
             <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
             <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
-            <YAxis tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} domain={[0,Math.ceil(maxAvg*1.2)]} label={{value:"Avg Biz Days",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} domain={[0,Math.ceil(maxAvg*1.2)]} label={{value:"Avg Biz Days",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <YAxis yAxisId="right" orientation="right" tick={{fill:C.amber,fontSize:11}} axisLine={{stroke:C.grid}} domain={[0,100]} unit="%" label={{value:"% Breached",angle:90,position:"insideRight",fill:C.amber,fontSize:11}}/>
             <Tooltip content={<DarkTooltip/>}/>
             <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
-            <ReferenceArea y1={0} y2={1} fill={C.green} fillOpacity={0.08}/>
-            <ReferenceLine y={1} stroke={C.red} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"1 Biz Day SLA",position:"insideBottomRight",fill:C.red,fontSize:12,fontWeight:700}}/>
-            <Line type="linear" dataKey="avgBizDays" name="Avg Turnaround" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:1,color:C.green},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
+            <ReferenceArea yAxisId="left" y1={0} y2={1} fill={C.green} fillOpacity={0.08}/>
+            <ReferenceLine yAxisId="left" y={1} stroke={C.red} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"1 Biz Day SLA",position:"insideBottomRight",fill:C.red,fontSize:12,fontWeight:700}}/>
+            {/* Avg-days line: dots only, coloured green ≤1, red >1 via makeSLALine. */}
+            <Line yAxisId="left" type="linear" dataKey="avgBizDays" name="Avg Turnaround" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:1,color:C.green},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
               <LabelList dataKey="avgBizDays" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}d`:""} offset={12}/>
             </Line>
-          </LineChart>
+            {/* % Breached line on right axis — amber to distinguish from avg. */}
+            <Line yAxisId="right" type="monotone" dataKey="breachedPct" name="% Breached" stroke={C.amber} strokeWidth={2.5} dot={{fill:C.amber,r:4}} activeDot={{r:6}} connectNulls isAnimationActive={false}>
+              <LabelList dataKey="breachedPct" position="bottom" fill={C.amber} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}%`:""} offset={10}/>
+            </Line>
+          </ComposedChart>
         </ResponsiveContainer>
       );
     }
@@ -4051,21 +4059,27 @@
           if(!b)return;
           const entryDay=new Date(d.enteredAppointmentOutcome);entryDay.setHours(0,0,0,0);
           const exitDay=new Date(exit);exitDay.setHours(0,0,0,0);
-          // Same-day = SLA met = 0 biz days. See Chart17 for the full
-          // explanation. Without this, ~3/4 of deals (the fast ones) were
-          // silently dropped from both the chart and this table.
           let bizDays=calcBusinessDaysUK(entryDay,exitDay);
           if(bizDays===null){
             if(entryDay.getTime()===exitDay.getTime())bizDays=0;
             else return;
           }
           if(bizDays<0)return;
-          (grouped[b]=grouped[b]||[]).push({deal:d,bizDays,isOpen});
+          (grouped[b]=grouped[b]||[]).push({deal:d,bizDays,isOpen,breached:bizDays>1});
         });
         const rows=uniq.map(bucket=>{
           const arr=grouped[bucket]||[];
           const avg=arr.length?parseFloat((arr.reduce((s,x)=>s+x.bizDays,0)/arr.length).toFixed(1)):null;
-          return{_key:bucket,label:bucketLabel(bucket,gran),total:arr.length,avgBizDays:avg!=null?avg+"d":"—"};
+          const breachedCount=arr.filter(x=>x.breached).length;
+          const breachedPct=arr.length?parseFloat(((breachedCount/arr.length)*100).toFixed(1)):null;
+          return{
+            _key:bucket,
+            label:bucketLabel(bucket,gran),
+            total:arr.length,
+            breached:breachedCount,
+            breachedPct:breachedPct!=null?breachedPct+"%":"—",
+            avgBizDays:avg!=null?avg+"d":"—"
+          };
         });
         const detailMap={};
         uniq.forEach(b=>{
@@ -4074,7 +4088,8 @@
             dealname:x.deal.dealname,
             entered:fmtDate(x.deal.enteredAppointmentOutcome),
             exited:x.isOpen?"Still in stage":fmtDate(x.deal.exitedAppointmentOutcome),
-            bizDays:x.bizDays+"d"
+            bizDays:x.bizDays+"d",
+            slaStatus:x.breached?"Breached":"Met"
           }));
         });
         return{rows,detailMap};
