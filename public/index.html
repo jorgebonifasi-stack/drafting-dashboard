@@ -39,7 +39,7 @@
     const {
       BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
       ComposedChart, LineChart, Line, ReferenceLine, ReferenceArea, Legend, Cell,
-      CartesianGrid, LabelList, Label
+      CartesianGrid, LabelList, Label, Customized
     } = Recharts;
 
     // ─── colour tokens ──────────────────────────────────────────
@@ -651,7 +651,7 @@
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
       chart16:'Total amendments completed per drafter in the selected period, with each bar split by Amendment Type. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner and stacked by amendment_source. Amendments with no source set show in grey as "Not specified".',
       chart17:'Appointment Outcome (Estate Planning) turnaround. Each dot shows the average business days for that bucket, with the breach rate inline (e.g. "3.8d · 23%" means avg 3.8 biz days, 23% of deals took longer than 1 biz day). Hover any dot for the full breakdown: total deals, met / breached split, and the average. Bucketed by exit date; deals still in stage are treated as "exited today" (running clock) so stale Outcomes inflate the current bucket. Same-day entry+exit counts as 0 biz days (SLA met). Working days exclude weekends + UK (England & Wales) bank holidays. SLA: 1 business day (red dashed line; green band below).',
-      chart18:'Top 10 Estate Planning Consultants by consultant-query rate in the selected period. Cohort per EPC: their deals that exited "Appointment Outcome (Estate Planning)" in the bucket. Rate = % of those deals where a Consultant Query Reason was recorded (the drafter flagged something needing clarification from the EPC). Only EPCs with ≥5 deals in the cohort qualify, so a single 1-of-1 query doesn\'t dominate the leaderboard. Bar colours: green ≤5%, amber ≤10%, red >10% (matches Chart 15 thresholds). EPC identified via the `will_consultant` HubSpot deal property.',
+      chart18:'Top 10 Estate Planning Consultants by consultant-query rate in the selected period. Cohort per EPC: their deals that exited "Appointment Outcome (Estate Planning)" in the bucket. Rate = % of those deals where a Consultant Query Reason was recorded (the drafter flagged something needing clarification from the EPC). Only EPCs with ≥5 deals in the cohort qualify, so a single 1-of-1 query doesn\'t dominate the leaderboard. Each bar is stacked by query reason (same palette as Chart 15) — segments are proportional to that reason\'s share of the EPC\'s queries, scaled so total bar length = rate %. Hover any bar for the per-reason count breakdown. Threshold reference lines at 5% (green) and 10% (amber) on the x-axis. EPC identified via the `will_consultant` HubSpot deal property.',
       cWorkload:'Open deals per drafter, broken down by SLA status. Counts deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, Approved — Proof Reading, or Amendment Requested. SLA evaluated per deal: drafting deals use 28 calendar days from the latest of Date of Appointment / original drafting-instructions date (+14 cal days if the 14-day waiver is not signed); amendment deals use 10 business days for Client amendments or 1 business day otherwise. Drafters with fewer than 10 open deals are hidden to keep the chart focused on the people carrying meaningful load. Sorted by Breached count descending, then total descending.',
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
@@ -2241,28 +2241,64 @@
     // populated), but grouped by `will_consultant` (the Estate Planning
     // Consultant on the deal). Min 5 deals per EPC to qualify — avoids
     // "1 query of 1 deal = 100%" outliers polluting the leaderboard.
-    // Colour thresholds match Chart 15: green ≤5%, amber ≤10%, red >10%.
+    //
+    // Each bar is stacked by query reason — same colour palette as Chart
+    // 15. Per-reason segment width is proportional to that reason's share
+    // of the EPC's queries, scaled so all segments together sum to the
+    // EPC's total rate. Reference lines at 5% (green) and 10% (amber) sit
+    // on the x-axis so the threshold cues survive the reason colouring.
     function Chart18({deals,gran,bucket}){
-      const data=useMemo(()=>{
-        const groups={}; // EPC name → { total, queried, deals }
+      const{data,allReasons}=useMemo(()=>{
+        const groups={}; // EPC name → { total, queried, byReason }
         deals.forEach(d=>{
           if(!d.exitedAppointmentOutcome)return;
           if(dateToBucket(d.exitedAppointmentOutcome,gran)!==bucket)return;
           const epc=(d.willConsultant||"").trim();
           if(!epc||epc==="Unknown"||/^\d+$/.test(epc))return;
-          if(!groups[epc])groups[epc]={total:0,queried:0};
+          if(!groups[epc])groups[epc]={total:0,queried:0,byReason:{}};
           groups[epc].total++;
-          if(d.consultantQueryReasons&&d.consultantQueryReasons.length)groups[epc].queried++;
+          if(d.consultantQueryReasons&&d.consultantQueryReasons.length){
+            groups[epc].queried++;
+            d.consultantQueryReasons.forEach(r=>{
+              groups[epc].byReason[r]=(groups[epc].byReason[r]||0)+1;
+            });
+          }
         });
-        return Object.entries(groups)
+
+        // All unique reasons across the cohort, sorted by total count
+        // descending — keeps the stack order consistent across bars and
+        // matches Chart 15's reason ordering.
+        const reasonTotals={};
+        Object.values(groups).forEach(g=>{
+          Object.entries(g.byReason).forEach(([r,c])=>{
+            reasonTotals[r]=(reasonTotals[r]||0)+c;
+          });
+        });
+        const allReasons=Object.keys(reasonTotals).sort((a,b)=>reasonTotals[b]-reasonTotals[a]);
+
+        const data=Object.entries(groups)
           .filter(([,g])=>g.total>=5)
           .map(([name,g])=>{
             const rate=parseFloat(((g.queried/g.total)*100).toFixed(1));
-            const state=rate<=5?"met":rate<=10?"close":"below";
-            return{name,total:g.total,queried:g.queried,rate,state};
+            const sumReasons=Object.values(g.byReason).reduce((s,v)=>s+v,0);
+            const row={name,total:g.total,queried:g.queried,rate};
+            // Per-reason segment: proportional to reason's share of this
+            // EPC's queries, scaled to fit within the rate. Segments sum
+            // to the rate exactly (rounding aside), so the bar's total
+            // visual length still reads as the % breach.
+            allReasons.forEach(r=>{
+              const c=g.byReason[r]||0;
+              row[r]=sumReasons>0?parseFloat(((c/sumReasons)*rate).toFixed(2)):0;
+            });
+            // Stash raw reason counts on a hidden key for the tooltip —
+            // the rendered segment values are in %, but the tooltip should
+            // surface the underlying counts which are more actionable.
+            row.__reasonCounts=g.byReason;
+            return row;
           })
           .sort((a,b)=>b.rate-a.rate)
           .slice(0,10);
+        return{data,allReasons};
       },[deals,gran,bucket]);
 
       if(!data.length){
@@ -2270,32 +2306,87 @@
       }
 
       const maxRate=Math.max(...data.map(d=>d.rate),12);
-      // Custom right-side label combining rate + (queried/total) so the
-      // user sees both the ratio and the absolute counts at a glance.
-      const renderRateLabel=(props)=>{
-        const{x,y,width,height,index}=props;
-        const point=data[index];
+
+      // Custom tooltip — shows the EPC, totals, rate, and the per-reason
+      // count breakdown (raw counts, not the proportional %s used for
+      // segment widths). Renders only non-zero reasons.
+      const Chart18Tooltip=({active,payload,label})=>{
+        if(!active||!payload||!payload.length)return null;
+        const point=payload[0].payload;
         if(!point)return null;
+        const counts=point.__reasonCounts||{};
+        const reasonsList=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
         return(
-          <text x={x+width+8} y={y+(height/2)+4} fill={C.white} fontSize="11" fontWeight="600">
-            {point.rate}% ({point.queried}/{point.total})
-          </text>
+          <div style={{background:"#222",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",fontSize:12,color:C.text,minWidth:200}}>
+            <div style={{fontWeight:600,color:C.white,marginBottom:4}}>{label||point.name}</div>
+            <div>Total deals: <span style={{color:C.white,fontWeight:600}}>{point.total}</span></div>
+            <div>Queried: <span style={{color:C.white,fontWeight:600}}>{point.queried}</span> ({point.rate}%)</div>
+            {reasonsList.length>0&&(
+              <div style={{marginTop:4,paddingTop:4,borderTop:`1px solid ${C.border}`}}>
+                <div style={{fontWeight:600,color:C.white,marginBottom:2}}>Reasons</div>
+                {reasonsList.map(([r,c],i)=>(
+                  <div key={r} style={{color:REASON_STROKES_C4[allReasons.indexOf(r)%REASON_STROKES_C4.length]}}>{r}: {c}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      // Renders the total-rate label ("X% (queried/total)") at the right
+      // end of each EPC's stacked bar. Done via Customized so the label x
+      // position uses the actual rate value via the axis scale — robust
+      // even when an EPC's last-listed reason segment is 0.
+      const RateEndLabels=(props)=>{
+        const{yAxisMap,xAxisMap}=props||{};
+        if(!yAxisMap||!xAxisMap)return null;
+        const yAxis=yAxisMap[Object.keys(yAxisMap)[0]];
+        const xAxis=xAxisMap[Object.keys(xAxisMap)[0]];
+        if(!yAxis||!xAxis||!yAxis.scale||!xAxis.scale)return null;
+        const yScale=yAxis.scale;
+        const xScale=xAxis.scale;
+        const bw=yScale.bandwidth?yScale.bandwidth():22;
+        return(
+          <g>
+            {data.map(row=>{
+              const bandY=yScale(row.name);
+              if(bandY==null)return null;
+              const xPos=xScale(row.rate);
+              return(
+                <text key={row.name} x={xPos+8} y={bandY+bw/2+4} fill={C.white} fontSize={11} fontWeight={600}>
+                  {row.rate}% ({row.queried}/{row.total})
+                </text>
+              );
+            })}
+          </g>
         );
       };
 
       return(
         <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
-          <BarChart data={data} layout="vertical" margin={{top:20,right:90,left:10,bottom:10}}>
+          <BarChart data={data} layout="vertical" margin={{top:20,right:120,left:10,bottom:10}}>
             <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
             <XAxis type="number" domain={[0,Math.ceil(maxRate*1.15)]} unit="%" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}}/>
             <YAxis type="category" dataKey="name" width={140} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
-            <Tooltip content={<DarkTooltip/>}/>
-            <ReferenceLine x={5} stroke={C.green} strokeDasharray="6 4" strokeWidth={2}/>
-            <ReferenceLine x={10} stroke={C.amber} strokeDasharray="6 4" strokeWidth={2}/>
-            <Bar dataKey="rate" name="Query Rate %" radius={[0,6,6,0]} barSize={22}>
-              {data.map((entry,i)=>(<Cell key={i} fill={perfColor(entry.state)}/>))}
-              <LabelList dataKey="rate" content={renderRateLabel}/>
-            </Bar>
+            <Tooltip content={<Chart18Tooltip/>}/>
+            <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:10,color:C.text,paddingBottom:4}}/>
+            <ReferenceLine x={5} stroke={C.green} strokeDasharray="6 4" strokeWidth={2} label={{value:"5%",position:"top",fill:C.green,fontSize:11,fontWeight:700}}/>
+            <ReferenceLine x={10} stroke={C.amber} strokeDasharray="6 4" strokeWidth={2} label={{value:"10%",position:"top",fill:C.amber,fontSize:11,fontWeight:700}}/>
+            {allReasons.map((reason,i)=>(
+              <Bar
+                key={reason}
+                dataKey={reason}
+                name={reason}
+                stackId="reasons"
+                fill={REASON_COLORS_C4[i%REASON_COLORS_C4.length]}
+                stroke={REASON_STROKES_C4[i%REASON_STROKES_C4.length]}
+                strokeWidth={0.5}
+                barSize={22}
+                radius={i===allReasons.length-1?[0,6,6,0]:[0,0,0,0]}
+                isAnimationActive={false}
+              />
+            ))}
+            <Customized component={RateEndLabels}/>
           </BarChart>
         </ResponsiveContainer>
       );
