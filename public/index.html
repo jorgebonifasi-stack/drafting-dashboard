@@ -2234,7 +2234,7 @@
       );
     }
 
-    // ─── Chart 18: Consultant Query Rate per EPC — Worst Offenders ──
+    // ─── Chart 18: Consultant Query Rate per EPC — Top 10 ──
     // Horizontal bar chart, top 10 EPCs by query rate in the selected
     // bucket. Mirrors Chart 15's cohort and rate definition (deals that
     // exited Appointment Outcome → those with consultant_query_reason
@@ -4610,7 +4610,7 @@
             <ChartCard chartId="chart-15" title={"Consultant Query Rate \u2014 Trend"} infoText={INFO.chart15} columns={T_COLS.c15} rows={c15Table.rows} detailMap={c15Table.detailMap} detailCols={T_DCOLS.c15} csvName={`consultant_query_rate_${gran}.csv`}>
               <Chart15 deals={deals} gran={gran}/>
             </ChartCard>
-            <ChartCard chartId="chart-18" title={"Consultant Query Rate per EPC \u2014 Worst Offenders"} infoText={INFO.chart18} columns={T_COLS.c18} rows={c18Table.rows} detailMap={c18Table.detailMap} detailCols={T_DCOLS.c18} csvName={`consultant_query_rate_per_epc_${gran}_${selectedBucket}.csv`}>
+            <ChartCard chartId="chart-18" title={"Consultant Query Rate per EPC \u2014 Top 10"} infoText={INFO.chart18} columns={T_COLS.c18} rows={c18Table.rows} detailMap={c18Table.detailMap} detailCols={T_DCOLS.c18} csvName={`consultant_query_rate_per_epc_${gran}_${selectedBucket}.csv`}>
               <Chart18 deals={deals} gran={gran} bucket={selectedBucket}/>
             </ChartCard>
           </div>
