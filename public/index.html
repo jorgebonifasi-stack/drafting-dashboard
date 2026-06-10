@@ -645,7 +645,7 @@
       chart13:'Count of deals exiting "Appointment Outcome (Estate Planning)" per period. Amber line shows 3-period moving average to highlight the trend.',
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
       chart16:'Total amendments completed per drafter in the selected period, with each bar split by Amendment Type. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner and stacked by amendment_source. Amendments with no source set show in grey as "Not specified".',
-      chart17:'Appointment Outcome (Estate Planning) turnaround. Left axis (dots): average business days per bucket — green ≤1, red >1. Right axis (amber line): % of deals in that bucket that breached the 1-business-day SLA (turnaround >1 biz day). Bucketed by exit date; deals still in stage are treated as "exited today" (running clock) so stale Outcomes inflate the current bucket. Same-day entry+exit counts as 0 biz days (SLA met). Working days exclude weekends + UK (England & Wales) bank holidays.',
+      chart17:'Appointment Outcome (Estate Planning) turnaround. Each dot shows the average business days for that bucket, with the breach rate inline (e.g. "3.8d · 23%" means avg 3.8 biz days, 23% of deals took longer than 1 biz day). Hover any dot for the full breakdown: total deals, met / breached split, and the average. Bucketed by exit date; deals still in stage are treated as "exited today" (running clock) so stale Outcomes inflate the current bucket. Same-day entry+exit counts as 0 biz days (SLA met). Working days exclude weekends + UK (England & Wales) bank holidays. SLA: 1 business day (red dashed line; green band below).',
       cWorkload:'Open deals per drafter, broken down by SLA status. Counts deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, Approved — Proof Reading, or Amendment Requested. SLA evaluated per deal: drafting deals use 28 calendar days from the latest of Date of Appointment / original drafting-instructions date (+14 cal days if the 14-day waiver is not signed); amendment deals use 10 business days for Client amendments or 1 business day otherwise. Drafters with fewer than 10 open deals are hidden to keep the chart focused on the people carrying meaningful load. Sorted by Breached count descending, then total descending.',
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
@@ -2099,26 +2099,59 @@
 
       const maxAvg=Math.max(...data.map(d=>d.avgBizDays||0),2);
 
+      // Inline-label content: per-dot label shows "Xd · Y%" — the avg
+      // turnaround and the breach rate side by side, so both signals are
+      // visible without a second axis or a separate line.
+      const renderAvgBreachLabel=(props)=>{
+        const{x,y,value,index}=props;
+        if(value==null)return null;
+        const point=data[index];
+        const pct=point&&point.breachedPct!=null?point.breachedPct:null;
+        const label=pct!=null?`${value}d · ${pct}%`:`${value}d`;
+        return(
+          <text x={x} y={y-12} fill={C.white} fontSize="10" fontWeight="600" textAnchor="middle">{label}</text>
+        );
+      };
+
+      // Tooltip with the full breakdown — Total / Met / Breached / Avg —
+      // since only the avg is plotted as a visible dot, the user needs the
+      // tooltip to see why the breach % at the dot is what it is.
+      const Chart17Tooltip=({active,payload})=>{
+        if(!active||!payload||!payload.length)return null;
+        const p=payload[0].payload;
+        if(!p)return null;
+        const total=p.total||0;
+        const breached=p.breached||0;
+        const met=total-breached;
+        const metPct=total>0?Math.round((met/total)*100):0;
+        const breachPct=p.breachedPct!=null?p.breachedPct:0;
+        return(
+          <div style={{background:"#222",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",fontSize:12,color:C.text,minWidth:160}}>
+            <div style={{fontWeight:600,color:C.white,marginBottom:6}}>{p.label}</div>
+            <div>Total deals: <span style={{color:C.white,fontWeight:600}}>{total}</span></div>
+            <div style={{color:C.green}}>Met SLA: {met} ({metPct}%)</div>
+            <div style={{color:C.red}}>Breached: {breached} ({breachPct}%)</div>
+            <div style={{marginTop:4,paddingTop:4,borderTop:`1px solid ${C.border}`}}>
+              Avg turnaround: <span style={{color:C.white,fontWeight:600}}>{p.avgBizDays!=null?`${p.avgBizDays}d`:"—"}</span>
+            </div>
+          </div>
+        );
+      };
+
       return(
         <ResponsiveContainer width="100%" height={340}>
-          <ComposedChart data={data} margin={{top:20,right:50,left:10,bottom:10}}>
+          <LineChart data={data} margin={{top:20,right:40,left:10,bottom:10}}>
             <CartesianGrid stroke={C.grid} strokeDasharray="3 3" vertical={false}/>
             <XAxis dataKey="label" tick={{fill:C.text,fontSize:10}} axisLine={{stroke:C.grid}} interval={0} angle={-30} textAnchor="end" height={60}/>
-            <YAxis yAxisId="left" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} domain={[0,Math.ceil(maxAvg*1.2)]} label={{value:"Avg Biz Days",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
-            <YAxis yAxisId="right" orientation="right" tick={{fill:C.amber,fontSize:11}} axisLine={{stroke:C.grid}} domain={[0,100]} unit="%" label={{value:"% Breached",angle:90,position:"insideRight",fill:C.amber,fontSize:11}}/>
-            <Tooltip content={<DarkTooltip/>}/>
+            <YAxis tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}} domain={[0,Math.ceil(maxAvg*1.2)]} label={{value:"Avg Biz Days",angle:-90,position:"insideLeft",fill:C.text,fontSize:11}}/>
+            <Tooltip content={<Chart17Tooltip/>}/>
             <Legend verticalAlign="top" align="right" wrapperStyle={{fontSize:11,color:C.text}}/>
-            <ReferenceArea yAxisId="left" y1={0} y2={1} fill={C.green} fillOpacity={0.08}/>
-            <ReferenceLine yAxisId="left" y={1} stroke={C.red} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"1 Biz Day SLA",position:"insideBottomRight",fill:C.red,fontSize:12,fontWeight:700}}/>
-            {/* Avg-days line: dots only, coloured green ≤1, red >1 via makeSLALine. */}
-            <Line yAxisId="left" type="linear" dataKey="avgBizDays" name="Avg Turnaround" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:1,color:C.green},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
-              <LabelList dataKey="avgBizDays" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}d`:""} offset={12}/>
+            <ReferenceArea y1={0} y2={1} fill={C.green} fillOpacity={0.08}/>
+            <ReferenceLine y={1} stroke={C.red} strokeDasharray="8 4" strokeWidth={2.5} label={{value:"1 Biz Day SLA",position:"insideBottomRight",fill:C.red,fontSize:12,fontWeight:700}}/>
+            <Line type="linear" dataKey="avgBizDays" name="Avg Turnaround" stroke="transparent" strokeWidth={0} dot={makeSLALine([{max:1,color:C.green},{max:Infinity,color:C.red}])} activeDot={false} connectNulls isAnimationActive={false}>
+              <LabelList dataKey="avgBizDays" content={renderAvgBreachLabel}/>
             </Line>
-            {/* % Breached line on right axis — amber to distinguish from avg. */}
-            <Line yAxisId="right" type="monotone" dataKey="breachedPct" name="% Breached" stroke={C.amber} strokeWidth={2.5} dot={{fill:C.amber,r:4}} activeDot={{r:6}} connectNulls isAnimationActive={false}>
-              <LabelList dataKey="breachedPct" position="bottom" fill={C.amber} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}%`:""} offset={10}/>
-            </Line>
-          </ComposedChart>
+          </LineChart>
         </ResponsiveContainer>
       );
     }
