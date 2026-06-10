@@ -382,6 +382,11 @@
         // Legacy advisor (HubSpot owner-type field) + Replied — Drafts With Customer stage dates
         const rawLegacyAdvisor=p.legacy_advisor__owner||"";
         const legacyAdvisor=rawLegacyAdvisor?((legacyAdvisorOptions||{})[rawLegacyAdvisor.trim()]||ownerMap[rawLegacyAdvisor.trim()]||rawLegacyAdvisor.trim()):"";
+        // Estate Planning Consultant ("will_consultant" in HubSpot). Owner-type
+        // field — resolve via ownerMap, fall back to raw value if it isn't a
+        // numeric owner ID (e.g. a name string already).
+        const rawWillConsultant=(p.will_consultant||"").trim();
+        const willConsultant=rawWillConsultant?(ownerMap[rawWillConsultant]||rawWillConsultant):"";
         const enteredRDWC=parseHSDate(p.hs_v2_date_entered_1223620776);
         const exitedRDWC=parseHSDate(p.hs_v2_date_exited_1223620776);
         const rdwcTurnaroundBizDays=calcBusinessDays(enteredRDWC,exitedRDWC);
@@ -496,7 +501,7 @@
           dateOfAppointment,firstQueryDate,waiverSigned14d,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
-          legacyAdvisor,enteredRDWC,exitedRDWC,rdwcTurnaroundBizDays,
+          legacyAdvisor,willConsultant,enteredRDWC,exitedRDWC,rdwcTurnaroundBizDays,
           queryExcluded:(()=>{const orig=dealExclusions&&dealExclusions[String(d.id)];return !!(orig&&drafterName.toLowerCase()!==String(orig).toLowerCase());})(),
           queryExcludedOriginalDrafter:(dealExclusions&&dealExclusions[String(d.id)])||null,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
@@ -646,6 +651,7 @@
       chart15:'Consultant query rate per period. Cohort: deals that exited "Appointment Outcome (Estate Planning)" in the period. Numerator: those in the cohort with a Consultant Query Reason populated. Stacked bars show the count by reason (right axis); line shows the rate (left axis). SLA: green ≤5%, amber ≤10%, red >10%.',
       chart16:'Total amendments completed per drafter in the selected period, with each bar split by Amendment Type. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner and stacked by amendment_source. Amendments with no source set show in grey as "Not specified".',
       chart17:'Appointment Outcome (Estate Planning) turnaround. Each dot shows the average business days for that bucket, with the breach rate inline (e.g. "3.8d · 23%" means avg 3.8 biz days, 23% of deals took longer than 1 biz day). Hover any dot for the full breakdown: total deals, met / breached split, and the average. Bucketed by exit date; deals still in stage are treated as "exited today" (running clock) so stale Outcomes inflate the current bucket. Same-day entry+exit counts as 0 biz days (SLA met). Working days exclude weekends + UK (England & Wales) bank holidays. SLA: 1 business day (red dashed line; green band below).',
+      chart18:'Top 10 Estate Planning Consultants by consultant-query rate in the selected period. Cohort per EPC: their deals that exited "Appointment Outcome (Estate Planning)" in the bucket. Rate = % of those deals where a Consultant Query Reason was recorded (the drafter flagged something needing clarification from the EPC). Only EPCs with ≥5 deals in the cohort qualify, so a single 1-of-1 query doesn\'t dominate the leaderboard. Bar colours: green ≤5%, amber ≤10%, red >10% (matches Chart 15 thresholds). EPC identified via the `will_consultant` HubSpot deal property.',
       cWorkload:'Open deals per drafter, broken down by SLA status. Counts deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, Approved — Proof Reading, or Amendment Requested. SLA evaluated per deal: drafting deals use 28 calendar days from the latest of Date of Appointment / original drafting-instructions date (+14 cal days if the 14-day waiver is not signed); amendment deals use 10 business days for Client amendments or 1 business day otherwise. Drafters with fewer than 10 open deals are hidden to keep the chart focused on the people carrying meaningful load. Sorted by Breached count descending, then total descending.',
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
@@ -684,6 +690,7 @@
       c15:[{key:"label",label:"Period"},{key:"rate",label:"Rate %"},{key:"total",label:"Total"},{key:"queried",label:"Queried"}],
       c16:[{key:"name",label:"Drafter"},{key:"count",label:"Amendments"}],
       c17:[{key:"label",label:"Period"},{key:"total",label:"Total Deals"},{key:"breached",label:"Breached"},{key:"breachedPct",label:"% Breached"},{key:"avgBizDays",label:"Avg Biz Days"}],
+      c18:[{key:"name",label:"EPC"},{key:"rate",label:"Rate %"},{key:"queried",label:"Queried"},{key:"total",label:"Total"}],
       cWorkload:[{key:"name",label:"Drafter"},{key:"breached",label:"Breached"},{key:"close",label:"Close"},{key:"warning",label:"Warning"},{key:"comfortable",label:"Comfortable"},{key:"total",label:"Total"},{key:"breachedPct",label:"Breached %"}],
       la1:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Active in RDWC"}],
       la2:[{key:"name",label:"Legacy Advisor"},{key:"count",label:"Exited RDWC"}],
@@ -706,6 +713,7 @@
       c15:[{key:"dealname",label:"Deal"},{key:"reasons",label:"Consultant Query Reason"}],
       c16:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered Amendment"},{key:"exited",label:"Exited Amendment"},{key:"source",label:"Source"}],
       c17:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"bizDays",label:"Biz Days"},{key:"slaStatus",label:"SLA"}],
+      c18:[{key:"dealname",label:"Deal"},{key:"queried",label:"Queried?"},{key:"reasons",label:"Consultant Query Reasons"}],
       cWorkload:[{key:"dealname",label:"Deal"},{key:"stage",label:"Stage"},{key:"state",label:"SLA State"},{key:"daysRemaining",label:"Days Remaining"}],
       la1:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered RDWC"}],
       la2:[{key:"dealname",label:"Deal"},{key:"entered",label:"Entered"},{key:"exited",label:"Exited"},{key:"days",label:"Biz Days"}],
@@ -2222,6 +2230,73 @@
               <LabelList dataKey="rate" position="top" fill={C.white} fontSize={10} fontWeight={600} formatter={v=>v!=null?`${v}%`:""} offset={14}/>
             </Line>
           </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // ─── Chart 18: Consultant Query Rate per EPC — Worst Offenders ──
+    // Horizontal bar chart, top 10 EPCs by query rate in the selected
+    // bucket. Mirrors Chart 15's cohort and rate definition (deals that
+    // exited Appointment Outcome → those with consultant_query_reason
+    // populated), but grouped by `will_consultant` (the Estate Planning
+    // Consultant on the deal). Min 5 deals per EPC to qualify — avoids
+    // "1 query of 1 deal = 100%" outliers polluting the leaderboard.
+    // Colour thresholds match Chart 15: green ≤5%, amber ≤10%, red >10%.
+    function Chart18({deals,gran,bucket}){
+      const data=useMemo(()=>{
+        const groups={}; // EPC name → { total, queried, deals }
+        deals.forEach(d=>{
+          if(!d.exitedAppointmentOutcome)return;
+          if(dateToBucket(d.exitedAppointmentOutcome,gran)!==bucket)return;
+          const epc=(d.willConsultant||"").trim();
+          if(!epc||epc==="Unknown"||/^\d+$/.test(epc))return;
+          if(!groups[epc])groups[epc]={total:0,queried:0};
+          groups[epc].total++;
+          if(d.consultantQueryReasons&&d.consultantQueryReasons.length)groups[epc].queried++;
+        });
+        return Object.entries(groups)
+          .filter(([,g])=>g.total>=5)
+          .map(([name,g])=>{
+            const rate=parseFloat(((g.queried/g.total)*100).toFixed(1));
+            const state=rate<=5?"met":rate<=10?"close":"below";
+            return{name,total:g.total,queried:g.queried,rate,state};
+          })
+          .sort((a,b)=>b.rate-a.rate)
+          .slice(0,10);
+      },[deals,gran,bucket]);
+
+      if(!data.length){
+        return<div style={{color:C.text,textAlign:"center",paddingTop:60}}>No EPCs with ≥5 deals exited Appointment Outcome in this period</div>;
+      }
+
+      const maxRate=Math.max(...data.map(d=>d.rate),12);
+      // Custom right-side label combining rate + (queried/total) so the
+      // user sees both the ratio and the absolute counts at a glance.
+      const renderRateLabel=(props)=>{
+        const{x,y,width,height,index}=props;
+        const point=data[index];
+        if(!point)return null;
+        return(
+          <text x={x+width+8} y={y+(height/2)+4} fill={C.white} fontSize="11" fontWeight="600">
+            {point.rate}% ({point.queried}/{point.total})
+          </text>
+        );
+      };
+
+      return(
+        <ResponsiveContainer width="100%" height={Math.max(280,data.length*42+60)}>
+          <BarChart data={data} layout="vertical" margin={{top:20,right:90,left:10,bottom:10}}>
+            <CartesianGrid horizontal={false} stroke={C.grid} strokeDasharray="3 3"/>
+            <XAxis type="number" domain={[0,Math.ceil(maxRate*1.15)]} unit="%" tick={{fill:C.text,fontSize:11}} axisLine={{stroke:C.grid}}/>
+            <YAxis type="category" dataKey="name" width={140} tick={{fill:C.text,fontSize:12}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<DarkTooltip/>}/>
+            <ReferenceLine x={5} stroke={C.green} strokeDasharray="6 4" strokeWidth={2}/>
+            <ReferenceLine x={10} stroke={C.amber} strokeDasharray="6 4" strokeWidth={2}/>
+            <Bar dataKey="rate" name="Query Rate %" radius={[0,6,6,0]} barSize={22}>
+              {data.map((entry,i)=>(<Cell key={i} fill={perfColor(entry.state)}/>))}
+              <LabelList dataKey="rate" content={renderRateLabel}/>
+            </Bar>
+          </BarChart>
         </ResponsiveContainer>
       );
     }
@@ -4197,6 +4272,41 @@
         return{rows,detailMap};
       },[deals,gran]);
 
+      // c18: Consultant Query Rate per EPC — same cohort + numerator as
+      // Chart 15, grouped by will_consultant. Bucket-scoped (selectedBucket).
+      // Min 5 deals to qualify; top 10 by rate. Drilldown shows each deal
+      // attributed to the EPC plus whether it was queried and the reasons.
+      const c18Table=useMemo(()=>{
+        const groups={}; // EPC → [{deal, queried}]
+        deals.forEach(d=>{
+          if(!d.exitedAppointmentOutcome)return;
+          if(dateToBucket(d.exitedAppointmentOutcome,gran)!==selectedBucket)return;
+          const epc=(d.willConsultant||"").trim();
+          if(!epc||epc==="Unknown"||/^\d+$/.test(epc))return;
+          const queried=!!(d.consultantQueryReasons&&d.consultantQueryReasons.length);
+          (groups[epc]=groups[epc]||[]).push({deal:d,queried});
+        });
+        const rows=Object.entries(groups)
+          .filter(([,arr])=>arr.length>=5)
+          .map(([name,arr])=>{
+            const queried=arr.filter(x=>x.queried).length;
+            const rate=parseFloat(((queried/arr.length)*100).toFixed(1));
+            return{_key:name,name,total:arr.length,queried,rate:rate+"%"};
+          })
+          .sort((a,b)=>parseFloat(b.rate)-parseFloat(a.rate))
+          .slice(0,10);
+        const detailMap={};
+        rows.forEach(r=>{
+          detailMap[r._key]=(groups[r._key]||[]).map(x=>({
+            id:x.deal.id,
+            dealname:x.deal.dealname,
+            queried:x.queried?"Yes":"No",
+            reasons:x.queried?(x.deal.consultantQueryReasons.join(", ")||"—"):"—"
+          }));
+        });
+        return{rows,detailMap};
+      },[deals,gran,selectedBucket]);
+
       const c16Table=useMemo(()=>{
         const groups={};
         deals.forEach(d=>{
@@ -4499,6 +4609,9 @@
           <div className="dash-row" style={S.row}>
             <ChartCard chartId="chart-15" title={"Consultant Query Rate \u2014 Trend"} infoText={INFO.chart15} columns={T_COLS.c15} rows={c15Table.rows} detailMap={c15Table.detailMap} detailCols={T_DCOLS.c15} csvName={`consultant_query_rate_${gran}.csv`}>
               <Chart15 deals={deals} gran={gran}/>
+            </ChartCard>
+            <ChartCard chartId="chart-18" title={"Consultant Query Rate per EPC \u2014 Worst Offenders"} infoText={INFO.chart18} columns={T_COLS.c18} rows={c18Table.rows} detailMap={c18Table.detailMap} detailCols={T_DCOLS.c18} csvName={`consultant_query_rate_per_epc_${gran}_${selectedBucket}.csv`}>
+              <Chart18 deals={deals} gran={gran} bucket={selectedBucket}/>
             </ChartCard>
           </div>
 

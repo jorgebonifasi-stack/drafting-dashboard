@@ -61,6 +61,11 @@ const PROPERTIES = [
   "date_drafting_query",
   "have_they_signed_the_14_day_waiver_",
   "consultant_query_reason",
+  // Estate Planning Consultant (the person who runs the appointment).
+  // Used by Chart 18 ("Consultant Query Rate per EPC") to attribute
+  // queries back to the consultant whose ambiguous instructions caused
+  // them. Owner-type field — resolved via ownerMap.
+  "will_consultant",
   "legacy_advisor__owner",
   // Legacy Advisor → Macmillan follow-up queue: deals 6 months past
   // appointment, region IS NOT Scotland, non-urgent.
