@@ -601,14 +601,30 @@
     // Tooltip for stacked charts — shows only the hovered segment + line values
     function StackedTooltip({active,payload,label}){
       if(!active||!payload?.length)return null;
-      // Show only non-zero bar segments + line values
-      const items=payload.filter(p=>p.value!=null&&(p.value>0||p.type==="none"||p.dataKey==="rate"||p.dataKey==="avgBizDays"||p.dataKey==="avgDays"));
+      // dataKeys that are LINE values (overall rate or avg), not stacked
+      // bar segments. They pass through even when their value is 0 (since
+      // they're informational) and they're EXCLUDED from the Total sum
+      // below (a rate or average wouldn't add to the segment total).
+      const LINE_KEYS=new Set(["rate","avgBizDays","avgDays"]);
+      const isLine=p=>LINE_KEYS.has(p.dataKey);
+      const items=payload.filter(p=>p.value!=null&&(p.value>0||p.type==="none"||isLine(p)));
+      // Sum of the bar (non-line) segments — the period total across all
+      // categories. Skipped when there's only 0 or 1 bar items (no useful
+      // total to show in that case).
+      const barItems=items.filter(p=>!isLine(p)&&typeof p.value==="number");
+      const total=barItems.reduce((s,p)=>s+p.value,0);
+      const fmtVal=v=>typeof v==="number"?(Number.isInteger(v)?v:v.toFixed(1)):v;
       return(
         <div style={{background:"#222",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",fontSize:12,color:C.text}}>
           <div style={{fontWeight:600,color:C.white,marginBottom:4}}>{label}</div>
           {items.map((p,i)=>(
-            <div key={i} style={{color:p.color||p.stroke||C.text}}>{p.name}: {typeof p.value==="number"?(Number.isInteger(p.value)?p.value:p.value.toFixed(1)):p.value}</div>
+            <div key={i} style={{color:p.color||p.stroke||C.text}}>{p.name}: {fmtVal(p.value)}</div>
           ))}
+          {barItems.length>1&&(
+            <div style={{marginTop:4,paddingTop:4,borderTop:`1px solid ${C.border}`,color:C.white,fontWeight:600}}>
+              Total: {fmtVal(total)}
+            </div>
+          )}
         </div>
       );
     }
