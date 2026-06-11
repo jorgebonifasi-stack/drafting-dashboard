@@ -5164,9 +5164,16 @@
       // DWC/RFP entry OR currently in DWC / RDWC / RFP / Sent To Customer,
       // to catch bulk-imported deals missing entry timestamps).
       // High-priority deals are included — same 3-call SLA applies.
-      // Additional gate: DoA + 6 months has passed (the SLA window has
-      // fully closed and the deal can be judged). The audit date range
-      // applies to DoA (not draft End date), the natural anchor for this SLA.
+      //
+      // The audit's "End SLA Month" picker filters deals by their SLA
+      // DEADLINE (DoA + 6 months) falling in the selected range — matching
+      // how the drafting tiles work, where the picker scopes by when the
+      // SLA was concluded. So "May 2026" surfaces deals with DoA Nov 2025
+      // (their 6mo deadline lands in May 2026), not deals with DoA in May
+      // (whose deadlines are still in the future).
+      //
+      // Additional gate: the deadline must be ≤ today (the SLA window has
+      // fully closed) so we don't judge deals that still have time left.
       //
       // The legacy v2 outcome field is deliberately ignored — only the new
       // macmillan_call_1/2/3 properties count toward compliance.
@@ -5188,12 +5195,19 @@
           // deals follow the same 3-call SLA, same as in the queue.)
           const hasDraft=d.firstDWC||d.firstRFP||POST_DWC_STAGES.has(d.dealstage);
           if(!hasDraft)return;
+          // Filter by SLA DEADLINE (DoA + 6 months) falling in the audit's
+          // selected month range — matches how the drafting tiles work
+          // ("End SLA Month" = when the SLA was concluded). Previously this
+          // filtered by DoA in range, which meant "May 2026" never showed
+          // any deals (their 6mo deadlines would still be in the future).
           const doa=new Date(d.dateOfAppointment);
-          if(start&&doa<start)return;
-          if(end&&doa>end)return;
-          // 6-month SLA deadline; only count cohorts whose window has closed.
           const deadline=new Date(doa.getFullYear(),doa.getMonth()+6,doa.getDate());
           deadline.setHours(0,0,0,0);
+          if(start&&deadline<start)return;
+          if(end&&deadline>end)return;
+          // Only judge deals whose SLA window has actually closed (deadline
+          // in the past). Future deadlines mean the deal still has time to
+          // become compliant; counting them now would be premature.
           if(deadline>today)return;
           total++;
           const c1=d.macmillanCall1||"";
@@ -5331,12 +5345,12 @@
                     <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgEligible===0?"No urgent deals":`${stats.urgMet} of ${stats.urgEligible} met`}{stats.urgCount>stats.urgEligible?` · ${stats.urgCount-stats.urgEligible} excl`:""}</div>
                   </div>
                   {macmillanCallStats&&(
-                    <div style={card} title="Macmillan phone-call SLA: 3 call outcomes recorded within 6 months of appointment. Compliant when ALL THREE Macmillan Call N fields have a value (Yes or No, any combination) — a single Yes on Call 1 with blanks on Calls 2/3 is NOT compliant; the SLA paper trail must be complete. Cohort uses DoA (not draft End date) as the anchor and only includes deals where DoA + 6mo has already passed.">
+                    <div style={card} title="Macmillan phone-call SLA: 3 call outcomes recorded within 6 months of appointment. Compliant when ALL THREE Macmillan Call N fields have a value (Yes or No, any combination) — a single Yes on Call 1 with blanks on Calls 2/3 is NOT compliant; the SLA paper trail must be complete. The 'End SLA Month' picker filters by SLA DEADLINE (DoA + 6 months) falling in the selected range — i.e. 'May 2026' = deals whose 6-month deadline landed in May (DoA Nov 2025). Same convention as the drafting compliance tiles.">
                       <div style={cardLabel}>Phone-Call SLA %</div>
                       <div style={{...cardValue,color:macmillanCallStats.pct==null?C.text:macmillanCallStats.pct>=90?C.green:macmillanCallStats.pct>=75?C.amber:C.red}}>{macmillanCallStats.pct==null?"—":`${macmillanCallStats.pct}%`}</div>
                       <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
                         {macmillanCallStats.total===0
-                          ?"No DoA cohorts past 6mo in this range"
+                          ?"No SLA deadlines fell in this range"
                           :`${macmillanCallStats.compliant} of ${macmillanCallStats.total} compliant`}
                       </div>
                       {macmillanCallStats.total>0&&(
