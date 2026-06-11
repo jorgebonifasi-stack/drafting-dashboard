@@ -387,6 +387,15 @@
         // numeric owner ID (e.g. a name string already).
         const rawWillConsultant=(p.will_consultant||"").trim();
         const willConsultant=rawWillConsultant?(ownerMap[rawWillConsultant]||rawWillConsultant):"";
+        // Macmillan Service KPI fields. createDate is the deal's
+        // HubSpot creation timestamp (= Macmillan referral arrival).
+        // pendingMacmillanDays = cumulative time spent in stage 146431643
+        // ("Pending - Macmillan"), converted from milliseconds to days.
+        // firstConnectedCallDate = HubSpot's first-connected-call stamp.
+        const createDate=parseHSDate(p.createdate);
+        const pendingMacmillanMs=parseFloat(p.hs_v2_cumulative_time_in_146431643);
+        const pendingMacmillanDays=isNaN(pendingMacmillanMs)?null:(pendingMacmillanMs/86400000);
+        const firstConnectedCallDate=parseHSDate(p.first_connected_call_date);
         const enteredRDWC=parseHSDate(p.hs_v2_date_entered_1223620776);
         const exitedRDWC=parseHSDate(p.hs_v2_date_exited_1223620776);
         const rdwcTurnaroundBizDays=calcBusinessDays(enteredRDWC,exitedRDWC);
@@ -502,6 +511,7 @@
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
           legacyAdvisor,willConsultant,enteredRDWC,exitedRDWC,rdwcTurnaroundBizDays,
+          createDate,pendingMacmillanDays,firstConnectedCallDate,
           queryExcluded:(()=>{const orig=dealExclusions&&dealExclusions[String(d.id)];return !!(orig&&drafterName.toLowerCase()!==String(orig).toLowerCase());})(),
           queryExcludedOriginalDrafter:(dealExclusions&&dealExclusions[String(d.id)])||null,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
@@ -5260,6 +5270,86 @@
         return{total,compliant,breached,withYes,with3Nos,pct};
       },[deals,fromMonth,toMonth,leadFilter]);
 
+      // ─── Macmillan Service KPIs (Rows 4, 5, 7, 8 from the Macmillan
+      // reporting spreadsheet) ──────────────────────────────────────
+      // Cohort: Macmillan deals with createdate (= referral arrival) in
+      // the selected End SLA Month range. Note: a third interpretation
+      // of the date picker — drafting tiles use End date, phone-call
+      // tile uses DoA + 6mo deadline, these use createdate. Section
+      // header and tooltips call this out so users aren't confused.
+      //
+      // Sub-contractor mapping for Row 8: Thomas Bradley / Squiggle /
+      // Adrian Gallagher / Lacuna are specific HubSpot owners. Anything
+      // else (including "Unknown" / blank) buckets to OL (in-house).
+      // Match is case-insensitive on the drafterName so minor casing
+      // differences in HubSpot don't break the bucket.
+      //
+      // Row 6 (5-working-day rule between calls) intentionally skipped
+      // for now — needs engagement-level data, deferred.
+      const MACMILLAN_SUBCONTRACTORS=["Thomas Bradley","Squiggle","Adrian Gallagher","Lacuna"];
+      const macmillanKPIs=useMemo(()=>{
+        if(!leadFilter.has("Macmillan"))return null;
+        const start=fromMonth?monthStart(fromMonth):null;
+        const end=toMonth?monthEnd(toMonth):null;
+        // Each KPI tracks total in cohort + count that failed.
+        let k4Total=0,k4Fail=0;     // Row 4: initial contact > 3 days in Pending
+        let k5Total=0,k5Fail=0;     // Row 5: urgent > 2 days in Pending
+        let k7Total=0,k7Fail=0;     // Row 7: no first-connected-call ever
+        const subcontractorCounts={"OL":0};
+        MACMILLAN_SUBCONTRACTORS.forEach(name=>{subcontractorCounts[name]=0;});
+
+        const matchSub=drafter=>{
+          if(!drafter||drafter==="Unknown"||/^\d+$/.test(drafter))return "OL";
+          const dl=drafter.trim().toLowerCase();
+          for(const sub of MACMILLAN_SUBCONTRACTORS){
+            if(dl===sub.toLowerCase()||dl.includes(sub.toLowerCase()))return sub;
+          }
+          return "OL";
+        };
+
+        deals.forEach(d=>{
+          if(!(d.leadSources||[]).includes("Macmillan"))return;
+          if(!d.createDate)return;
+          if(start&&d.createDate<start)return;
+          if(end&&d.createDate>end)return;
+
+          // Row 4 — every Macmillan deal in the cohort is in scope.
+          // Fails when cumulative time in Pending - Macmillan > 3 days.
+          k4Total++;
+          if(d.pendingMacmillanDays!=null&&d.pendingMacmillanDays>3)k4Fail++;
+
+          // Row 5 — urgent deals only. Same Pending-time anchor, > 2 days.
+          // Spreadsheet treats `hs_priority = HIGH` OR a populated
+          // urgent_request_reason as "urgent" for this row.
+          const isUrgentForKPI=d.isUrgent||(Array.isArray(d.urgentReason)&&d.urgentReason.length>0);
+          if(isUrgentForKPI){
+            k5Total++;
+            if(d.pendingMacmillanDays!=null&&d.pendingMacmillanDays>2)k5Fail++;
+          }
+
+          // Row 7 — fails when no first-connected-call ever recorded
+          // (proxy for "we never reached the customer, no follow-up").
+          k7Total++;
+          if(!d.firstConnectedCallDate)k7Fail++;
+
+          // Row 8 — count deals by sub-contractor (drafterName).
+          const bucket=matchSub(d.drafterName);
+          subcontractorCounts[bucket]=(subcontractorCounts[bucket]||0)+1;
+        });
+
+        const pctFail=(fail,total)=>total>0?Math.round((fail/total)*100):null;
+        const subBuckets=Object.entries(subcontractorCounts)
+          .map(([name,count])=>({name,count}))
+          .sort((a,b)=>b.count-a.count);
+        return{
+          k4:{total:k4Total,fail:k4Fail,pct:pctFail(k4Fail,k4Total)},
+          k5:{total:k5Total,fail:k5Fail,pct:pctFail(k5Fail,k5Total)},
+          k7:{total:k7Total,fail:k7Fail,pct:pctFail(k7Fail,k7Total)},
+          subBuckets,
+          totalInCohort:k4Total
+        };
+      },[deals,fromMonth,toMonth,leadFilter]);
+
       // Exclusive selection — clicking a lead-source pill switches to it
       // and deselects everything else. We never allow an empty selection
       // because the audit needs a single SLA rule (Macmillan or Coral) to
@@ -5393,6 +5483,68 @@
                 </React.Fragment>
               )}
             </div>
+
+            {/* Macmillan Service KPIs — only visible when Macmillan is the active cohort. */}
+            {macmillanKPIs&&(
+              <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"18px 20px",marginBottom:20}}>
+                <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:4}}>Macmillan Service KPIs</div>
+                <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
+                  Cohort: Macmillan deals with <strong style={{color:C.text}}>createdate</strong> in the selected End SLA Month range (different from the drafting tiles' End-date cohort and the Phone-Call SLA tile's deadline cohort). Fail % rendered with the same colour scale: green &le;5%, amber &le;10%, red &gt;10%. Hover any tile for the exact rule.
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14,marginBottom:18}}>
+                  {/* Row 4 — 2-day initial contact */}
+                  <div style={card} title="Row 4 — Initial contact phone call within 2 days of Macmillan referral. Fail when cumulative time in 'Pending - Macmillan' stage > 3 days (mirrors the source spreadsheet's >3d threshold).">
+                    <div style={cardLabel}>Initial contact (2d) — fail %</div>
+                    <div style={{...cardValue,color:macmillanKPIs.k4.pct==null?C.text:macmillanKPIs.k4.pct<=5?C.green:macmillanKPIs.k4.pct<=10?C.amber:C.red}}>{macmillanKPIs.k4.pct==null?"—":`${macmillanKPIs.k4.pct}%`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
+                      {macmillanKPIs.k4.total===0?"No deals created in this range":`${macmillanKPIs.k4.fail} of ${macmillanKPIs.k4.total} failed`}
+                    </div>
+                  </div>
+                  {/* Row 5 — 24hr urgent */}
+                  <div style={card} title="Row 5 — Urgent Wills phone call within 24 hours. Cohort: deals where hs_priority = High OR urgent_request_reason is populated. Fail when cumulative time in 'Pending - Macmillan' > 2 days (mirrors the source spreadsheet's >2d threshold).">
+                    <div style={cardLabel}>Urgent contact (24h) — fail %</div>
+                    <div style={{...cardValue,color:macmillanKPIs.k5.pct==null?C.text:macmillanKPIs.k5.pct<=5?C.green:macmillanKPIs.k5.pct<=10?C.amber:C.red}}>{macmillanKPIs.k5.pct==null?"—":`${macmillanKPIs.k5.pct}%`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
+                      {macmillanKPIs.k5.total===0?"No urgent deals in this range":`${macmillanKPIs.k5.fail} of ${macmillanKPIs.k5.total} failed`}
+                    </div>
+                  </div>
+                  {/* Row 7 — follow-up email / no contact */}
+                  <div style={card} title="Row 7 — Follow-up email if customer still unreached. Fail when first_connected_call_date is blank (no connection ever made on the deal). Approximation of the spreadsheet's 'column Q blank' check.">
+                    <div style={cardLabel}>No connection made — fail %</div>
+                    <div style={{...cardValue,color:macmillanKPIs.k7.pct==null?C.text:macmillanKPIs.k7.pct<=5?C.green:macmillanKPIs.k7.pct<=10?C.amber:C.red}}>{macmillanKPIs.k7.pct==null?"—":`${macmillanKPIs.k7.pct}%`}</div>
+                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
+                      {macmillanKPIs.k7.total===0?"No deals created in this range":`${macmillanKPIs.k7.fail} of ${macmillanKPIs.k7.total} with no first-connected-call`}
+                    </div>
+                  </div>
+                </div>
+                {/* Row 8 — Leads by sub-contractor */}
+                <div style={{color:C.white,fontSize:13,fontWeight:600,marginBottom:8}}>Leads by sub-contractor</div>
+                {macmillanKPIs.subBuckets.every(b=>b.count===0)?(
+                  <div style={{fontSize:12,color:C.text,opacity:0.5}}>No Macmillan deals created in this range.</div>
+                ):(
+                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    {(() => {
+                      const maxCount=Math.max(...macmillanKPIs.subBuckets.map(b=>b.count),1);
+                      return macmillanKPIs.subBuckets.map(b=>{
+                        const pct=Math.round((b.count/maxCount)*100);
+                        return(
+                          <div key={b.name} style={{display:"flex",alignItems:"center",gap:10,fontSize:12}}>
+                            <div style={{width:140,color:C.text}}>{b.name}</div>
+                            <div style={{flex:1,height:18,background:"rgba(255,255,255,0.04)",borderRadius:4,overflow:"hidden"}}>
+                              <div style={{width:`${pct}%`,height:"100%",background:b.name==="OL"?"rgba(52,152,219,0.55)":"rgba(155,89,182,0.55)",borderRadius:4}}/>
+                            </div>
+                            <div style={{width:50,textAlign:"right",color:C.white,fontWeight:600}}>{b.count}</div>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                )}
+                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:8}}>
+                  Total: {macmillanKPIs.subBuckets.reduce((s,b)=>s+b.count,0)} deals. Sub-contractor = drafterName matched to one of {MACMILLAN_SUBCONTRACTORS.join(", ")}. Anything else (including blanks / Unknown) → OL.
+                </div>
+              </div>
+            )}
 
             {/* Table */}
             <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px"}}>
