@@ -4987,11 +4987,26 @@
           if(workingDays==null)return;
           // Calendar days for the Coral SLA (42 cal days from DoA to End).
           const calendarDays=Math.round((endDay-startDay)/86400000);
+          // "Management Sign Off" exception: a deal flagged Urgent purely
+          // because management sign-off is required is admin-paperwork
+          // urgency, not customer-driven time pressure — the 3-working-day
+          // SLA isn't appropriate. Per Ops decision, treat those deals as
+          // Standard for SLA purposes (20 working days, +14d waiver as
+          // normal). Original `d.isUrgent` is preserved on the deal object
+          // itself (Chart 8/9 still count them as urgent for volume); the
+          // override only applies inside this audit's row builder.
+          // Match is permissive: trimmed, case-insensitive, allows "Sign-Off"
+          // / "SignOff" variants. Only triggers when MSO is the ONLY reason;
+          // if there's another reason listed (real customer urgency), the
+          // 3-day SLA stays.
+          const isMSOReason=r=>/management\s*sign[-\s]*off/i.test(String(r||"").trim());
+          const isMSOOnly=d.isUrgent&&Array.isArray(d.urgentReason)&&d.urgentReason.length>0&&d.urgentReason.every(isMSOReason);
+          const slaIsUrgent=d.isUrgent&&!isMSOOnly;
           // 14-day waiver: when the customer has NOT signed it, the standard SLA
           // gets an extra 14 calendar days, approximated as 10 working days.
           // Urgent SLA stays at 3 working days (waiver doesn't apply to rush jobs).
-          const baseTarget=d.isUrgent?3:20;
-          const waiverExtension=(!d.isUrgent&&d.waiverSigned14d===false)?10:0;
+          const baseTarget=slaIsUrgent?3:20;
+          const waiverExtension=(!slaIsUrgent&&d.waiverSigned14d===false)?10:0;
           const target=baseTarget+waiverExtension;
           const met=workingDays<=target;
           // Coral SLA: 42 calendar days from DoA to End. The 14-day waiver
@@ -5017,7 +5032,12 @@
             isCoral,
             hasWillProduct:!!d.hasWillProduct,
             hasLpaProduct:!!d.hasLpaProduct,
-            isUrgent:!!d.isUrgent,
+            isUrgent:slaIsUrgent,
+            // Preserve the underlying flag so the CSV / drilldown can show
+            // it (and so we can flip it back if someone asks why an MSO
+            // deal isn't in the Urgent bucket).
+            wasFlaggedUrgent:!!d.isUrgent,
+            mgmtSignOffOnly:isMSOOnly,
             appointment:d.dateOfAppointment,
             endDate,
             workingDays,
@@ -5370,7 +5390,7 @@
               <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
                 {filterMode==="coral"
                   ?"Coral SLA = 42 calendar days from Date of Appointment to End. +14 calendar days when the 14-day waiver is not signed. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority does not adjust the Coral SLA. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."
-                  :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."}
+                  :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). Exception: deals flagged Urgent purely because Urgent Request Reason is \"Management Sign Off\" are treated as Standard (20 working days) — admin paperwork urgency isn't customer-driven time pressure. Those rows show an \"MSO → Standard\" badge. +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."}
               </div>
               {rows.length===0?(
                 <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed deals in this range.</div>
@@ -5397,6 +5417,7 @@
                           <td style={{padding:"10px 12px"}}>
                             <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
                             {filterMode!=="coral"&&r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
+                            {filterMode!=="coral"&&r.mgmtSignOffOnly&&<span title="Flagged Urgent in HubSpot but the reason is Management Sign Off only — treated as Standard for SLA purposes (20 working days, not 3)." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(127,140,141,0.22)",color:"#95A5A6",fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>MSO → Standard</span>}
                             {(filterMode==="coral"?r.coralWaiverExtension>0:r.waiverExtension>0)&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
                           </td>
                           <td style={{padding:"10px 12px",fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",fontSize:12,color:C.text,opacity:0.7}}>{r.id}</td>
