@@ -5168,16 +5168,24 @@
       },[rows]);
 
       // ─── Macmillan phone-call SLA compliance ──────────────────
-      // SLA: 3 call attempts logged within 6 months of Date of Appointment.
-      // Compliant = ALL THREE Macmillan Call N properties have a recorded
-      // value (Yes or No, any combination). A single Yes on Call 1 with
-      // blanks on Calls 2/3 is NOT compliant — the SLA paper trail isn't
-      // complete until every slot is recorded. Anything with at least one
-      // blank field after 6 months has passed is a breach.
+      // SLA: outcome confirmed within 6 months of Date of Appointment via
+      // up to 3 call attempts. Compliant when EITHER:
+      //   - At least one Macmillan Call N = "Yes" (signing confirmed,
+      //     further attempts unnecessary), OR
+      //   - All three Macmillan Call N = "No" (full 3-attempt effort
+      //     logged — we did everything we could).
+      // Anything else (some blanks with no Yes recorded) is a breach.
       //
-      // Sub-stats (still kept for visibility):
-      //   - "via Yes":  fully filled deals where at least one Call N = Yes
-      //   - "via 3 No's": fully filled deals where all three Call N = No
+      // Intentionally looser than the queue's "all 3 fields filled" rule.
+      // The queue forces the paper trail to be complete (advisors must
+      // record Calls 2/3 even after an early Yes), but the AUDIT measures
+      // whether the SLA outcome was achieved. A deal can be Compliant
+      // here while still sitting in the queue waiting for trailing
+      // outcome entries.
+      //
+      // Sub-stats:
+      //   - "via Yes":     compliant deals with at least one Call N = Yes
+      //   - "via 3 No's":  compliant deals where all three Call N = No
       //
       // Cohort filters mirror the Macmillan Follow-Up Queue: Macmillan lead
       // source, region ≠ Scotland, and "a draft exists" (workflow-stamped
@@ -5233,16 +5241,18 @@
           const c1=d.macmillanCall1||"";
           const c2=d.macmillanCall2||"";
           const c3=d.macmillanCall3||"";
-          // Compliant = all three Call N fields have a recorded value
-          // (Yes or No). The breakdown into "via Yes" / "via 3 No's" is
-          // kept as a useful sub-stat: deals fully filled where at least
-          // one Yes was recorded vs deals where all three came back No.
-          const filledCount=[c1,c2,c3].filter(v=>v==="yes"||v==="no").length;
-          if(filledCount===3){
-            const hasYes=c1==="yes"||c2==="yes"||c3==="yes";
-            if(hasYes)withYes++;
-            else with3Nos++;
-          }
+          // Compliant = at least one Yes (SLA met early) OR all three
+          // Nos (full 3-attempt effort logged). This is the SLA outcome
+          // rule per Ops, intentionally looser than the queue's "all 3
+          // fields filled" rule — the queue forces the paper trail to
+          // be complete, the audit measures whether the SLA was met.
+          // A deal can be Compliant in this audit while still appearing
+          // in the queue (e.g. Yes on Call 1, blanks on Calls 2/3 —
+          // SLA satisfied but advisor still needs to record outcomes).
+          const hasYes=c1==="yes"||c2==="yes"||c3==="yes";
+          const allNos=c1==="no"&&c2==="no"&&c3==="no";
+          if(hasYes)withYes++;
+          else if(allNos)with3Nos++;
         });
         const compliant=withYes+with3Nos;
         const breached=total-compliant;
@@ -5365,7 +5375,7 @@
                     <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgEligible===0?"No urgent deals":`${stats.urgMet} of ${stats.urgEligible} met`}{stats.urgCount>stats.urgEligible?` · ${stats.urgCount-stats.urgEligible} excl`:""}</div>
                   </div>
                   {macmillanCallStats&&(
-                    <div style={card} title="Macmillan phone-call SLA: 3 call outcomes recorded within 6 months of appointment. Compliant when ALL THREE Macmillan Call N fields have a value (Yes or No, any combination) — a single Yes on Call 1 with blanks on Calls 2/3 is NOT compliant; the SLA paper trail must be complete. The 'End SLA Month' picker filters by SLA DEADLINE (DoA + 6 months) falling in the selected range — i.e. 'May 2026' = deals whose 6-month deadline landed in May (DoA Nov 2025). Same convention as the drafting compliance tiles.">
+                    <div style={card} title="Macmillan phone-call SLA: outcome confirmed within 6 months of appointment via up to 3 calls. Compliant when ANY Macmillan Call N = 'Yes' (signing confirmed) OR all three = 'No' (full 3-attempt effort logged). Some blanks with no Yes = breach. Looser than the queue's 'all 3 filled' rule on purpose: queue tracks paper-trail completion, audit measures SLA outcomes. The 'End SLA Month' picker filters by SLA DEADLINE (DoA + 6 months) — i.e. 'May 2026' = deals whose 6-month deadline landed in May (DoA Nov 2025). Same convention as the drafting compliance tiles.">
                       <div style={cardLabel}>Phone-Call SLA %</div>
                       <div style={{...cardValue,color:macmillanCallStats.pct==null?C.text:macmillanCallStats.pct>=90?C.green:macmillanCallStats.pct>=75?C.amber:C.red}}>{macmillanCallStats.pct==null?"—":`${macmillanCallStats.pct}%`}</div>
                       <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
