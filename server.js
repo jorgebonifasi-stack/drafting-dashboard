@@ -85,10 +85,10 @@ const PROPERTIES = [
   "macmillan_call_1", "macmillan_call_2", "macmillan_call_3",
   // Macmillan Service KPIs (Reporting → SLA Audit → Macmillan tab).
   // Cohort is filtered by createdate. Service-time anchor is the cumulative
-  // time the deal spent in the "Pending - Macmillan" stage (146431643).
+  // time the deal spent in the "Pending - Macmillan" stage (112034598).
   // first_connected_call_date is the HubSpot first-connected-call timestamp.
   "createdate",
-  "hs_v2_cumulative_time_in_146431643",
+  "hs_v2_cumulative_time_in_112034598",
   "first_connected_call_date",
   "hs_v2_date_entered_1223620776", "hs_v2_date_exited_1223620776",
   // Cumulative time in completion stages (used by audit heuristic when

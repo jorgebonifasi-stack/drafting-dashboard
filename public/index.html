@@ -406,11 +406,11 @@
         const willConsultant=rawWillConsultant?(ownerMap[rawWillConsultant]||rawWillConsultant):"";
         // Macmillan Service KPI fields. createDate is the deal's
         // HubSpot creation timestamp (= Macmillan referral arrival).
-        // pendingMacmillanDays = cumulative time spent in stage 146431643
+        // pendingMacmillanDays = cumulative time spent in stage 112034598
         // ("Pending - Macmillan"), converted from milliseconds to days.
         // firstConnectedCallDate = HubSpot's first-connected-call stamp.
         const createDate=parseHSDate(p.createdate);
-        const pendingMacmillanMs=parseFloat(p.hs_v2_cumulative_time_in_146431643);
+        const pendingMacmillanMs=parseFloat(p.hs_v2_cumulative_time_in_112034598);
         const pendingMacmillanDays=isNaN(pendingMacmillanMs)?null:(pendingMacmillanMs/86400000);
         const firstConnectedCallDate=parseHSDate(p.first_connected_call_date);
         const enteredRDWC=parseHSDate(p.hs_v2_date_entered_1223620776);
