@@ -417,6 +417,9 @@
         // 5 working days). Pass condition: both populated. See macmillanKPIs.
         const pendingExitedDate=parseHSDate(p.hs_v2_date_exited_112034598);
         const attemptingExitedDate=parseHSDate(p.hs_v2_date_exited_1230854698);
+        // KPI 7 (Follow-up email if customer still unreached). Pass =
+        // Pending exit populated AND a Macmillan customer email captured.
+        const customerEmailMacmillan=(p.customer_email__macmillan_||"").trim();
         const enteredRDWC=parseHSDate(p.hs_v2_date_entered_1223620776);
         const exitedRDWC=parseHSDate(p.hs_v2_date_exited_1223620776);
         const rdwcTurnaroundBizDays=calcBusinessDays(enteredRDWC,exitedRDWC);
@@ -538,7 +541,7 @@
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
           legacyAdvisor,willConsultant,enteredRDWC,exitedRDWC,rdwcTurnaroundBizDays,
           createDate,pendingMacmillanDays,firstConnectedCallDate,
-          pendingExitedDate,attemptingExitedDate,
+          pendingExitedDate,attemptingExitedDate,customerEmailMacmillan,
           queryExcluded:(()=>{const orig=dealExclusions&&dealExclusions[String(d.id)];return !!(orig&&drafterName.toLowerCase()!==String(orig).toLowerCase());})(),
           queryExcludedOriginalDrafter:(dealExclusions&&dealExclusions[String(d.id)])||null,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
@@ -5443,10 +5446,12 @@
           k6Total++;
           if(!d.pendingExitedDate||!d.attemptingExitedDate)k6Fail++;
 
-          // Row 7 — fails when no first-connected-call ever recorded
-          // (proxy for "we never reached the customer, no follow-up").
+          // Row 7 — Follow-up email if customer still unreached.
+          // Pass condition (per Ops): BOTH `hs_v2_date_exited_112034598`
+          // (Pending - Macmillan exit) is populated AND
+          // `customer_email__macmillan_` is non-blank. Fail otherwise.
           k7Total++;
-          if(!d.firstConnectedCallDate)k7Fail++;
+          if(!d.pendingExitedDate||!d.customerEmailMacmillan)k7Fail++;
 
           // Row 8 — count deals by sub-contractor (drafterName).
           const bucket=matchSub(d.drafterName);
@@ -5489,7 +5494,9 @@
           // KPI 6 (Row 6) — pass requires BOTH stage exits populated. See
           // macmillanKPIs comment for the rationale.
           const k6Status=(d.pendingExitedDate&&d.attemptingExitedDate)?"Met":"Failed";
-          const k7Status=d.firstConnectedCallDate?"Met":"Failed";
+          // KPI 7 — pass requires Pending exit populated AND a captured
+          // customer email. See macmillanKPIs comment.
+          const k7Status=(d.pendingExitedDate&&d.customerEmailMacmillan)?"Met":"Failed";
           out.push({
             id:d.id,
             dealname:d.dealname,
@@ -5500,6 +5507,7 @@
             firstConnectedCallDate:d.firstConnectedCallDate,
             pendingExitedDate:d.pendingExitedDate,
             attemptingExitedDate:d.attemptingExitedDate,
+            customerEmailMacmillan:d.customerEmailMacmillan,
             k4Status,k5Status,k6Status,k7Status
           });
         });
@@ -5582,7 +5590,7 @@
 
       // CSV exports for the EPA + CS tabs (only meaningful in Macmillan mode).
       const exportEpaCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Create Date","Days in Pending (Macmillan)","Is Urgent","First Connected Call Date","Pending Exit Date","Attempting Exit Date","KPI 4 — Initial Contact (2d)","KPI 5 — Urgent Contact (24h)","KPI 6 — Two Further Calls (5d)","KPI 7 — Connected","HubSpot Link"];
+        const hdr=["Deal ID","Deal Name","Drafter","Create Date","Days in Pending (Macmillan)","Is Urgent","First Connected Call Date","Pending Exit Date","Attempting Exit Date","Macmillan Customer Email","KPI 4 — Initial Contact (2d)","KPI 5 — Urgent Contact (24h)","KPI 6 — Two Further Calls (5d)","KPI 7 — Follow-up Email","HubSpot Link"];
         const lines=[hdr,...epaRows.map(r=>[
           r.id,r.dealname,r.drafter,fmtDate(r.createDate),
           r.pendingMacmillanDays==null?"":r.pendingMacmillanDays.toFixed(2),
@@ -5590,6 +5598,7 @@
           r.firstConnectedCallDate?fmtDate(r.firstConnectedCallDate):"",
           r.pendingExitedDate?fmtDate(r.pendingExitedDate):"",
           r.attemptingExitedDate?fmtDate(r.attemptingExitedDate):"",
+          r.customerEmailMacmillan||"",
           r.k4Status,r.k5Status,r.k6Status,r.k7Status,
           HS_BASE+r.id
         ])];
@@ -5830,11 +5839,11 @@
                         {macmillanKPIs.k6.total===0?"No deals created in this range":`${macmillanKPIs.k6.fail} of ${macmillanKPIs.k6.total} missing a stage exit`}
                       </div>
                     </div>
-                    <div style={card} title="Row 7 — Follow-up email if customer still unreached. Fail when first_connected_call_date is blank (no connection ever made on the deal). Approximation of the spreadsheet's 'column Q blank' check.">
-                      <div style={cardLabel}>No connection made — fail %</div>
+                    <div style={card} title="Row 7 — Follow-up email if customer still unreached. Pass = hs_v2_date_exited_112034598 (Pending - Macmillan exit) is populated AND customer_email__macmillan_ is non-blank. Fail = either missing — no email captured, or deal never left the Pending stage.">
+                      <div style={cardLabel}>Follow-up email — fail %</div>
                       <div style={{...cardValue,color:macmillanKPIs.k7.pct==null?C.text:macmillanKPIs.k7.pct<=5?C.green:macmillanKPIs.k7.pct<=10?C.amber:C.red}}>{macmillanKPIs.k7.pct==null?"—":`${macmillanKPIs.k7.pct}%`}</div>
                       <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
-                        {macmillanKPIs.k7.total===0?"No deals created in this range":`${macmillanKPIs.k7.fail} of ${macmillanKPIs.k7.total} with no first-connected-call`}
+                        {macmillanKPIs.k7.total===0?"No deals created in this range":`${macmillanKPIs.k7.fail} of ${macmillanKPIs.k7.total} missing pending exit or email`}
                       </div>
                     </div>
                   </div>
@@ -5866,7 +5875,7 @@
 
                   <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6,marginTop:14,borderTop:`1px solid ${C.border}`,paddingTop:14}}>EPA deals — per-row KPI status</div>
                   <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-                    Every Macmillan deal created in the selected month. Each KPI column shows <strong style={{color:C.green}}>Met</strong>, <strong style={{color:C.red}}>Failed</strong>, or <strong style={{color:C.text}}>N/A</strong> (KPI 5 is N/A for non-urgent deals). KPI 6 passes when both <code style={{background:"rgba(255,255,255,0.05)",padding:"1px 4px",borderRadius:3}}>Pending - Macmillan</code> and <code style={{background:"rgba(255,255,255,0.05)",padding:"1px 4px",borderRadius:3}}>Attempting to contact</code> have exit dates.
+                    Every Macmillan deal created in the selected month. Each KPI column shows <strong style={{color:C.green}}>Met</strong>, <strong style={{color:C.red}}>Failed</strong>, or <strong style={{color:C.text}}>N/A</strong> (KPI 5 is N/A for non-urgent deals). KPI 6 passes when both <code style={{background:"rgba(255,255,255,0.05)",padding:"1px 4px",borderRadius:3}}>Pending - Macmillan</code> and <code style={{background:"rgba(255,255,255,0.05)",padding:"1px 4px",borderRadius:3}}>Attempting to contact</code> have exit dates. KPI 7 passes when the Pending exit is set AND <code style={{background:"rgba(255,255,255,0.05)",padding:"1px 4px",borderRadius:3}}>customer_email__macmillan_</code> is non-blank.
                   </div>
                   {epaRows.length===0?(
                     <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No Macmillan deals created in this range.</div>
@@ -5885,7 +5894,7 @@
                             <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>KPI 4 (2d)</th>
                             <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>KPI 5 (24h)</th>
                             <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}} title="Row 6 — Both Pending-Macmillan exit date AND Attempting-to-contact exit date populated.">KPI 6 (5d)</th>
-                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>KPI 7 (Conn.)</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}} title="Row 7 — Pending-Macmillan exit date populated AND customer_email__macmillan_ non-blank.">KPI 7 (Email)</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -5911,7 +5920,7 @@
                                 <td style={statusCell(r.k4Status)}>{r.k4Status}</td>
                                 <td style={statusCell(r.k5Status)}>{r.k5Status}</td>
                                 <td style={statusCell(r.k6Status)} title={`Pending exit: ${r.pendingExitedDate?fmtDate(r.pendingExitedDate):"—"} | Attempting exit: ${r.attemptingExitedDate?fmtDate(r.attemptingExitedDate):"—"}`}>{r.k6Status}</td>
-                                <td style={statusCell(r.k7Status)}>{r.k7Status}</td>
+                                <td style={statusCell(r.k7Status)} title={`Pending exit: ${r.pendingExitedDate?fmtDate(r.pendingExitedDate):"—"} | Email: ${r.customerEmailMacmillan||"—"}`}>{r.k7Status}</td>
                               </tr>
                             );
                           })}

@@ -97,6 +97,11 @@ const PROPERTIES = [
   //   1230854698  = Attempting to contact
   "hs_v2_date_exited_112034598",
   "hs_v2_date_exited_1230854698",
+  // KPI 7 (Row 7) — Follow-up email if customer still unreached.
+  // Pass = Pending - Macmillan exit date populated AND customer email
+  // captured. Replaces the old `first_connected_call_date` proxy which
+  // wasn't populated on Macmillan deals.
+  "customer_email__macmillan_",
   "first_connected_call_date",
   "hs_v2_date_entered_1223620776", "hs_v2_date_exited_1223620776",
   // Cumulative time in completion stages (used by audit heuristic when
