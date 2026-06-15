@@ -3297,6 +3297,12 @@
             amendmentSource,
             slaTargetDays,
             waiverExtension,
+            // True when the customer hasn't signed the 14-day waiver \u2014 used
+            // to surface a state badge even on deals where the waiver
+            // doesn't extend the SLA (e.g. waiver_expiry_date is missing,
+            // so the fallback DI+14d < standard 28d \u2192 no extension granted
+            // but the unsigned-state is still useful info).
+            waiverUnsigned:d.waiverSigned14d===false,
             stage:stageLabel||"\u2014"
           });
         });
@@ -3416,6 +3422,7 @@
                           <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
                           {r.isAmendment&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(127,140,141,0.22)",color:"#95A5A6",fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>Amend</span>}
                           {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+{r.waiverExtension}d waiver</span>}
+                          {r.waiverExtension===0&&r.waiverUnsigned&&<span title="Customer hasn't signed the 14-day waiver. No SLA extension applied (either waiver_expiry_date is missing, or it expired before the standard 28-day deadline)." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.10)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap",border:`1px dashed ${C.amber}`}}>Waiver Unsigned</span>}
                         </td>
                         <td style={{padding:"10px 12px",fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",fontSize:12,color:C.text,opacity:0.7}}>{r.id}</td>
                         <td style={{padding:"10px 12px"}}>{r.drafter}</td>
@@ -5135,6 +5142,12 @@
             calendarDays,
             baseTarget,
             waiverExtension,
+            // State flag for the "Waiver Unsigned" badge — set whenever the
+            // customer hasn't signed even if the dynamic extension came
+            // out to 0 (no expiry date populated AND fallback DI+14d <
+            // standard target). Useful for spotting unsigned deals at a
+            // glance even when no extension applies.
+            waiverUnsigned:d.waiverSigned14d===false,
             target,
             coralBaseTarget,
             coralWaiverExtension,
@@ -5742,7 +5755,9 @@
                                 <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
                                 {filterMode!=="coral"&&r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
                                 {filterMode!=="coral"&&r.mgmtSignOffOnly&&<span title="Flagged Urgent in HubSpot but the reason is Management Sign Off only — treated as Standard for SLA purposes (20 working days, not 3)." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(127,140,141,0.22)",color:"#95A5A6",fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>MSO → Standard</span>}
-                                {(filterMode==="coral"?r.coralWaiverExtension>0:r.waiverExtension>0)&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
+                                {filterMode==="coral"&&r.coralWaiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
+                                {filterMode!=="coral"&&r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+{r.waiverExtension}wd Waiver</span>}
+                                {filterMode!=="coral"&&r.waiverExtension===0&&r.waiverUnsigned&&<span title="Customer hasn't signed the 14-day waiver. No SLA extension applied (waiver_expiry_date is missing, or expired before the standard target)." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.10)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap",border:`1px dashed ${C.amber}`}}>Waiver Unsigned</span>}
                               </td>
                               <td style={{padding:"10px 12px",fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",fontSize:12,color:C.text,opacity:0.7}}>{r.id}</td>
                               <td style={{padding:"10px 12px"}}>{r.drafter}</td>
