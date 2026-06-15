@@ -330,10 +330,27 @@
         const cumRFP=parseFloat(p.hs_v2_cumulative_time_in_1223620777)||0;
         const cumSTC=parseFloat(p.hs_v2_cumulative_time_in_1223620778)||0;
         const estimateFirstEntry=(orig,entered,cumulative)=>{
-          const heuristic=(entered&&cumulative>0)?new Date(entered.getTime()-cumulative):null;
-          const candidates=[orig,heuristic].filter(Boolean);
-          if(!candidates.length)return null;
-          return new Date(Math.min(...candidates.map(d=>d.getTime())));
+          // When the workflow-stamped original_date_entered_* is present, trust
+          // it as the authoritative first-entry date — return it directly. The
+          // heuristic (latest entry − cumulative time) is only correct when the
+          // deal entered the stage exactly once. For re-entry deals (e.g. DWC
+          // → RDWC → DWC after an amendment cycle), the heuristic understates
+          // the first-entry by however long the second stint lasted, because
+          // cumulative time grows but latest_entry jumps to the re-entry stamp.
+          //
+          // Surfaced via deal 57542012984 (John & Karen Wilkinson): real first
+          // DWC entry was 7 May 2026, two stints totalling ~18 days, latest
+          // entry 20 May. Heuristic gave 2 May, dashboard then shaved to 1 May
+          // through ms-rounding — which the audit took as "End Date" even
+          // though it predates the actual first DWC by 6 days.
+          //
+          // Heuristic stays as the fallback when original_* is missing
+          // (bulk-imported / migrated deals where the workflow stamp never
+          // fired). For those we'll be wrong on re-entry deals too, but we
+          // have no better signal without engagement data.
+          if(orig)return orig;
+          if(entered&&cumulative>0)return new Date(entered.getTime()-cumulative);
+          return null;
         };
         const firstDWC=estimateFirstEntry(origDraftsWithCustomer,enteredDWC_v2,cumDWC);
         const firstRFP=estimateFirstEntry(origReadyForPrinting,enteredRFP_v2,cumRFP);
