@@ -4907,6 +4907,11 @@
       // rules and the aggregate would be meaningless. Default is Macmillan;
       // clicking a pill switches exclusively to that cohort.
       const[leadFilter,setLeadFilter]=useState(()=>new Set(["Macmillan"]));
+      // Tab selector for the bottom-of-page table view. Only Drafting is
+      // meaningful for Coral mode; EPA + CS are Macmillan-specific. The
+      // useEffect below resets the active tab to Drafting if the user
+      // switches to Coral while EPA/CS is selected.
+      const[auditTab,setAuditTab]=useState("drafting");
       // Product filter is only meaningful in Coral mode (Will / LPA buckets).
       // We clear it automatically when leaving Coral mode (see effect below).
       const[productFilter,setProductFilter]=useState(()=>new Set());
@@ -5092,6 +5097,9 @@
       // are only shown in Coral mode so the filter would otherwise become
       // invisible-but-applied if the user switched back to standard.
       useEffect(()=>{if(filterMode!=="coral"&&productFilter.size>0)setProductFilter(new Set());},[filterMode,productFilter]);
+      // EPA + CS tabs only apply to Macmillan. If user switches the lead
+      // filter to Coral while EPA/CS is active, snap back to Drafting.
+      useEffect(()=>{if(!leadFilter.has("Macmillan")&&(auditTab==="epa"||auditTab==="cs"))setAuditTab("drafting");},[leadFilter,auditTab]);
 
       // Will / LPA pill options — only surfaced in Coral mode, and only when
       // at least one Coral deal has the corresponding product flag.
@@ -5350,6 +5358,85 @@
         };
       },[deals,fromMonth,toMonth,leadFilter]);
 
+      // ─── EPA tab rows ────────────────────────────────────────────
+      // Per-deal version of the Macmillan Service KPIs. Cohort matches
+      // macmillanKPIs (Macmillan + createdate in range). Each row shows
+      // Met / Failed / N/A for KPI 4, KPI 5, and KPI 7. KPI 5 only
+      // applies to urgent deals — non-urgent rows get N/A there. KPI 4 /
+      // 7 apply to every deal in the cohort.
+      const epaRows=useMemo(()=>{
+        if(!leadFilter.has("Macmillan"))return[];
+        const start=fromMonth?monthStart(fromMonth):null;
+        const end=toMonth?monthEnd(toMonth):null;
+        const out=[];
+        deals.forEach(d=>{
+          if(!(d.leadSources||[]).includes("Macmillan"))return;
+          if(!d.createDate)return;
+          if(start&&d.createDate<start)return;
+          if(end&&d.createDate>end)return;
+          const isUrgentForKPI=d.isUrgent||(Array.isArray(d.urgentReason)&&d.urgentReason.length>0);
+          const k4Status=d.pendingMacmillanDays==null?"N/A":(d.pendingMacmillanDays>3?"Failed":"Met");
+          const k5Status=!isUrgentForKPI?"N/A":(d.pendingMacmillanDays==null?"N/A":(d.pendingMacmillanDays>2?"Failed":"Met"));
+          const k7Status=d.firstConnectedCallDate?"Met":"Failed";
+          out.push({
+            id:d.id,
+            dealname:d.dealname,
+            drafter:d.drafterName&&d.drafterName!=="Unknown"?d.drafterName:"Unassigned",
+            createDate:d.createDate,
+            pendingMacmillanDays:d.pendingMacmillanDays,
+            isUrgent:isUrgentForKPI,
+            firstConnectedCallDate:d.firstConnectedCallDate,
+            k4Status,k5Status,k7Status
+          });
+        });
+        out.sort((a,b)=>(b.createDate?.getTime?.()||0)-(a.createDate?.getTime?.()||0));
+        return out;
+      },[deals,fromMonth,toMonth,leadFilter]);
+
+      // ─── CS tab rows ─────────────────────────────────────────────
+      // Per-deal version of the Phone-Call SLA tile. Cohort matches
+      // macmillanCallStats (Macmillan + deadline (DoA + 6mo) in range +
+      // has draft + region ≠ Scotland + deadline ≤ today). Compliance:
+      // any Yes → Met (Yes); all 3 Nos → Met (3 No); else → Breached.
+      const csRows=useMemo(()=>{
+        if(!leadFilter.has("Macmillan"))return[];
+        const today=new Date();today.setHours(0,0,0,0);
+        const start=fromMonth?monthStart(fromMonth):null;
+        const end=toMonth?monthEnd(toMonth):null;
+        const POST_DWC_STAGES=new Set(["1223620775","1223620776","1223620777","1223620778"]);
+        const out=[];
+        deals.forEach(d=>{
+          if(!(d.leadSources||[]).includes("Macmillan"))return;
+          if(!d.dateOfAppointment)return;
+          if((d.region||"").trim()==="Scotland")return;
+          const hasDraft=d.firstDWC||d.firstRFP||POST_DWC_STAGES.has(d.dealstage);
+          if(!hasDraft)return;
+          const doa=new Date(d.dateOfAppointment);
+          const deadline=new Date(doa.getFullYear(),doa.getMonth()+6,doa.getDate());
+          deadline.setHours(0,0,0,0);
+          if(start&&deadline<start)return;
+          if(end&&deadline>end)return;
+          if(deadline>today)return;
+          const c1=d.macmillanCall1||"";
+          const c2=d.macmillanCall2||"";
+          const c3=d.macmillanCall3||"";
+          const hasYes=c1==="yes"||c2==="yes"||c3==="yes";
+          const allNos=c1==="no"&&c2==="no"&&c3==="no";
+          const status=hasYes?"Met (Yes)":(allNos?"Met (3 No)":"Breached");
+          out.push({
+            id:d.id,
+            dealname:d.dealname,
+            legacyAdvisor:d.legacyAdvisor||"Unassigned",
+            appointment:doa,
+            deadline,
+            call1:c1,call2:c2,call3:c3,
+            status
+          });
+        });
+        out.sort((a,b)=>b.deadline-a.deadline);
+        return out;
+      },[deals,fromMonth,toMonth,leadFilter]);
+
       // Exclusive selection — clicking a lead-source pill switches to it
       // and deselects everything else. We never allow an empty selection
       // because the audit needs a single SLA rule (Macmillan or Coral) to
@@ -5372,6 +5459,32 @@
         const suffix=isCoral?"_coral":"";
         downloadCSV(`sla_audit${suffix}_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[rows,fromMonth,toMonth,filterMode]);
+
+      // CSV exports for the EPA + CS tabs (only meaningful in Macmillan mode).
+      const exportEpaCSV=useCallback(()=>{
+        const hdr=["Deal ID","Deal Name","Drafter","Create Date","Days in Pending (Macmillan)","Is Urgent","First Connected Call Date","KPI 4 — Initial Contact (2d)","KPI 5 — Urgent Contact (24h)","KPI 7 — Connected","HubSpot Link"];
+        const lines=[hdr,...epaRows.map(r=>[
+          r.id,r.dealname,r.drafter,fmtDate(r.createDate),
+          r.pendingMacmillanDays==null?"":r.pendingMacmillanDays.toFixed(2),
+          r.isUrgent?"Yes":"No",
+          r.firstConnectedCallDate?fmtDate(r.firstConnectedCallDate):"",
+          r.k4Status,r.k5Status,r.k7Status,
+          HS_BASE+r.id
+        ])];
+        downloadCSV(`sla_audit_epa_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[epaRows,fromMonth,toMonth]);
+
+      const exportCsCSV=useCallback(()=>{
+        const fmtCallVal=v=>v==="yes"?"Yes":v==="no"?"No":"";
+        const hdr=["Deal ID","Deal Name","Legacy Advisor","Date of Appointment","SLA Deadline (DoA + 6mo)","Call 1","Call 2","Call 3","Compliance Status","HubSpot Link"];
+        const lines=[hdr,...csRows.map(r=>[
+          r.id,r.dealname,r.legacyAdvisor,fmtDate(r.appointment),fmtDate(r.deadline),
+          fmtCallVal(r.call1),fmtCallVal(r.call2),fmtCallVal(r.call3),
+          r.status,
+          HS_BASE+r.id
+        ])];
+        downloadCSV(`sla_audit_cs_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
+      },[csRows,fromMonth,toMonth]);
 
       // Tri-state colouring: Met = green, Excluded = muted grey (kept in
       // the table for audit trail but doesn't count toward breach total),
@@ -5402,7 +5515,7 @@
                 <span style={{color:C.text,opacity:0.6}}>{"→"}</span>
                 <input type="month" value={toMonth} onChange={e=>setToMonth(e.target.value)} style={{...S.input,width:170,padding:"6px 10px",fontSize:13}}/>
                 <span style={{flex:1}}/>
-                <button style={S.btn} onClick={exportCSV} disabled={!rows.length}>{"⬇"} CSV ({rows.length})</button>
+                <button style={S.btn} onClick={auditTab==="epa"?exportEpaCSV:auditTab==="cs"?exportCsCSV:exportCSV} disabled={(auditTab==="epa"?epaRows:auditTab==="cs"?csRows:rows).length===0}>{"⬇"} CSV ({(auditTab==="epa"?epaRows:auditTab==="cs"?csRows:rows).length})</button>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 <label style={{fontSize:12,color:C.text,opacity:0.7,marginRight:4}}>Lead Source</label>
@@ -5484,118 +5597,254 @@
               )}
             </div>
 
-            {/* Macmillan Service KPIs — only visible when Macmillan is the active cohort. */}
-            {macmillanKPIs&&(
-              <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"18px 20px",marginBottom:20}}>
-                <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:4}}>Macmillan Service KPIs</div>
-                <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-                  Cohort: Macmillan deals with <strong style={{color:C.text}}>createdate</strong> in the selected End SLA Month range (different from the drafting tiles' End-date cohort and the Phone-Call SLA tile's deadline cohort). Fail % rendered with the same colour scale: green &le;5%, amber &le;10%, red &gt;10%. Hover any tile for the exact rule.
-                </div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14,marginBottom:18}}>
-                  {/* Row 4 — 2-day initial contact */}
-                  <div style={card} title="Row 4 — Initial contact phone call within 2 days of Macmillan referral. Fail when cumulative time in 'Pending - Macmillan' stage > 3 days (mirrors the source spreadsheet's >3d threshold).">
-                    <div style={cardLabel}>Initial contact (2d) — fail %</div>
-                    <div style={{...cardValue,color:macmillanKPIs.k4.pct==null?C.text:macmillanKPIs.k4.pct<=5?C.green:macmillanKPIs.k4.pct<=10?C.amber:C.red}}>{macmillanKPIs.k4.pct==null?"—":`${macmillanKPIs.k4.pct}%`}</div>
-                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
-                      {macmillanKPIs.k4.total===0?"No deals created in this range":`${macmillanKPIs.k4.fail} of ${macmillanKPIs.k4.total} failed`}
-                    </div>
-                  </div>
-                  {/* Row 5 — 24hr urgent */}
-                  <div style={card} title="Row 5 — Urgent Wills phone call within 24 hours. Cohort: deals where hs_priority = High OR urgent_request_reason is populated. Fail when cumulative time in 'Pending - Macmillan' > 2 days (mirrors the source spreadsheet's >2d threshold).">
-                    <div style={cardLabel}>Urgent contact (24h) — fail %</div>
-                    <div style={{...cardValue,color:macmillanKPIs.k5.pct==null?C.text:macmillanKPIs.k5.pct<=5?C.green:macmillanKPIs.k5.pct<=10?C.amber:C.red}}>{macmillanKPIs.k5.pct==null?"—":`${macmillanKPIs.k5.pct}%`}</div>
-                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
-                      {macmillanKPIs.k5.total===0?"No urgent deals in this range":`${macmillanKPIs.k5.fail} of ${macmillanKPIs.k5.total} failed`}
-                    </div>
-                  </div>
-                  {/* Row 7 — follow-up email / no contact */}
-                  <div style={card} title="Row 7 — Follow-up email if customer still unreached. Fail when first_connected_call_date is blank (no connection ever made on the deal). Approximation of the spreadsheet's 'column Q blank' check.">
-                    <div style={cardLabel}>No connection made — fail %</div>
-                    <div style={{...cardValue,color:macmillanKPIs.k7.pct==null?C.text:macmillanKPIs.k7.pct<=5?C.green:macmillanKPIs.k7.pct<=10?C.amber:C.red}}>{macmillanKPIs.k7.pct==null?"—":`${macmillanKPIs.k7.pct}%`}</div>
-                    <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
-                      {macmillanKPIs.k7.total===0?"No deals created in this range":`${macmillanKPIs.k7.fail} of ${macmillanKPIs.k7.total} with no first-connected-call`}
-                    </div>
-                  </div>
-                </div>
-                {/* Row 8 — Leads by sub-contractor */}
-                <div style={{color:C.white,fontSize:13,fontWeight:600,marginBottom:8}}>Leads by sub-contractor</div>
-                {macmillanKPIs.subBuckets.every(b=>b.count===0)?(
-                  <div style={{fontSize:12,color:C.text,opacity:0.5}}>No Macmillan deals created in this range.</div>
-                ):(
-                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    {(() => {
-                      const maxCount=Math.max(...macmillanKPIs.subBuckets.map(b=>b.count),1);
-                      return macmillanKPIs.subBuckets.map(b=>{
-                        const pct=Math.round((b.count/maxCount)*100);
-                        return(
-                          <div key={b.name} style={{display:"flex",alignItems:"center",gap:10,fontSize:12}}>
-                            <div style={{width:140,color:C.text}}>{b.name}</div>
-                            <div style={{flex:1,height:18,background:"rgba(255,255,255,0.04)",borderRadius:4,overflow:"hidden"}}>
-                              <div style={{width:`${pct}%`,height:"100%",background:b.name==="OL"?"rgba(52,152,219,0.55)":"rgba(155,89,182,0.55)",borderRadius:4}}/>
-                            </div>
-                            <div style={{width:50,textAlign:"right",color:C.white,fontWeight:600}}>{b.count}</div>
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
-                )}
-                <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:8}}>
-                  Total: {macmillanKPIs.subBuckets.reduce((s,b)=>s+b.count,0)} deals. Sub-contractor = drafterName matched to one of {MACMILLAN_SUBCONTRACTORS.join(", ")}. Anything else (including blanks / Unknown) → OL.
-                </div>
-              </div>
-            )}
-
-            {/* Table */}
+            {/* Tabbed table view: Drafting / EPA / CS. EPA + CS only show
+                when Macmillan is the active Lead Source — they're Macmillan-
+                specific cohorts. Each tab has its own SLA Logic blurb and
+                table; the top-of-page CSV button is wired to the active tab. */}
             <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px"}}>
-              <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>SLA Logic</div>
-              <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-                {filterMode==="coral"
-                  ?"Coral SLA = 42 calendar days from Date of Appointment to End. +14 calendar days when the 14-day waiver is not signed. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority does not adjust the Coral SLA. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."
-                  :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). Exception: deals flagged Urgent purely because Urgent Request Reason is \"Management Sign Off\" are treated as Standard (20 working days) — admin paperwork urgency isn't customer-driven time pressure. Those rows show an \"MSO → Standard\" badge. +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."}
-              </div>
-              {rows.length===0?(
-                <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed deals in this range.</div>
-              ):(
-                <div style={{overflowX:"auto"}}>
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                    <thead>
-                      <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
-                        <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
-                        <th style={{padding:"10px 12px",fontWeight:600}}>Record ID</th>
-                        <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
-                        {filterMode!=="coral"&&<th style={{padding:"10px 12px",fontWeight:600}}>Priority</th>}
-                        <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
-                        <th style={{padding:"10px 12px",fontWeight:600}}>End Date</th>
-                        <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>{filterMode==="coral"?"Calendar Days":"Working Days"}</th>
-                        <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>SLA Target</th>
-                        <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
-                        <th style={{padding:"10px 12px",fontWeight:600}}>SLA Breach Reason</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map(r=>(
-                        <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
-                          <td style={{padding:"10px 12px"}}>
-                            <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
-                            {filterMode!=="coral"&&r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
-                            {filterMode!=="coral"&&r.mgmtSignOffOnly&&<span title="Flagged Urgent in HubSpot but the reason is Management Sign Off only — treated as Standard for SLA purposes (20 working days, not 3)." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(127,140,141,0.22)",color:"#95A5A6",fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>MSO → Standard</span>}
-                            {(filterMode==="coral"?r.coralWaiverExtension>0:r.waiverExtension>0)&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
-                          </td>
-                          <td style={{padding:"10px 12px",fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",fontSize:12,color:C.text,opacity:0.7}}>{r.id}</td>
-                          <td style={{padding:"10px 12px"}}>{r.drafter}</td>
-                          {filterMode!=="coral"&&<td style={{padding:"10px 12px"}}>{r.isUrgent?"Urgent":"Standard"}</td>}
-                          <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
-                          <td style={{padding:"10px 12px"}}>{fmtDate(r.endDate)}</td>
-                          <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.displayDays}d</td>
-                          <td style={{padding:"10px 12px",textAlign:"right",color:C.text,opacity:0.6}}>{r.displayTarget}d</td>
-                          <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r),opacity:statusOpacity(r)}}>{r.displayStatus}</td>
-                          <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.slaBreachReason?0.85:0.4}}>{r.slaBreachReason||"—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              {leadFilter.has("Macmillan")&&(
+                <div style={{display:"flex",gap:8,marginBottom:14,borderBottom:`1px solid ${C.border}`,paddingBottom:10}}>
+                  {[
+                    {key:"drafting",label:"Drafting"},
+                    {key:"epa",label:"EPA"},
+                    {key:"cs",label:"CS"}
+                  ].map(t=>{
+                    const active=auditTab===t.key;
+                    return(
+                      <button key={t.key} onClick={()=>setAuditTab(t.key)}
+                        style={{padding:"6px 14px",borderRadius:6,border:`1px solid ${active?C.accent:C.border}`,background:active?"rgba(52,152,219,0.18)":"transparent",color:active?C.accent:C.text,cursor:"pointer",fontSize:13,fontWeight:600}}>
+                        {t.label}
+                      </button>
+                    );
+                  })}
                 </div>
+              )}
+
+              {/* Drafting tab (default; also the only tab when Coral). */}
+              {(auditTab==="drafting"||!leadFilter.has("Macmillan"))&&(
+                <React.Fragment>
+                  <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>SLA Logic — Drafting</div>
+                  <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
+                    {filterMode==="coral"
+                      ?"Coral SLA = 42 calendar days from Date of Appointment to End. +14 calendar days when the 14-day waiver is not signed. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority does not adjust the Coral SLA. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."
+                      :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). Exception: deals flagged Urgent purely because Urgent Request Reason is \"Management Sign Off\" are treated as Standard (20 working days) — admin paperwork urgency isn't customer-driven time pressure. Those rows show an \"MSO → Standard\" badge. +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."}
+                  </div>
+                  {rows.length===0?(
+                    <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed deals in this range.</div>
+                  ):(
+                    <div style={{overflowX:"auto"}}>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                        <thead>
+                          <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Record ID</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
+                            {filterMode!=="coral"&&<th style={{padding:"10px 12px",fontWeight:600}}>Priority</th>}
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>End Date</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>{filterMode==="coral"?"Calendar Days":"Working Days"}</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>SLA Target</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>SLA Breach Reason</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map(r=>(
+                            <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                              <td style={{padding:"10px 12px"}}>
+                                <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                                {filterMode!=="coral"&&r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
+                                {filterMode!=="coral"&&r.mgmtSignOffOnly&&<span title="Flagged Urgent in HubSpot but the reason is Management Sign Off only — treated as Standard for SLA purposes (20 working days, not 3)." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(127,140,141,0.22)",color:"#95A5A6",fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>MSO → Standard</span>}
+                                {(filterMode==="coral"?r.coralWaiverExtension>0:r.waiverExtension>0)&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
+                              </td>
+                              <td style={{padding:"10px 12px",fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",fontSize:12,color:C.text,opacity:0.7}}>{r.id}</td>
+                              <td style={{padding:"10px 12px"}}>{r.drafter}</td>
+                              {filterMode!=="coral"&&<td style={{padding:"10px 12px"}}>{r.isUrgent?"Urgent":"Standard"}</td>}
+                              <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
+                              <td style={{padding:"10px 12px"}}>{fmtDate(r.endDate)}</td>
+                              <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.displayDays}d</td>
+                              <td style={{padding:"10px 12px",textAlign:"right",color:C.text,opacity:0.6}}>{r.displayTarget}d</td>
+                              <td style={{padding:"10px 12px",fontWeight:700,color:statusColor(r),opacity:statusOpacity(r)}}>{r.displayStatus}</td>
+                              <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.slaBreachReason?0.85:0.4}}>{r.slaBreachReason||"—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </React.Fragment>
+              )}
+
+              {/* EPA tab — Macmillan Service KPIs (tiles + sub-contractor chart)
+                  plus a per-deal table breaking down KPI status per row. */}
+              {auditTab==="epa"&&leadFilter.has("Macmillan")&&macmillanKPIs&&(
+                <React.Fragment>
+                  <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:4}}>Macmillan Service KPIs</div>
+                  <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
+                    Cohort: Macmillan deals with <strong style={{color:C.text}}>createdate</strong> in the selected End SLA Month range. Fail % rendered with the same colour scale: green &le;5%, amber &le;10%, red &gt;10%. Hover any tile for the exact rule. Row 6 (5-working-day rule between calls) intentionally skipped — needs engagement-level data, deferred.
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14,marginBottom:18}}>
+                    <div style={card} title="Row 4 — Initial contact phone call within 2 days of Macmillan referral. Fail when cumulative time in 'Pending - Macmillan' stage > 3 days (mirrors the source spreadsheet's >3d threshold).">
+                      <div style={cardLabel}>Initial contact (2d) — fail %</div>
+                      <div style={{...cardValue,color:macmillanKPIs.k4.pct==null?C.text:macmillanKPIs.k4.pct<=5?C.green:macmillanKPIs.k4.pct<=10?C.amber:C.red}}>{macmillanKPIs.k4.pct==null?"—":`${macmillanKPIs.k4.pct}%`}</div>
+                      <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
+                        {macmillanKPIs.k4.total===0?"No deals created in this range":`${macmillanKPIs.k4.fail} of ${macmillanKPIs.k4.total} failed`}
+                      </div>
+                    </div>
+                    <div style={card} title="Row 5 — Urgent Wills phone call within 24 hours. Cohort: deals where hs_priority = High OR urgent_request_reason is populated. Fail when cumulative time in 'Pending - Macmillan' > 2 days (mirrors the source spreadsheet's >2d threshold).">
+                      <div style={cardLabel}>Urgent contact (24h) — fail %</div>
+                      <div style={{...cardValue,color:macmillanKPIs.k5.pct==null?C.text:macmillanKPIs.k5.pct<=5?C.green:macmillanKPIs.k5.pct<=10?C.amber:C.red}}>{macmillanKPIs.k5.pct==null?"—":`${macmillanKPIs.k5.pct}%`}</div>
+                      <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
+                        {macmillanKPIs.k5.total===0?"No urgent deals in this range":`${macmillanKPIs.k5.fail} of ${macmillanKPIs.k5.total} failed`}
+                      </div>
+                    </div>
+                    <div style={card} title="Row 7 — Follow-up email if customer still unreached. Fail when first_connected_call_date is blank (no connection ever made on the deal). Approximation of the spreadsheet's 'column Q blank' check.">
+                      <div style={cardLabel}>No connection made — fail %</div>
+                      <div style={{...cardValue,color:macmillanKPIs.k7.pct==null?C.text:macmillanKPIs.k7.pct<=5?C.green:macmillanKPIs.k7.pct<=10?C.amber:C.red}}>{macmillanKPIs.k7.pct==null?"—":`${macmillanKPIs.k7.pct}%`}</div>
+                      <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
+                        {macmillanKPIs.k7.total===0?"No deals created in this range":`${macmillanKPIs.k7.fail} of ${macmillanKPIs.k7.total} with no first-connected-call`}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{color:C.white,fontSize:13,fontWeight:600,marginBottom:8}}>Leads by sub-contractor</div>
+                  {macmillanKPIs.subBuckets.every(b=>b.count===0)?(
+                    <div style={{fontSize:12,color:C.text,opacity:0.5,marginBottom:14}}>No Macmillan deals created in this range.</div>
+                  ):(
+                    <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>
+                      {(()=>{
+                        const maxCount=Math.max(...macmillanKPIs.subBuckets.map(b=>b.count),1);
+                        return macmillanKPIs.subBuckets.map(b=>{
+                          const pct=Math.round((b.count/maxCount)*100);
+                          return(
+                            <div key={b.name} style={{display:"flex",alignItems:"center",gap:10,fontSize:12}}>
+                              <div style={{width:140,color:C.text}}>{b.name}</div>
+                              <div style={{flex:1,height:18,background:"rgba(255,255,255,0.04)",borderRadius:4,overflow:"hidden"}}>
+                                <div style={{width:`${pct}%`,height:"100%",background:b.name==="OL"?"rgba(52,152,219,0.55)":"rgba(155,89,182,0.55)",borderRadius:4}}/>
+                              </div>
+                              <div style={{width:50,textAlign:"right",color:C.white,fontWeight:600}}>{b.count}</div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  )}
+                  <div style={{fontSize:11,color:C.text,opacity:0.5,marginBottom:18}}>
+                    Total: {macmillanKPIs.subBuckets.reduce((s,b)=>s+b.count,0)} deals. Sub-contractor = drafterName matched to one of {MACMILLAN_SUBCONTRACTORS.join(", ")}. Anything else (including blanks / Unknown) → OL.
+                  </div>
+
+                  <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6,marginTop:14,borderTop:`1px solid ${C.border}`,paddingTop:14}}>EPA deals — per-row KPI status</div>
+                  <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
+                    Every Macmillan deal created in the selected month. Each KPI column shows <strong style={{color:C.green}}>Met</strong>, <strong style={{color:C.red}}>Failed</strong>, or <strong style={{color:C.text}}>N/A</strong> (KPI 5 is N/A for non-urgent deals).
+                  </div>
+                  {epaRows.length===0?(
+                    <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No Macmillan deals created in this range.</div>
+                  ):(
+                    <div style={{overflowX:"auto"}}>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                        <thead>
+                          <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Record ID</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Drafter</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Create Date</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"right"}}>Pending (days)</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Urgent?</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>1st Connected Call</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>KPI 4 (2d)</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>KPI 5 (24h)</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>KPI 7 (Conn.)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {epaRows.map(r=>{
+                            const statusCell=v=>({
+                              padding:"10px 12px",
+                              textAlign:"center",
+                              fontWeight:700,
+                              color:v==="Met"?C.green:v==="Failed"?C.red:C.text,
+                              opacity:v==="N/A"?0.5:1
+                            });
+                            return(
+                              <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                                <td style={{padding:"10px 12px"}}>
+                                  <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                                </td>
+                                <td style={{padding:"10px 12px",fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",fontSize:12,color:C.text,opacity:0.7}}>{r.id}</td>
+                                <td style={{padding:"10px 12px"}}>{r.drafter}</td>
+                                <td style={{padding:"10px 12px"}}>{fmtDate(r.createDate)}</td>
+                                <td style={{padding:"10px 12px",textAlign:"right",fontWeight:600}}>{r.pendingMacmillanDays==null?"—":r.pendingMacmillanDays.toFixed(1)+"d"}</td>
+                                <td style={{padding:"10px 12px",textAlign:"center",color:r.isUrgent?C.red:C.text,fontWeight:r.isUrgent?700:400}}>{r.isUrgent?"Yes":"No"}</td>
+                                <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.firstConnectedCallDate?0.85:0.4}}>{r.firstConnectedCallDate?fmtDate(r.firstConnectedCallDate):"—"}</td>
+                                <td style={statusCell(r.k4Status)}>{r.k4Status}</td>
+                                <td style={statusCell(r.k5Status)}>{r.k5Status}</td>
+                                <td style={statusCell(r.k7Status)}>{r.k7Status}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </React.Fragment>
+              )}
+
+              {/* CS tab — phone-call SLA per-deal view. */}
+              {auditTab==="cs"&&leadFilter.has("Macmillan")&&(
+                <React.Fragment>
+                  <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>SLA Logic — CS (Phone-Call)</div>
+                  <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
+                    Cohort: Macmillan deals where the 6-month phone-call SLA deadline (DoA + 6 months) falls in the selected End SLA Month range, the deal currently has a draft in customer hands (DWC / RDWC / RFP / Sent To Customer or workflow stamps), region ≠ Scotland, and the deadline has passed. Compliant when ANY Macmillan Call N = "Yes" (signing confirmed) OR all three = "No" (full 3-attempt effort logged). Blanks with no Yes after deadline = breach. Looser than the Macmillan Follow-Up Queue's "all 3 filled" rule on purpose — the queue tracks paper-trail completion, the audit measures SLA outcomes.
+                  </div>
+                  {csRows.length===0?(
+                    <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No Macmillan deals with SLA deadlines in this range.</div>
+                  ):(
+                    <div style={{overflowX:"auto"}}>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                        <thead>
+                          <tr style={{borderBottom:`2px solid ${C.border}`,color:C.white,textAlign:"left"}}>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Deal Name</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Record ID</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Legacy Advisor</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Date of Appointment</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>SLA Deadline</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Call 1</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Call 2</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Call 3</th>
+                            <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {csRows.map(r=>{
+                            const callCell=v=>({
+                              padding:"10px 12px",
+                              textAlign:"center",
+                              fontWeight:v?700:400,
+                              color:v==="yes"?C.green:v==="no"?C.amber:C.text,
+                              opacity:v?1:0.5
+                            });
+                            const fmtCall=v=>v==="yes"?"Yes":v==="no"?"No":"—";
+                            const statusColor=r.status==="Breached"?C.red:C.green;
+                            return(
+                              <tr key={r.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                                <td style={{padding:"10px 12px"}}>
+                                  <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
+                                </td>
+                                <td style={{padding:"10px 12px",fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",fontSize:12,color:C.text,opacity:0.7}}>{r.id}</td>
+                                <td style={{padding:"10px 12px"}}>{r.legacyAdvisor}</td>
+                                <td style={{padding:"10px 12px"}}>{fmtDate(r.appointment)}</td>
+                                <td style={{padding:"10px 12px"}}>{fmtDate(r.deadline)}</td>
+                                <td style={callCell(r.call1)}>{fmtCall(r.call1)}</td>
+                                <td style={callCell(r.call2)}>{fmtCall(r.call2)}</td>
+                                <td style={callCell(r.call3)}>{fmtCall(r.call3)}</td>
+                                <td style={{padding:"10px 12px",fontWeight:700,color:statusColor}}>{r.status}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </React.Fragment>
               )}
             </div>
         </div>
