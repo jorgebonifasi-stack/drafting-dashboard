@@ -413,6 +413,10 @@
         const pendingMacmillanMs=parseFloat(p.hs_v2_cumulative_time_in_112034598);
         const pendingMacmillanDays=isNaN(pendingMacmillanMs)?null:(pendingMacmillanMs/86400000);
         const firstConnectedCallDate=parseHSDate(p.first_connected_call_date);
+        // Stage exit timestamps for KPI 6 (Two further call attempts within
+        // 5 working days). Pass condition: both populated. See macmillanKPIs.
+        const pendingExitedDate=parseHSDate(p.hs_v2_date_exited_112034598);
+        const attemptingExitedDate=parseHSDate(p.hs_v2_date_exited_1230854698);
         const enteredRDWC=parseHSDate(p.hs_v2_date_entered_1223620776);
         const exitedRDWC=parseHSDate(p.hs_v2_date_exited_1223620776);
         const rdwcTurnaroundBizDays=calcBusinessDays(enteredRDWC,exitedRDWC);
@@ -534,6 +538,7 @@
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
           legacyAdvisor,willConsultant,enteredRDWC,exitedRDWC,rdwcTurnaroundBizDays,
           createDate,pendingMacmillanDays,firstConnectedCallDate,
+          pendingExitedDate,attemptingExitedDate,
           queryExcluded:(()=>{const orig=dealExclusions&&dealExclusions[String(d.id)];return !!(orig&&drafterName.toLowerCase()!==String(orig).toLowerCase());})(),
           queryExcludedOriginalDrafter:(dealExclusions&&dealExclusions[String(d.id)])||null,
           priority,isUrgent,urgentReason,urgentStart,dateMarkedUrgent,
@@ -5390,6 +5395,7 @@
         // Each KPI tracks total in cohort + count that failed.
         let k4Total=0,k4Fail=0;     // Row 4: initial contact > 3 days in Pending
         let k5Total=0,k5Fail=0;     // Row 5: urgent > 2 days in Pending
+        let k6Total=0,k6Fail=0;     // Row 6: both stage exits populated (pass) — see below
         let k7Total=0,k7Fail=0;     // Row 7: no first-connected-call ever
         const subcontractorCounts={"OL":0};
         MACMILLAN_SUBCONTRACTORS.forEach(name=>{subcontractorCounts[name]=0;});
@@ -5423,6 +5429,20 @@
             if(d.pendingMacmillanDays!=null&&d.pendingMacmillanDays>2)k5Fail++;
           }
 
+          // Row 6 — Two further call attempts within 5 working days. The
+          // spreadsheet's pass condition (per Ops): BOTH `hs_v2_date_exited
+          // _112034598` (Pending - Macmillan exit) AND `hs_v2_date_exited
+          // _1230854698` (Attempting to contact exit) are populated. The
+          // logic: if both stages have been exited then the workflow ran
+          // the deal through the full callback journey, implying ≥2 call
+          // attempts were logged. Fail otherwise. Note: the literal "5
+          // working days" SLA isn't directly checked — the existence of
+          // both stage exits is a structural proxy for "the workflow saw
+          // this deal through within the allowed time" (the workflow
+          // wouldn't have advanced it past those stages otherwise).
+          k6Total++;
+          if(!d.pendingExitedDate||!d.attemptingExitedDate)k6Fail++;
+
           // Row 7 — fails when no first-connected-call ever recorded
           // (proxy for "we never reached the customer, no follow-up").
           k7Total++;
@@ -5440,6 +5460,7 @@
         return{
           k4:{total:k4Total,fail:k4Fail,pct:pctFail(k4Fail,k4Total)},
           k5:{total:k5Total,fail:k5Fail,pct:pctFail(k5Fail,k5Total)},
+          k6:{total:k6Total,fail:k6Fail,pct:pctFail(k6Fail,k6Total)},
           k7:{total:k7Total,fail:k7Fail,pct:pctFail(k7Fail,k7Total)},
           subBuckets,
           totalInCohort:k4Total
@@ -5449,9 +5470,9 @@
       // ─── EPA tab rows ────────────────────────────────────────────
       // Per-deal version of the Macmillan Service KPIs. Cohort matches
       // macmillanKPIs (Macmillan + createdate in range). Each row shows
-      // Met / Failed / N/A for KPI 4, KPI 5, and KPI 7. KPI 5 only
+      // Met / Failed / N/A for KPI 4, KPI 5, KPI 6, and KPI 7. KPI 5 only
       // applies to urgent deals — non-urgent rows get N/A there. KPI 4 /
-      // 7 apply to every deal in the cohort.
+      // 6 / 7 apply to every deal in the cohort.
       const epaRows=useMemo(()=>{
         if(!leadFilter.has("Macmillan"))return[];
         const start=fromMonth?monthStart(fromMonth):null;
@@ -5465,6 +5486,9 @@
           const isUrgentForKPI=d.isUrgent||(Array.isArray(d.urgentReason)&&d.urgentReason.length>0);
           const k4Status=d.pendingMacmillanDays==null?"N/A":(d.pendingMacmillanDays>3?"Failed":"Met");
           const k5Status=!isUrgentForKPI?"N/A":(d.pendingMacmillanDays==null?"N/A":(d.pendingMacmillanDays>2?"Failed":"Met"));
+          // KPI 6 (Row 6) — pass requires BOTH stage exits populated. See
+          // macmillanKPIs comment for the rationale.
+          const k6Status=(d.pendingExitedDate&&d.attemptingExitedDate)?"Met":"Failed";
           const k7Status=d.firstConnectedCallDate?"Met":"Failed";
           out.push({
             id:d.id,
@@ -5474,7 +5498,9 @@
             pendingMacmillanDays:d.pendingMacmillanDays,
             isUrgent:isUrgentForKPI,
             firstConnectedCallDate:d.firstConnectedCallDate,
-            k4Status,k5Status,k7Status
+            pendingExitedDate:d.pendingExitedDate,
+            attemptingExitedDate:d.attemptingExitedDate,
+            k4Status,k5Status,k6Status,k7Status
           });
         });
         out.sort((a,b)=>(b.createDate?.getTime?.()||0)-(a.createDate?.getTime?.()||0));
@@ -5556,13 +5582,15 @@
 
       // CSV exports for the EPA + CS tabs (only meaningful in Macmillan mode).
       const exportEpaCSV=useCallback(()=>{
-        const hdr=["Deal ID","Deal Name","Drafter","Create Date","Days in Pending (Macmillan)","Is Urgent","First Connected Call Date","KPI 4 — Initial Contact (2d)","KPI 5 — Urgent Contact (24h)","KPI 7 — Connected","HubSpot Link"];
+        const hdr=["Deal ID","Deal Name","Drafter","Create Date","Days in Pending (Macmillan)","Is Urgent","First Connected Call Date","Pending Exit Date","Attempting Exit Date","KPI 4 — Initial Contact (2d)","KPI 5 — Urgent Contact (24h)","KPI 6 — Two Further Calls (5d)","KPI 7 — Connected","HubSpot Link"];
         const lines=[hdr,...epaRows.map(r=>[
           r.id,r.dealname,r.drafter,fmtDate(r.createDate),
           r.pendingMacmillanDays==null?"":r.pendingMacmillanDays.toFixed(2),
           r.isUrgent?"Yes":"No",
           r.firstConnectedCallDate?fmtDate(r.firstConnectedCallDate):"",
-          r.k4Status,r.k5Status,r.k7Status,
+          r.pendingExitedDate?fmtDate(r.pendingExitedDate):"",
+          r.attemptingExitedDate?fmtDate(r.attemptingExitedDate):"",
+          r.k4Status,r.k5Status,r.k6Status,r.k7Status,
           HS_BASE+r.id
         ])];
         downloadCSV(`sla_audit_epa_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
@@ -5778,7 +5806,7 @@
                 <React.Fragment>
                   <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:4}}>Macmillan Service KPIs</div>
                   <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-                    Cohort: Macmillan deals with <strong style={{color:C.text}}>createdate</strong> in the selected End SLA Month range. Fail % rendered with the same colour scale: green &le;5%, amber &le;10%, red &gt;10%. Hover any tile for the exact rule. Row 6 (5-working-day rule between calls) intentionally skipped — needs engagement-level data, deferred.
+                    Cohort: Macmillan deals with <strong style={{color:C.text}}>createdate</strong> in the selected End SLA Month range. Fail % rendered with the same colour scale: green &le;5%, amber &le;10%, red &gt;10%. Hover any tile for the exact rule.
                   </div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14,marginBottom:18}}>
                     <div style={card} title="Row 4 — Initial contact phone call within 2 days of Macmillan referral. Fail when cumulative time in 'Pending - Macmillan' stage > 3 days (mirrors the source spreadsheet's >3d threshold).">
@@ -5793,6 +5821,13 @@
                       <div style={{...cardValue,color:macmillanKPIs.k5.pct==null?C.text:macmillanKPIs.k5.pct<=5?C.green:macmillanKPIs.k5.pct<=10?C.amber:C.red}}>{macmillanKPIs.k5.pct==null?"—":`${macmillanKPIs.k5.pct}%`}</div>
                       <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
                         {macmillanKPIs.k5.total===0?"No urgent deals in this range":`${macmillanKPIs.k5.fail} of ${macmillanKPIs.k5.total} failed`}
+                      </div>
+                    </div>
+                    <div style={card} title="Row 6 — Two further call attempts within 5 working days. Pass = BOTH hs_v2_date_exited_112034598 (Pending - Macmillan) AND hs_v2_date_exited_1230854698 (Attempting to contact) are populated, i.e. the deal progressed through both contact stages. Fail % = deals missing one or both exit stamps.">
+                      <div style={cardLabel}>Two further calls (5d) — fail %</div>
+                      <div style={{...cardValue,color:macmillanKPIs.k6.pct==null?C.text:macmillanKPIs.k6.pct<=5?C.green:macmillanKPIs.k6.pct<=10?C.amber:C.red}}>{macmillanKPIs.k6.pct==null?"—":`${macmillanKPIs.k6.pct}%`}</div>
+                      <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
+                        {macmillanKPIs.k6.total===0?"No deals created in this range":`${macmillanKPIs.k6.fail} of ${macmillanKPIs.k6.total} missing a stage exit`}
                       </div>
                     </div>
                     <div style={card} title="Row 7 — Follow-up email if customer still unreached. Fail when first_connected_call_date is blank (no connection ever made on the deal). Approximation of the spreadsheet's 'column Q blank' check.">
@@ -5831,7 +5866,7 @@
 
                   <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6,marginTop:14,borderTop:`1px solid ${C.border}`,paddingTop:14}}>EPA deals — per-row KPI status</div>
                   <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-                    Every Macmillan deal created in the selected month. Each KPI column shows <strong style={{color:C.green}}>Met</strong>, <strong style={{color:C.red}}>Failed</strong>, or <strong style={{color:C.text}}>N/A</strong> (KPI 5 is N/A for non-urgent deals).
+                    Every Macmillan deal created in the selected month. Each KPI column shows <strong style={{color:C.green}}>Met</strong>, <strong style={{color:C.red}}>Failed</strong>, or <strong style={{color:C.text}}>N/A</strong> (KPI 5 is N/A for non-urgent deals). KPI 6 passes when both <code style={{background:"rgba(255,255,255,0.05)",padding:"1px 4px",borderRadius:3}}>Pending - Macmillan</code> and <code style={{background:"rgba(255,255,255,0.05)",padding:"1px 4px",borderRadius:3}}>Attempting to contact</code> have exit dates.
                   </div>
                   {epaRows.length===0?(
                     <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No Macmillan deals created in this range.</div>
@@ -5849,6 +5884,7 @@
                             <th style={{padding:"10px 12px",fontWeight:600}}>1st Connected Call</th>
                             <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>KPI 4 (2d)</th>
                             <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>KPI 5 (24h)</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}} title="Row 6 — Both Pending-Macmillan exit date AND Attempting-to-contact exit date populated.">KPI 6 (5d)</th>
                             <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>KPI 7 (Conn.)</th>
                           </tr>
                         </thead>
@@ -5874,6 +5910,7 @@
                                 <td style={{padding:"10px 12px",fontSize:12,color:C.text,opacity:r.firstConnectedCallDate?0.85:0.4}}>{r.firstConnectedCallDate?fmtDate(r.firstConnectedCallDate):"—"}</td>
                                 <td style={statusCell(r.k4Status)}>{r.k4Status}</td>
                                 <td style={statusCell(r.k5Status)}>{r.k5Status}</td>
+                                <td style={statusCell(r.k6Status)} title={`Pending exit: ${r.pendingExitedDate?fmtDate(r.pendingExitedDate):"—"} | Attempting exit: ${r.attemptingExitedDate?fmtDate(r.attemptingExitedDate):"—"}`}>{r.k6Status}</td>
                                 <td style={statusCell(r.k7Status)}>{r.k7Status}</td>
                               </tr>
                             );
