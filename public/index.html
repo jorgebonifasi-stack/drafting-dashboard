@@ -5264,10 +5264,14 @@
           // rule per Ops, intentionally looser than the queue's "all 3
           // fields filled" rule — the queue forces the paper trail to
           // be complete, the audit measures whether the SLA was met.
-          // A deal can be Compliant in this audit while still appearing
-          // in the queue (e.g. Yes on Call 1, blanks on Calls 2/3 —
-          // SLA satisfied but advisor still needs to record outcomes).
-          const hasYes=c1==="yes"||c2==="yes"||c3==="yes";
+          //
+          // The legacy `confirmed_will_has_been_signed__macmillan__v2`
+          // field counts too: if it's set to "Yes", credit the deal as
+          // Compliant via Yes. This covers deals resolved before the
+          // new Macmillan Call N schema rolled out — no need to backfill
+          // their Call 1 just to get audit credit.
+          const legacyYes=(d.macmillanFollowUpOutcome||"").trim().toLowerCase()==="yes";
+          const hasYes=legacyYes||c1==="yes"||c2==="yes"||c3==="yes";
           const allNos=c1==="no"&&c2==="no"&&c3==="no";
           if(hasYes)withYes++;
           else if(allNos)with3Nos++;
@@ -5420,7 +5424,11 @@
           const c1=d.macmillanCall1||"";
           const c2=d.macmillanCall2||"";
           const c3=d.macmillanCall3||"";
-          const hasYes=c1==="yes"||c2==="yes"||c3==="yes";
+          // Legacy `confirmed_will_has_been_signed__macmillan__v2` = "Yes"
+          // is treated as a compliant outcome — see macmillanCallStats
+          // for the rationale (covers pre-new-schema deals).
+          const legacyYes=(d.macmillanFollowUpOutcome||"").trim().toLowerCase()==="yes";
+          const hasYes=legacyYes||c1==="yes"||c2==="yes"||c3==="yes";
           const allNos=c1==="no"&&c2==="no"&&c3==="no";
           const status=hasYes?"Met (Yes)":(allNos?"Met (3 No)":"Breached");
           out.push({
@@ -5430,6 +5438,7 @@
             appointment:doa,
             deadline,
             call1:c1,call2:c2,call3:c3,
+            legacyYes,
             status
           });
         });
@@ -5476,10 +5485,11 @@
 
       const exportCsCSV=useCallback(()=>{
         const fmtCallVal=v=>v==="yes"?"Yes":v==="no"?"No":"";
-        const hdr=["Deal ID","Deal Name","Legacy Advisor","Date of Appointment","SLA Deadline (DoA + 6mo)","Call 1","Call 2","Call 3","Compliance Status","HubSpot Link"];
+        const hdr=["Deal ID","Deal Name","Legacy Advisor","Date of Appointment","SLA Deadline (DoA + 6mo)","Call 1","Call 2","Call 3","Legacy v2 = Yes","Compliance Status","HubSpot Link"];
         const lines=[hdr,...csRows.map(r=>[
           r.id,r.dealname,r.legacyAdvisor,fmtDate(r.appointment),fmtDate(r.deadline),
           fmtCallVal(r.call1),fmtCallVal(r.call2),fmtCallVal(r.call3),
+          r.legacyYes?"Yes":"",
           r.status,
           HS_BASE+r.id
         ])];
@@ -5578,7 +5588,7 @@
                     <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>{stats.urgEligible===0?"No urgent deals":`${stats.urgMet} of ${stats.urgEligible} met`}{stats.urgCount>stats.urgEligible?` · ${stats.urgCount-stats.urgEligible} excl`:""}</div>
                   </div>
                   {macmillanCallStats&&(
-                    <div style={card} title="Macmillan phone-call SLA: outcome confirmed within 6 months of appointment via up to 3 calls. Compliant when ANY Macmillan Call N = 'Yes' (signing confirmed) OR all three = 'No' (full 3-attempt effort logged). Some blanks with no Yes = breach. Looser than the queue's 'all 3 filled' rule on purpose: queue tracks paper-trail completion, audit measures SLA outcomes. The 'End SLA Month' picker filters by SLA DEADLINE (DoA + 6 months) — i.e. 'May 2026' = deals whose 6-month deadline landed in May (DoA Nov 2025). Same convention as the drafting compliance tiles.">
+                    <div style={card} title="Macmillan phone-call SLA: outcome confirmed within 6 months of appointment via up to 3 calls. Compliant when ANY Macmillan Call N = 'Yes' (signing confirmed), OR the legacy 'confirmed_will_has_been_signed__macmillan__v2' = 'Yes' (pre-Call N schema deals), OR all three = 'No' (full 3-attempt effort logged). Some blanks with no Yes = breach. Looser than the queue's 'all 3 filled' rule on purpose: queue tracks paper-trail completion, audit measures SLA outcomes. The 'End SLA Month' picker filters by SLA DEADLINE (DoA + 6 months) — i.e. 'May 2026' = deals whose 6-month deadline landed in May (DoA Nov 2025). Same convention as the drafting compliance tiles.">
                       <div style={cardLabel}>Phone-Call SLA %</div>
                       <div style={{...cardValue,color:macmillanCallStats.pct==null?C.text:macmillanCallStats.pct>=90?C.green:macmillanCallStats.pct>=75?C.amber:C.red}}>{macmillanCallStats.pct==null?"—":`${macmillanCallStats.pct}%`}</div>
                       <div style={{fontSize:11,color:C.text,opacity:0.5,marginTop:4}}>
@@ -5793,7 +5803,7 @@
                 <React.Fragment>
                   <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>SLA Logic — CS (Phone-Call)</div>
                   <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
-                    Cohort: Macmillan deals where the 6-month phone-call SLA deadline (DoA + 6 months) falls in the selected End SLA Month range, the deal currently has a draft in customer hands (DWC / RDWC / RFP / Sent To Customer or workflow stamps), region ≠ Scotland, and the deadline has passed. Compliant when ANY Macmillan Call N = "Yes" (signing confirmed) OR all three = "No" (full 3-attempt effort logged). Blanks with no Yes after deadline = breach. Looser than the Macmillan Follow-Up Queue's "all 3 filled" rule on purpose — the queue tracks paper-trail completion, the audit measures SLA outcomes.
+                    Cohort: Macmillan deals where the 6-month phone-call SLA deadline (DoA + 6 months) falls in the selected End SLA Month range, the deal currently has a draft in customer hands (DWC / RDWC / RFP / Sent To Customer or workflow stamps), region ≠ Scotland, and the deadline has passed. Compliant when ANY Macmillan Call N = "Yes" (signing confirmed), OR the legacy <code style={{background:"rgba(255,255,255,0.05)",padding:"1px 4px",borderRadius:3}}>confirmed_will_has_been_signed__macmillan__v2</code> = "Yes" (for deals resolved before the new Call N schema rolled out), OR all three Call N = "No" (full 3-attempt effort logged). Blanks with no Yes after deadline = breach. Looser than the Macmillan Follow-Up Queue's "all 3 filled" rule on purpose — the queue tracks paper-trail completion, the audit measures SLA outcomes.
                   </div>
                   {csRows.length===0?(
                     <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No Macmillan deals with SLA deadlines in this range.</div>
