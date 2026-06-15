@@ -5439,6 +5439,7 @@
             deadline,
             call1:c1,call2:c2,call3:c3,
             legacyYes,
+            willSignedLegacy:(d.macmillanFollowUpOutcome||"").trim(),
             status
           });
         });
@@ -5485,11 +5486,11 @@
 
       const exportCsCSV=useCallback(()=>{
         const fmtCallVal=v=>v==="yes"?"Yes":v==="no"?"No":"";
-        const hdr=["Deal ID","Deal Name","Legacy Advisor","Date of Appointment","SLA Deadline (DoA + 6mo)","Call 1","Call 2","Call 3","Legacy v2 = Yes","Compliance Status","HubSpot Link"];
+        const hdr=["Deal ID","Deal Name","Legacy Advisor","Date of Appointment","SLA Deadline (DoA + 6mo)","Call 1","Call 2","Call 3","Will Signed (legacy)","Compliance Status","HubSpot Link"];
         const lines=[hdr,...csRows.map(r=>[
           r.id,r.dealname,r.legacyAdvisor,fmtDate(r.appointment),fmtDate(r.deadline),
           fmtCallVal(r.call1),fmtCallVal(r.call2),fmtCallVal(r.call3),
-          r.legacyYes?"Yes":"",
+          r.willSignedLegacy||"",
           r.status,
           HS_BASE+r.id
         ])];
@@ -5820,6 +5821,7 @@
                             <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Call 1</th>
                             <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Call 2</th>
                             <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}}>Call 3</th>
+                            <th style={{padding:"10px 12px",fontWeight:600,textAlign:"center"}} title="HubSpot property: confirmed_will_has_been_signed__macmillan__v2">Will Signed (legacy)</th>
                             <th style={{padding:"10px 12px",fontWeight:600}}>Status</th>
                           </tr>
                         </thead>
@@ -5846,6 +5848,7 @@
                                 <td style={callCell(r.call1)}>{fmtCall(r.call1)}</td>
                                 <td style={callCell(r.call2)}>{fmtCall(r.call2)}</td>
                                 <td style={callCell(r.call3)}>{fmtCall(r.call3)}</td>
+                                <td style={{padding:"10px 12px",textAlign:"center",fontWeight:r.willSignedLegacy?600:400,color:r.legacyYes?C.green:C.text,opacity:r.willSignedLegacy?0.95:0.4}}>{r.willSignedLegacy||"—"}</td>
                                 <td style={{padding:"10px 12px",fontWeight:700,color:statusColor}}>{r.status}</td>
                               </tr>
                             );
