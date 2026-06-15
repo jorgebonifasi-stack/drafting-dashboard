@@ -3247,38 +3247,39 @@
             if(d.origEnteredDrafting)candidates.push(new Date(d.origEnteredDrafting).getTime());
             if(d.dateOfAppointment)candidates.push(new Date(d.dateOfAppointment).getTime());
             if(!candidates.length)return; // no anchor available
-            anchor=new Date(Math.max(...candidates));anchor.setHours(0,0,0,0);
-            // Standard 28-calendar-day deadline as the baseline.
-            const standardDeadline=new Date(anchor);
-            standardDeadline.setDate(standardDeadline.getDate()+SLA_DAYS);
-            // 14-day waiver extension. When the customer hasn't signed the
-            // waiver, the SLA can be extended by the gap between the
-            // standard deadline and the waiver's expiry date. Extension
-            // model (per Ops): never shorter than 28 days — the waiver
-            // only stretches the deadline, never pulls it forward.
-            //   waiverDeadline = waiver_expiry_date (when populated)
-            //                  OR origEnteredDrafting + 14 calendar days
-            //                     (fallback when expiry date is missing)
-            // effectiveDeadline = later of (standardDeadline, waiverDeadline)
-            // waiverExtension   = days added beyond the standard 28
-            waiverExtension=0;
-            deadline=standardDeadline;
+            const baseAnchor=new Date(Math.max(...candidates));baseAnchor.setHours(0,0,0,0);
+            // 14-day waiver — when the customer hasn't signed, the SLA
+            // CLOCK STARTS at the waiver expiry, not at DI. Up to that
+            // point the customer can still back out, so we shouldn't be
+            // measuring drafting time yet. Anchor shifts to whichever is
+            // later: the base anchor (max of DI/DoA) or the waiver-derived
+            // anchor.
+            //
+            //   waiverAnchor = waiver_expiry_date (when populated)
+            //                OR origEnteredDrafting + 14 calendar days
+            //                   (fallback when expiry date is missing)
+            //
+            // The deadline is always anchor + 28 calendar days from the
+            // effective anchor. No flat extension on top.
+            anchor=baseAnchor;
             if(d.waiverSigned14d===false){
-              let waiverDeadline=null;
+              let waiverAnchor=null;
               if(d.waiverExpiryDate){
-                waiverDeadline=new Date(d.waiverExpiryDate);
-                waiverDeadline.setHours(0,0,0,0);
+                waiverAnchor=new Date(d.waiverExpiryDate);
+                waiverAnchor.setHours(0,0,0,0);
               }else if(d.origEnteredDrafting){
-                waiverDeadline=new Date(new Date(d.origEnteredDrafting).getTime()+14*86400000);
-                waiverDeadline.setHours(0,0,0,0);
+                waiverAnchor=new Date(new Date(d.origEnteredDrafting).getTime()+14*86400000);
+                waiverAnchor.setHours(0,0,0,0);
               }
-              if(waiverDeadline&&waiverDeadline>standardDeadline){
-                deadline=waiverDeadline;
-                waiverExtension=Math.round((waiverDeadline-standardDeadline)/86400000);
-              }
+              // Clamp: the SLA can't start before the deal is ready. Use
+              // the later of (baseAnchor, waiverAnchor).
+              if(waiverAnchor&&waiverAnchor>baseAnchor)anchor=waiverAnchor;
             }
-            const totalDays=SLA_DAYS+waiverExtension;
-            slaTargetDays=totalDays;
+            // Days the anchor was shifted forward (0 if no waiver shift).
+            // Drives the table badge — see waiverShiftDays in the row.
+            waiverExtension=Math.round((anchor-baseAnchor)/86400000);
+            slaTargetDays=SLA_DAYS;
+            deadline=new Date(anchor);deadline.setDate(deadline.getDate()+SLA_DAYS);
             daysRemaining=Math.round((deadline-today)/86400000);
             unit="cal";
             state=daysRemaining<0?"breached":daysRemaining<=3?"close":daysRemaining<=7?"warning":"comfortable";
@@ -3367,7 +3368,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA — Deals Nearing SLA</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Two streams in one table. Drafting deals: 28 calendar days from the SLA anchor (latest of original drafting-instructions date and Date of Appointment); +14 calendar days when the 14-day waiver is not signed. Amendment Requested deals: 10 business days from entered-amendment when amendment_source = "Client amendment", otherwise 1 business day. Drafting deals are excluded if both anchor candidates are missing. Stages included: Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, Approved \u2014 Proof Reading, Amendment Requested.
+                  Two streams in one table. Drafting deals: 28 calendar days from the SLA anchor. Anchor = latest of original drafting-instructions date and Date of Appointment, UNLESS the customer hasn't signed the 14-day waiver \u2014 in which case the anchor shifts forward to the waiver expiry date (or original drafting-instructions + 14 calendar days when waiver_expiry_date is missing). Anchor only shifts forward; never earlier than DI/DoA. Amendment Requested deals: 10 business days from entered-amendment when amendment_source = "Client amendment", otherwise 1 business day. Drafting deals are excluded if both anchor candidates are missing. Stages included: Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, Approved \u2014 Proof Reading, Amendment Requested.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -3421,8 +3422,8 @@
                         <td style={{padding:"10px 12px"}}>
                           <a href={HS_BASE+r.id} target="_blank" rel="noopener noreferrer" style={{color:C.accent,textDecoration:"none"}}>{r.dealname}</a>
                           {r.isAmendment&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(127,140,141,0.22)",color:"#95A5A6",fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>Amend</span>}
-                          {r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+{r.waiverExtension}d waiver</span>}
-                          {r.waiverExtension===0&&r.waiverUnsigned&&<span title="Customer hasn't signed the 14-day waiver. No SLA extension applied (either waiver_expiry_date is missing, or it expired before the standard 28-day deadline)." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.10)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap",border:`1px dashed ${C.amber}`}}>Waiver Unsigned</span>}
+                          {r.waiverExtension>0&&<span title={`SLA anchor shifted to the waiver expiry date — ${r.waiverExtension} day${r.waiverExtension===1?"":"s"} later than DI/DoA. The 28-day SLA clock starts there.`} style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>Waiver Anchor (+{r.waiverExtension}d)</span>}
+                          {r.waiverExtension===0&&r.waiverUnsigned&&<span title="Customer hasn't signed the 14-day waiver, but the waiver expiry isn't later than DI/DoA — so the anchor hasn't shifted. Either waiver_expiry_date is in the past, or it's missing AND DI + 14d ≤ baseAnchor." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.10)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap",border:`1px dashed ${C.amber}`}}>Waiver Unsigned</span>}
                         </td>
                         <td style={{padding:"10px 12px",fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",fontSize:12,color:C.text,opacity:0.7}}>{r.id}</td>
                         <td style={{padding:"10px 12px"}}>{r.drafter}</td>
@@ -5048,64 +5049,58 @@
           const endDate=new Date(Math.min(...candidates));
           if(start&&endDate<start)return;
           if(end&&endDate>end)return;
-          // Compute working days from Date of Appointment to end. The audit
-          // uses calcBusinessDaysUK so that England & Wales bank holidays
-          // (Christmas, Easter, May bank holidays, etc.) don't count
-          // against the SLA — those are days the team isn't working.
+          // Base startDay (DoA) — used for Coral's 42 cal-day SLA and as a
+          // floor for the standard SLA's anchor when no waiver applies.
           const startDay=new Date(d.dateOfAppointment);startDay.setHours(0,0,0,0);
           const endDay=new Date(endDate);endDay.setHours(0,0,0,0);
-          const workingDays=endDay>=startDay?(calcBusinessDaysUK(startDay,endDay)||0):null;
-          if(workingDays==null)return;
-          // Calendar days for the Coral SLA (42 cal days from DoA to End).
-          const calendarDays=Math.round((endDay-startDay)/86400000);
-          // "Management Sign Off" exception: a deal flagged Urgent purely
-          // because management sign-off is required is admin-paperwork
-          // urgency, not customer-driven time pressure — the 3-working-day
-          // SLA isn't appropriate. Per Ops decision, treat those deals as
-          // Standard for SLA purposes (20 working days, +14d waiver as
-          // normal). Original `d.isUrgent` is preserved on the deal object
-          // itself (Chart 8/9 still count them as urgent for volume); the
-          // override only applies inside this audit's row builder.
-          // Match is permissive: trimmed, case-insensitive, allows "Sign-Off"
-          // / "SignOff" variants. Only triggers when MSO is the ONLY reason;
-          // if there's another reason listed (real customer urgency), the
-          // 3-day SLA stays.
+
+          // "Management Sign Off" exception (unchanged) — see comment below.
           const isMSOReason=r=>/management\s*sign[-\s]*off/i.test(String(r||"").trim());
           const isMSOOnly=d.isUrgent&&Array.isArray(d.urgentReason)&&d.urgentReason.length>0&&d.urgentReason.every(isMSOReason);
           const slaIsUrgent=d.isUrgent&&!isMSOOnly;
-          // 14-day waiver — extension based on actual waiver expiry rather
-          // than a flat +10wd (≈14 cal). Per Ops: when the customer hasn't
-          // signed the waiver, the SLA target stretches to whichever is
-          // later — the standard 20wd target, or the working-day count
-          // from anchor to waiver expiry.
+
+          // 14-day waiver — anchor shift, not extension. When the customer
+          // hasn't signed, the SLA clock starts at the waiver expiry, not
+          // at DoA. Up to that point the customer can still back out, so
+          // measuring drafting time before then doesn't make sense. The
+          // effective startDay shifts forward to the later of (DoA,
+          // waiverAnchor).
           //
-          //   waiverDeadline = waiver_expiry_date (when populated)
-          //                  OR origEnteredDrafting + 14 calendar days
-          //                     (fallback when expiry date is missing)
-          //   waiverWd       = calcBusinessDaysUK(startDay, waiverDeadline)
-          //   waiverExtension= max(0, waiverWd - baseTarget)
+          //   waiverAnchor = waiver_expiry_date (when populated)
+          //                OR origEnteredDrafting + 14 calendar days
+          //                   (fallback when expiry date is missing)
           //
-          // Urgent SLA stays at 3 working days — waiver doesn't apply to
-          // genuine rush jobs.
-          const baseTarget=slaIsUrgent?3:20;
-          let waiverExtension=0;
+          // Urgent deals: not affected by waiver (rush jobs override the
+          // grace-period concept).
+          let effectiveStartDay=startDay;
           if(!slaIsUrgent&&d.waiverSigned14d===false){
-            let waiverDeadline=null;
+            let waiverAnchor=null;
             if(d.waiverExpiryDate){
-              waiverDeadline=new Date(d.waiverExpiryDate);
-              waiverDeadline.setHours(0,0,0,0);
+              waiverAnchor=new Date(d.waiverExpiryDate);
+              waiverAnchor.setHours(0,0,0,0);
             }else if(d.origEnteredDrafting){
-              waiverDeadline=new Date(new Date(d.origEnteredDrafting).getTime()+14*86400000);
-              waiverDeadline.setHours(0,0,0,0);
+              waiverAnchor=new Date(new Date(d.origEnteredDrafting).getTime()+14*86400000);
+              waiverAnchor.setHours(0,0,0,0);
             }
-            if(waiverDeadline){
-              const waiverWd=calcBusinessDaysUK(startDay,waiverDeadline);
-              if(waiverWd!=null&&waiverWd>baseTarget){
-                waiverExtension=waiverWd-baseTarget;
-              }
-            }
+            if(waiverAnchor&&waiverAnchor>startDay)effectiveStartDay=waiverAnchor;
           }
-          const target=baseTarget+waiverExtension;
+
+          // Working days from the effective anchor to end. This is the
+          // SLA-relevant duration; deals where the customer's waiver
+          // window pushed the start later get less to deal with.
+          const workingDays=endDay>=effectiveStartDay?(calcBusinessDaysUK(effectiveStartDay,endDay)||0):null;
+          if(workingDays==null)return;
+          // Calendar days for Coral SLA (still anchored at DoA — Coral
+          // doesn't recognise the waiver as an anchor shift, see below).
+          const calendarDays=Math.round((endDay-startDay)/86400000);
+
+          // Standard target: 20wd for standard, 3wd for urgent. Waiver no
+          // longer extends the target — it shifts the start instead. The
+          // waiverExtension field carries the calendar days the anchor
+          // moved forward (for badge display).
+          const baseTarget=slaIsUrgent?3:20;
+          const target=baseTarget;
+          const waiverExtension=Math.round((effectiveStartDay-startDay)/86400000);
           const met=workingDays<=target;
           // Coral SLA: 42 calendar days from DoA to End. The 14-day waiver
           // extension applies: when the customer has NOT signed it, add
@@ -5727,7 +5722,7 @@
                   <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
                     {filterMode==="coral"
                       ?"Coral SLA = 42 calendar days from Date of Appointment to End. +14 calendar days when the 14-day waiver is not signed. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority does not adjust the Coral SLA. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."
-                      :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). Exception: deals flagged Urgent purely because Urgent Request Reason is \"Management Sign Off\" are treated as Standard (20 working days) — admin paperwork urgency isn't customer-driven time pressure. Those rows show an \"MSO → Standard\" badge. 14-day waiver: when the customer has NOT signed the waiver, the SLA target stretches to whichever is later — the standard 20-working-day target, or the working-day count from anchor to the waiver expiry date. Waiver deadline = waiver_expiry_date if populated, else original_date_entered_drafting_instructions + 14 calendar days. Urgent SLA isn't affected by the waiver. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."}
+                      :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). Exception: deals flagged Urgent purely because Urgent Request Reason is \"Management Sign Off\" are treated as Standard (20 working days) — admin paperwork urgency isn't customer-driven time pressure. Those rows show an \"MSO → Standard\" badge. 14-day waiver: when the customer has NOT signed the waiver, the SLA clock STARTS at the waiver expiry date — anchor shifts forward, target stays 20wd. Waiver anchor = waiver_expiry_date if populated, else original_date_entered_drafting_instructions + 14 calendar days. Anchor only shifts forward (never earlier than DoA). Urgent SLA isn't affected by the waiver. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."}
                   </div>
                   {rows.length===0?(
                     <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed deals in this range.</div>
@@ -5756,8 +5751,8 @@
                                 {filterMode!=="coral"&&r.isUrgent&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(231,76,60,0.18)",color:C.red,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>Urgent</span>}
                                 {filterMode!=="coral"&&r.mgmtSignOffOnly&&<span title="Flagged Urgent in HubSpot but the reason is Management Sign Off only — treated as Standard for SLA purposes (20 working days, not 3)." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(127,140,141,0.22)",color:"#95A5A6",fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>MSO → Standard</span>}
                                 {filterMode==="coral"&&r.coralWaiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+14D Waiver</span>}
-                                {filterMode!=="coral"&&r.waiverExtension>0&&<span style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>+{r.waiverExtension}wd Waiver</span>}
-                                {filterMode!=="coral"&&r.waiverExtension===0&&r.waiverUnsigned&&<span title="Customer hasn't signed the 14-day waiver. No SLA extension applied (waiver_expiry_date is missing, or expired before the standard target)." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.10)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap",border:`1px dashed ${C.amber}`}}>Waiver Unsigned</span>}
+                                {filterMode!=="coral"&&r.waiverExtension>0&&<span title={`SLA anchor shifted to the waiver expiry date — ${r.waiverExtension} day${r.waiverExtension===1?"":"s"} later than DoA. Working days counted from there.`} style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.18)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>Waiver Anchor (+{r.waiverExtension}d)</span>}
+                                {filterMode!=="coral"&&r.waiverExtension===0&&r.waiverUnsigned&&<span title="Customer hasn't signed the 14-day waiver, but the waiver-derived anchor isn't later than DoA — so no shift applied." style={{fontSize:10,marginLeft:8,padding:"2px 8px",borderRadius:4,background:"rgba(243,156,18,0.10)",color:C.amber,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",whiteSpace:"nowrap",border:`1px dashed ${C.amber}`}}>Waiver Unsigned</span>}
                               </td>
                               <td style={{padding:"10px 12px",fontFamily:"ui-monospace,SFMono-Regular,Menlo,monospace",fontSize:12,color:C.text,opacity:0.7}}>{r.id}</td>
                               <td style={{padding:"10px 12px"}}>{r.drafter}</td>
