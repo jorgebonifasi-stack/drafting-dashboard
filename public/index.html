@@ -518,13 +518,18 @@
         const rawWaiver=(p.have_they_signed_the_14_day_waiver_||"").toString().trim();
         const waiverLabel=((waiverOptions||{})[rawWaiver]||rawWaiver).toString().trim().toLowerCase();
         const waiverSigned14d=waiverLabel==="yes"||waiverLabel==="true"?true:(waiverLabel==="no"||waiverLabel==="false"?false:null);
+        // When the waiver is unsigned, this date drives the SLA extension.
+        // Fallback when missing: origEnteredDrafting + 14 calendar days
+        // (computed at the SLA-table / audit call site so we can reuse the
+        // existing anchor variables).
+        const waiverExpiryDate=parseHSDate(p.waiver_expiry_date);
         return{
           id:d.id,dealname:p.dealname||d.id,drafterName,prooferName,dealstage:p.dealstage||"",
           wasInDoNotUse,
           leadSources,leadSourceTier3,leadSourceTier3List,products,hasWillProduct,hasLpaProduct,
           slaBreachReason,slaBreachReasons,
           region,macmillanFollowUpOutcome,macmillanCall1,macmillanCall2,macmillanCall3,
-          dateOfAppointment,firstQueryDate,waiverSigned14d,
+          dateOfAppointment,firstQueryDate,waiverSigned14d,waiverExpiryDate,
           enteredDrafting,exitedDrafting,exitedDraftingOld,nativeExitedDrafting,origEnteredDrafting,origExitedDrafting,draftingStart,
           enteredProofreading,exitedProofreading,enteredDraftingQuery,queryReasons,consultantQueryReasons,
           legacyAdvisor,willConsultant,enteredRDWC,exitedRDWC,rdwcTurnaroundBizDays,
@@ -3243,10 +3248,37 @@
             if(d.dateOfAppointment)candidates.push(new Date(d.dateOfAppointment).getTime());
             if(!candidates.length)return; // no anchor available
             anchor=new Date(Math.max(...candidates));anchor.setHours(0,0,0,0);
-            waiverExtension=d.waiverSigned14d===false?14:0;
+            // Standard 28-calendar-day deadline as the baseline.
+            const standardDeadline=new Date(anchor);
+            standardDeadline.setDate(standardDeadline.getDate()+SLA_DAYS);
+            // 14-day waiver extension. When the customer hasn't signed the
+            // waiver, the SLA can be extended by the gap between the
+            // standard deadline and the waiver's expiry date. Extension
+            // model (per Ops): never shorter than 28 days — the waiver
+            // only stretches the deadline, never pulls it forward.
+            //   waiverDeadline = waiver_expiry_date (when populated)
+            //                  OR origEnteredDrafting + 14 calendar days
+            //                     (fallback when expiry date is missing)
+            // effectiveDeadline = later of (standardDeadline, waiverDeadline)
+            // waiverExtension   = days added beyond the standard 28
+            waiverExtension=0;
+            deadline=standardDeadline;
+            if(d.waiverSigned14d===false){
+              let waiverDeadline=null;
+              if(d.waiverExpiryDate){
+                waiverDeadline=new Date(d.waiverExpiryDate);
+                waiverDeadline.setHours(0,0,0,0);
+              }else if(d.origEnteredDrafting){
+                waiverDeadline=new Date(new Date(d.origEnteredDrafting).getTime()+14*86400000);
+                waiverDeadline.setHours(0,0,0,0);
+              }
+              if(waiverDeadline&&waiverDeadline>standardDeadline){
+                deadline=waiverDeadline;
+                waiverExtension=Math.round((waiverDeadline-standardDeadline)/86400000);
+              }
+            }
             const totalDays=SLA_DAYS+waiverExtension;
             slaTargetDays=totalDays;
-            deadline=new Date(anchor);deadline.setDate(deadline.getDate()+totalDays);
             daysRemaining=Math.round((deadline-today)/86400000);
             unit="cal";
             state=daysRemaining<0?"breached":daysRemaining<=3?"close":daysRemaining<=7?"warning":"comfortable";
@@ -5034,11 +5066,38 @@
           const isMSOReason=r=>/management\s*sign[-\s]*off/i.test(String(r||"").trim());
           const isMSOOnly=d.isUrgent&&Array.isArray(d.urgentReason)&&d.urgentReason.length>0&&d.urgentReason.every(isMSOReason);
           const slaIsUrgent=d.isUrgent&&!isMSOOnly;
-          // 14-day waiver: when the customer has NOT signed it, the standard SLA
-          // gets an extra 14 calendar days, approximated as 10 working days.
-          // Urgent SLA stays at 3 working days (waiver doesn't apply to rush jobs).
+          // 14-day waiver — extension based on actual waiver expiry rather
+          // than a flat +10wd (≈14 cal). Per Ops: when the customer hasn't
+          // signed the waiver, the SLA target stretches to whichever is
+          // later — the standard 20wd target, or the working-day count
+          // from anchor to waiver expiry.
+          //
+          //   waiverDeadline = waiver_expiry_date (when populated)
+          //                  OR origEnteredDrafting + 14 calendar days
+          //                     (fallback when expiry date is missing)
+          //   waiverWd       = calcBusinessDaysUK(startDay, waiverDeadline)
+          //   waiverExtension= max(0, waiverWd - baseTarget)
+          //
+          // Urgent SLA stays at 3 working days — waiver doesn't apply to
+          // genuine rush jobs.
           const baseTarget=slaIsUrgent?3:20;
-          const waiverExtension=(!slaIsUrgent&&d.waiverSigned14d===false)?10:0;
+          let waiverExtension=0;
+          if(!slaIsUrgent&&d.waiverSigned14d===false){
+            let waiverDeadline=null;
+            if(d.waiverExpiryDate){
+              waiverDeadline=new Date(d.waiverExpiryDate);
+              waiverDeadline.setHours(0,0,0,0);
+            }else if(d.origEnteredDrafting){
+              waiverDeadline=new Date(new Date(d.origEnteredDrafting).getTime()+14*86400000);
+              waiverDeadline.setHours(0,0,0,0);
+            }
+            if(waiverDeadline){
+              const waiverWd=calcBusinessDaysUK(startDay,waiverDeadline);
+              if(waiverWd!=null&&waiverWd>baseTarget){
+                waiverExtension=waiverWd-baseTarget;
+              }
+            }
+          }
           const target=baseTarget+waiverExtension;
           const met=workingDays<=target;
           // Coral SLA: 42 calendar days from DoA to End. The 14-day waiver
@@ -5655,7 +5714,7 @@
                   <div style={{fontSize:12,color:C.text,opacity:0.6,marginBottom:14}}>
                     {filterMode==="coral"
                       ?"Coral SLA = 42 calendar days from Date of Appointment to End. +14 calendar days when the 14-day waiver is not signed. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Calendar days count weekends and bank holidays. Priority does not adjust the Coral SLA. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."
-                      :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). Exception: deals flagged Urgent purely because Urgent Request Reason is \"Management Sign Off\" are treated as Standard (20 working days) — admin paperwork urgency isn't customer-driven time pressure. Those rows show an \"MSO → Standard\" badge. +10 working days (≈ 14 calendar days) for standard deals when the 14-day waiver is not signed; urgent skips this. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."}
+                      :"SLA = 20 working days for standard, 3 working days for urgent (Priority = High). Exception: deals flagged Urgent purely because Urgent Request Reason is \"Management Sign Off\" are treated as Standard (20 working days) — admin paperwork urgency isn't customer-driven time pressure. Those rows show an \"MSO → Standard\" badge. 14-day waiver: when the customer has NOT signed the waiver, the SLA target stretches to whichever is later — the standard 20-working-day target, or the working-day count from anchor to the waiver expiry date. Waiver deadline = waiver_expiry_date if populated, else original_date_entered_drafting_instructions + 14 calendar days. Urgent SLA isn't affected by the waiver. End = earliest of \"Drafts With Customer\", \"Ready For Printing\", or \"Sent To Customer\". Working days exclude weekends and UK (England & Wales) bank holidays. Breached deals with SLA Breach Reason = N/A are flagged as Excluded and removed from compliance % calculations (still listed in the table for audit trail)."}
                   </div>
                   {rows.length===0?(
                     <div style={{padding:"32px 16px",textAlign:"center",color:C.text,opacity:0.6,fontSize:13}}>No completed deals in this range.</div>

@@ -60,6 +60,10 @@ const PROPERTIES = [
   "sla_breach_reason",
   "date_drafting_query",
   "have_they_signed_the_14_day_waiver_",
+  // Date the 14-day waiver expires. When the customer hasn't signed the
+  // waiver, this date drives the SLA extension dynamically (rather than
+  // the previous flat +14 days). Fallback when missing: DI entry + 14d.
+  "waiver_expiry_date",
   "consultant_query_reason",
   // Estate Planning Consultant (the person who runs the appointment).
   // Used by Chart 18 ("Consultant Query Rate per EPC") to attribute
