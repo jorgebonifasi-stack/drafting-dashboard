@@ -26,6 +26,9 @@
   <!-- html2canvas (chart capture) -->
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
+  <!-- JSZip (Drafting / Metrics → Download ZIP button) -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
   <!-- Standalone dashboard — hosted on Railway -->
 
   <!-- Babel standalone -->
@@ -728,6 +731,13 @@
       catch(e){const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent("\uFEFF"+content);a.download=name;a.click();}
     }
 
+    // \u2500\u2500\u2500 Chart export registry (Drafting / Metrics \u2192 Download ZIP) \u2500\u2500
+    // Each mounted ChartCard registers its raw export bits keyed by
+    // chartId. The Download ZIP button in Drafting / Metrics iterates a
+    // known list of chartIds and builds CSVs + PNGs in bulk. The entry
+    // is removed on unmount.
+    const CHART_REGISTRY={};
+
     // ─── table column configs ───────────────────────────────────
     const T_COLS={
       c1:[{key:"name",label:"Drafter"},{key:"full",label:"Completed"},{key:"partial",label:"In proofreading"},{key:"count",label:"Total"},{key:"target",label:"Target"},{key:"status",label:"Status"}],
@@ -784,35 +794,61 @@
       const toggle=k=>setExpanded(p=>({...p,[k]:!p[k]}));
       const hasDetails=!!detailMap;
 
-      const doPNG=async()=>{
+      // Build a PNG blob from the chart card (used by per-card button + bulk export).
+      const buildPNG=async()=>{
         const el=chartRef.current;
-        if(!el||typeof html2canvas==="undefined")return;
+        if(!el||typeof html2canvas==="undefined")return null;
+        const titleEl=el.querySelector(".png-title");
+        if(titleEl)titleEl.style.display="block";
         try{
-          // Show the embedded title for the PNG
-          const titleEl=el.querySelector(".png-title");
-          if(titleEl)titleEl.style.display="block";
           const canvas=await html2canvas(el,{backgroundColor:"#1e1e1e",scale:2,useCORS:true,logging:false});
+          return await new Promise(res=>canvas.toBlob(res,"image/png"));
+        }finally{
           if(titleEl)titleEl.style.display="none";
-          const link=document.createElement("a");
-          link.download=(csvName||chartId||"chart").replace(/\.csv$/,"")+".png";
-          link.href=canvas.toDataURL("image/png");
-          link.click();
-        }catch(e){console.error("PNG export failed:",e);}
+        }
       };
 
-      const doCSV=()=>{
-        if(csvBuilder){downloadCSV(csvName||"data.csv",csvBuilder());return;}
-        const hdr=columns.map(c=>c.label).concat(hasDetails?["Deal Name","HubSpot Link"].concat((detailCols||[]).map(c=>c.label)):[]);
+      // Build a CSV string from raw bits. Accepts an optional dropKeys
+      // array so the Download ZIP button can strip Target / Status
+      // columns from charts 1 and 5 without affecting the on-screen CSV.
+      const buildCSV=(dropKeys=[])=>{
+        if(csvBuilder)return csvBuilder();
+        const cols=(columns||[]).filter(c=>!dropKeys.includes(c.key));
+        const hdr=cols.map(c=>c.label).concat(hasDetails?["Deal Name","HubSpot Link"].concat((detailCols||[]).map(c=>c.label)):[]);
         const lines=[hdr];
         (rows||[]).forEach(r=>{
           if(hasDetails&&detailMap[r._key]){
             detailMap[r._key].forEach(deal=>{
-              lines.push(columns.map(c=>r[c.key]).concat([deal.dealname||deal.id,HS_BASE+deal.id]).concat((detailCols||[]).map(c=>deal[c.key])));
+              lines.push(cols.map(c=>r[c.key]).concat([deal.dealname||deal.id,HS_BASE+deal.id]).concat((detailCols||[]).map(c=>deal[c.key])));
             });
-          }else{lines.push(columns.map(c=>r[c.key]));}
+          }else{lines.push(cols.map(c=>r[c.key]));}
         });
-        downloadCSV(csvName||"data.csv",toCSV(lines));
+        return toCSV(lines);
       };
+
+      // Register this card in the export registry so the bulk Download
+      // ZIP button can find it by chartId. Update the entry every render
+      // so the closures stay fresh; unregister on unmount.
+      if(chartId)CHART_REGISTRY[chartId]={csvName,title,buildCSV,buildPNG};
+      useEffect(()=>{
+        if(!chartId)return;
+        return()=>{delete CHART_REGISTRY[chartId];};
+      },[chartId]);
+
+      const doPNG=async()=>{
+        try{
+          const blob=await buildPNG();
+          if(!blob)return;
+          const url=URL.createObjectURL(blob);
+          const link=document.createElement("a");
+          link.download=(csvName||chartId||"chart").replace(/\.csv$/,"")+".png";
+          link.href=url;
+          link.click();
+          setTimeout(()=>URL.revokeObjectURL(url),1000);
+        }catch(e){console.error("PNG export failed:",e);}
+      };
+
+      const doCSV=()=>{downloadCSV(csvName||"data.csv",buildCSV());};
 
       const th={padding:"8px 10px",textAlign:"left",borderBottom:`1px solid ${C.border}`,color:C.white,fontWeight:600,fontSize:11,position:"sticky",top:0,background:C.surface};
       const td={padding:"6px 10px",borderBottom:`1px solid ${C.border}`,color:C.text,fontSize:12};
@@ -3948,6 +3984,9 @@
       const[stageLabels,setStageLabels]=useState({});
       const[view,setView]=useState("graphs");
       const[authUser,setAuthUser]=useState(null);
+      // Drafting / Metrics → Download ZIP progress. null = idle,
+      // {done,total} = running, "done" briefly = finished.
+      const[bulkExport,setBulkExport]=useState(null);
       // Targets persistence (Google Sheets via /api/targets)
       const[targetsLoaded,setTargetsLoaded]=useState(false);
       const[saveStatus,setSaveStatus]=useState("idle"); // idle | saving | saved | error
@@ -4601,6 +4640,63 @@
         return{rows,detailMap};
       },[deals,gran,selectedBucket]);
 
+      // ─── Drafting / Metrics → Download ZIP ────────────────────
+      // Bundles all chart CSVs + PNGs from the Metrics tab into a ZIP.
+      // Strips "Target" / "Status" columns from charts 1 and 5 (per Ops
+      // request — bundle excludes target context). PNGs match what's
+      // on screen, target reference lines included.
+      //
+      // Privacy note: detail-row CSV expansions contain deal names —
+      // treat the ZIP as confidential internal content. Do not share
+      // externally without redacting. The tooltip on the button repeats
+      // this; org policy already requires it.
+      const DRAFTING_METRICS_CHARTS=[
+        "chart-1","chart-16","chart-workload",
+        "chart-2","chart-12","chart-6",
+        "chart-4","chart-7","chart-8","chart-9",
+        "chart-10","chart-11",
+        "chart-5","chart-3",
+        "chart-13","chart-17","chart-15","chart-18",
+        "chart-14"
+      ];
+      const CHART_TARGET_STRIP={
+        // T_COLS.c1 / T_COLS.c5 are the only chart tables with explicit
+        // Target / Status columns. All other charts have no target axis
+        // captured in the CSV; their PNGs still show reference lines.
+        "chart-1":["target","status"],
+        "chart-5":["target","status"]
+      };
+      const doBulkExport=async()=>{
+        if(typeof JSZip==="undefined"){alert("ZIP library failed to load — refresh the page and try again.");return;}
+        const items=DRAFTING_METRICS_CHARTS.map(id=>({id,entry:CHART_REGISTRY[id]})).filter(x=>x.entry);
+        if(items.length===0){alert("No charts found to export. Wait for the page to finish rendering, then try again.");return;}
+        setBulkExport({done:0,total:items.length});
+        const zip=new JSZip();
+        const csvsFolder=zip.folder("csvs");
+        const pngsFolder=zip.folder("pngs");
+        for(let i=0;i<items.length;i++){
+          const{id,entry}=items[i];
+          const base=(entry.csvName||id).replace(/\.csv$/,"");
+          try{
+            const csv=entry.buildCSV(CHART_TARGET_STRIP[id]||[]);
+            if(csv)csvsFolder.file(base+".csv",csv);
+            const blob=await entry.buildPNG();
+            if(blob)pngsFolder.file(base+".png",blob);
+          }catch(e){console.error("Bulk export error on",id,e);}
+          setBulkExport({done:i+1,total:items.length});
+        }
+        const ts=new Date().toISOString().slice(0,10);
+        const filename=`drafting_metrics_${gran}_${selectedBucket||"all"}_${ts}.zip`;
+        const blob=await zip.generateAsync({type:"blob"});
+        const url=URL.createObjectURL(blob);
+        const link=document.createElement("a");
+        link.download=filename;
+        link.href=url;
+        link.click();
+        setTimeout(()=>URL.revokeObjectURL(url),2000);
+        setBulkExport(null);
+      };
+
       if(loading&&!deals.length)return<SkeletonUI/>;
 
       return(
@@ -4664,6 +4760,15 @@
                 {"\uD83D\uDCAC Feedback"}
               </button>
               {view==="graphs"&&<button style={S.btn} onClick={()=>setSettingsOpen(true)} title="Target Settings">&#9881;&#65039;</button>}
+              {view==="graphs"&&(
+                <button
+                  style={S.btn}
+                  onClick={doBulkExport}
+                  disabled={!!bulkExport}
+                  title="Bundle all chart CSVs (Target columns stripped) + PNGs into a ZIP. Internal use only — contains deal names. Do not share externally without redacting.">
+                  {bulkExport?`Bundling ${bulkExport.done}/${bulkExport.total}…`:"⬇ Download ZIP"}
+                </button>
+              )}
               <button style={S.btn} onClick={()=>loadData(true)} disabled={loading} title="Force refresh from HubSpot">
                 {loading?"\u23F3":"\uD83D\uDD04"} Refresh
               </button>
