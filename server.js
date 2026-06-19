@@ -342,6 +342,41 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// ─── Shared HubSpot fetch with retry ────────────────────────────
+// Combines:
+//   - 429 rate-limit backoff (HubSpot caps us at 4 req/sec on the
+//     deal-search endpoint).
+//   - Transport-level retry for "Premature close" / ECONNRESET / undici
+//     keepalive drops. Render's egress has had repeated incidents
+//     where the connection is cut mid-stream — without this, the
+//     whole background refresh dies and the dashboard goes blank.
+// Returns the Response on success. On exhausted retries OR a 5xx that
+// keeps repeating, throws the last error so the caller can decide.
+async function hubspotFetchWithRetry(url, init = {}, opts = {}) {
+  const maxAttempts = opts.maxAttempts || 5;
+  let lastErr = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      if (res.status === 429) {
+        await sleep(Math.pow(2, attempt) * 1000);
+        continue;
+      }
+      if (res.status >= 500 && res.status < 600) {
+        console.warn(`[hubspotFetchWithRetry] ${res.status} on attempt ${attempt + 1}/${maxAttempts} for ${url.split("?")[0]}`);
+        await sleep(Math.pow(2, attempt) * 1000);
+        continue;
+      }
+      return res;
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[hubspotFetchWithRetry] transport error on attempt ${attempt + 1}/${maxAttempts}: ${e.message}`);
+      await sleep(Math.pow(2, attempt) * 1000);
+    }
+  }
+  throw lastErr || new Error(`hubspotFetchWithRetry: exhausted ${maxAttempts} attempts for ${url}`);
+}
+
 // ─── Fetch all deals from HubSpot CRM Search API ───────────────
 // HubSpot limits to 5 filterGroups per request, so we batch and deduplicate
 async function fetchDealsWithFilters(filterGroups) {
@@ -371,27 +406,15 @@ async function fetchDealsWithFilters(filterGroups) {
     };
     if (after) body.after = after;
 
-    // Retry logic for 429 rate limits
-    let response = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body)
-      });
-
-      if (response.status === 429) {
-        await sleep(Math.pow(2, attempt) * 1000);
-        continue;
-      }
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`HubSpot API error ${response.status}: ${text}`);
-      }
-      break;
-    }
-    if (response.status === 429) {
-      throw new Error("HubSpot API rate limit exceeded after 5 retries");
+    // Shared retry: handles 429 backoff, 5xx, and transport errors.
+    const response = await hubspotFetchWithRetry(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`HubSpot API error ${response.status}: ${text}`);
     }
 
     const data = await response.json();
@@ -510,28 +533,6 @@ async function fetchOwners() {
   const headers = { "Authorization": "Bearer " + HUBSPOT_TOKEN };
   const map = {};
 
-  // Transport-level retry for "Premature close" / ECONNRESET / undici
-  // keepalive drops. HubSpot occasionally cuts the connection mid-stream
-  // on this endpoint; without a retry the whole refresh crashes.
-  const fetchWithRetry = async (url) => {
-    let lastErr = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const res = await fetch(url, { headers });
-        if (res.status === 429) {
-          await sleep(Math.pow(2, attempt) * 1000);
-          continue;
-        }
-        return res;
-      } catch (e) {
-        lastErr = e;
-        console.warn(`[fetchOwners] transport error on attempt ${attempt + 1}/3: ${e.message}`);
-        await sleep(Math.pow(2, attempt) * 1000);
-      }
-    }
-    throw lastErr || new Error("fetchOwners: exhausted retries");
-  };
-
   const fetchPage = async (archived) => {
     let after = null;
     for (let page = 0; page < 20; page++) {
@@ -540,7 +541,7 @@ async function fetchOwners() {
       if (after) params.set("after", after);
       let res;
       try {
-        res = await fetchWithRetry(`https://api.hubapi.com/crm/v3/owners?${params}`);
+        res = await hubspotFetchWithRetry(`https://api.hubapi.com/crm/v3/owners?${params}`, { headers });
       } catch (e) {
         console.error(`[fetchOwners] giving up after retries (archived=${archived}): ${e.message}`);
         return;
@@ -566,7 +567,7 @@ async function fetchOwners() {
 // ─── Fetch property options (enum labels) ──────────────────────
 async function fetchPropertyOptions(propName) {
   const url = `https://api.hubapi.com/crm/v3/properties/deals/${propName}`;
-  const response = await fetch(url, {
+  const response = await hubspotFetchWithRetry(url, {
     headers: { "Authorization": "Bearer " + HUBSPOT_TOKEN }
   });
 
@@ -676,8 +677,8 @@ async function resolveMissingOwners(deals, ownerMap) {
       try {
         // Try archived=true first — it returns both archived and (in
         // practice) some removed users that the list endpoints omit.
-        let res = await fetch(`https://api.hubapi.com/crm/v3/owners/${id}?archived=true`, { headers });
-        if (!res.ok) res = await fetch(`https://api.hubapi.com/crm/v3/owners/${id}`, { headers });
+        let res = await hubspotFetchWithRetry(`https://api.hubapi.com/crm/v3/owners/${id}?archived=true`, { headers }, { maxAttempts: 3 });
+        if (!res.ok) res = await hubspotFetchWithRetry(`https://api.hubapi.com/crm/v3/owners/${id}`, { headers }, { maxAttempts: 3 });
         if (!res.ok) continue;
         const o = await res.json();
         const name = ((o.firstName || "") + " " + (o.lastName || "")).trim();
