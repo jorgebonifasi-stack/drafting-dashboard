@@ -1026,15 +1026,15 @@ async function fetchV3Engagements(objectType, sinceMs) {
     if (after) body.after = after;
 
     let response = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-      if (response.status === 429) { await sleep(Math.pow(2, attempt) * 1000); continue; }
+    try {
+      response = await hubspotFetchWithRetry(url, { method: "POST", headers, body: JSON.stringify(body) });
+    } catch (e) {
+      console.error(`v3 search ${objectType} transport error after retries: ${e.message}`);
       break;
     }
-
-    if (!response || !response.ok) {
-      const text = response ? await response.text().catch(() => "") : "";
-      console.error(`v3 search ${objectType} error: ${response ? response.status : "?"} ${text.substring(0, 200)}`);
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.error(`v3 search ${objectType} error: ${response.status} ${text.substring(0, 200)}`);
       break;
     }
 
@@ -1076,15 +1076,15 @@ async function fetchV1RecentEngagements(sinceMs) {
     const url = `https://api.hubapi.com/engagements/v1/engagements/recent/modified?count=100&offset=${offset}&since=${sinceMs}`;
 
     let response = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      response = await fetch(url, { headers });
-      if (response.status === 429) { await sleep(Math.pow(2, attempt) * 1000); continue; }
+    try {
+      response = await hubspotFetchWithRetry(url, { headers });
+    } catch (e) {
+      console.error(`v1 recent transport error after retries: ${e.message}`);
       break;
     }
-
-    if (!response || !response.ok) {
-      const text = response ? await response.text().catch(() => "") : "";
-      console.error(`v1 recent error: ${response ? response.status : "?"} ${text.substring(0, 200)}`);
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.error(`v1 recent error: ${response.status} ${text.substring(0, 200)}`);
       break;
     }
 
@@ -1475,8 +1475,13 @@ app.listen(PORT, () => {
     console.log("[Sheets] Targets persistence DISABLED — set GOOGLE_SHEETS_ID and GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON to enable");
   }
 
-  // Initial data fetch on startup
-  backgroundRefresh();
+  // Initial data fetch on startup — delayed 5s.
+  // Render's outbound network occasionally drops connections at process
+  // start (we've seen "Premature close" on ~every fresh container against
+  // multiple endpoints simultaneously). Giving the container a moment to
+  // settle its DNS / TLS state before the first burst dramatically cuts
+  // boot-time failures. The retry layer handles the rest.
+  setTimeout(() => backgroundRefresh(), 5000);
 
   // Refresh every hour
   setInterval(backgroundRefresh, CACHE_TTL_MS);
