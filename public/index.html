@@ -5932,6 +5932,182 @@
         ws.getRow(2).height=22;
         ws.getRow(3).height=30;
 
+        // ─── Drilldown tabs (one per KPI / row) ──────────────────
+        // Each tab lists the underlying deals across the whole From-To
+        // range with a Month column. Excluded deals (SLA Breach Reason =
+        // N/A) omitted from the Drafting rows per user instruction.
+        const monthLabel=d=>{
+          if(!d)return"";
+          const dt=d instanceof Date?d:new Date(d);
+          return`${MONTH_NAMES[dt.getMonth()]} ${dt.getFullYear()}`;
+        };
+        const writeDrilldown=(sheetName,cols,rowData)=>{
+          const ws2=wb.addWorksheet(sheetName);
+          ws2.columns=cols.map(c=>({header:c.label,key:c.key,width:c.width||18}));
+          rowData.forEach(r=>ws2.addRow(r));
+          const hdr=ws2.getRow(1);
+          hdr.font={name:"Arial",bold:true};
+          hdr.alignment={horizontal:"center",wrapText:true,vertical:"middle"};
+          hdr.height=22;
+          ws2.views=[{state:"frozen",ySplit:1}];
+        };
+
+        // KPI 4 — Initial contact (2d)
+        writeDrilldown("KPI 4 - Initial contact 2d",[
+          {label:"Month",key:"month",width:14},
+          {label:"Deal ID",key:"id",width:14},
+          {label:"Deal Name",key:"dealname",width:32},
+          {label:"Drafter",key:"drafter",width:20},
+          {label:"Create Date",key:"createDate",width:14},
+          {label:"Pending Days",key:"pendingDays",width:14},
+          {label:"Urgent?",key:"isUrgent",width:10},
+          {label:"Status",key:"status",width:12},
+          {label:"HubSpot Link",key:"link",width:50}
+        ],(epaRows||[]).map(r=>({
+          month:monthLabel(r.createDate),
+          id:r.id,
+          dealname:r.dealname,
+          drafter:r.drafter,
+          createDate:r.createDate?fmtDate(r.createDate):"",
+          pendingDays:r.pendingMacmillanDays!=null?Number(r.pendingMacmillanDays.toFixed(2)):"",
+          isUrgent:r.isUrgent?"Yes":"No",
+          status:r.k4Status,
+          link:HS_BASE+r.id
+        })));
+
+        // KPI 5 — Urgent contact (24h) — subset of cohort: urgent only
+        writeDrilldown("KPI 5 - Urgent contact 24h",[
+          {label:"Month",key:"month",width:14},
+          {label:"Deal ID",key:"id",width:14},
+          {label:"Deal Name",key:"dealname",width:32},
+          {label:"Drafter",key:"drafter",width:20},
+          {label:"Create Date",key:"createDate",width:14},
+          {label:"Pending Days",key:"pendingDays",width:14},
+          {label:"Status",key:"status",width:12},
+          {label:"HubSpot Link",key:"link",width:50}
+        ],(epaRows||[]).filter(r=>r.isUrgent).map(r=>({
+          month:monthLabel(r.createDate),
+          id:r.id,
+          dealname:r.dealname,
+          drafter:r.drafter,
+          createDate:r.createDate?fmtDate(r.createDate):"",
+          pendingDays:r.pendingMacmillanDays!=null?Number(r.pendingMacmillanDays.toFixed(2)):"",
+          status:r.k5Status,
+          link:HS_BASE+r.id
+        })));
+
+        // KPI 6 — Two further calls (5d)
+        writeDrilldown("KPI 6 - Two further calls 5d",[
+          {label:"Month",key:"month",width:14},
+          {label:"Deal ID",key:"id",width:14},
+          {label:"Deal Name",key:"dealname",width:32},
+          {label:"Drafter",key:"drafter",width:20},
+          {label:"Create Date",key:"createDate",width:14},
+          {label:"Pending Exit Date",key:"pendingExit",width:18},
+          {label:"Attempting Exit Date",key:"attemptingExit",width:20},
+          {label:"Status",key:"status",width:12},
+          {label:"HubSpot Link",key:"link",width:50}
+        ],(epaRows||[]).map(r=>({
+          month:monthLabel(r.createDate),
+          id:r.id,
+          dealname:r.dealname,
+          drafter:r.drafter,
+          createDate:r.createDate?fmtDate(r.createDate):"",
+          pendingExit:r.pendingExitedDate?fmtDate(r.pendingExitedDate):"",
+          attemptingExit:r.attemptingExitedDate?fmtDate(r.attemptingExitedDate):"",
+          status:r.k6Status,
+          link:HS_BASE+r.id
+        })));
+
+        // KPI 7 — Follow-up email
+        writeDrilldown("KPI 7 - Follow-up email",[
+          {label:"Month",key:"month",width:14},
+          {label:"Deal ID",key:"id",width:14},
+          {label:"Deal Name",key:"dealname",width:32},
+          {label:"Drafter",key:"drafter",width:20},
+          {label:"Create Date",key:"createDate",width:14},
+          {label:"Pending Exit Date",key:"pendingExit",width:18},
+          {label:"Customer Email",key:"email",width:30},
+          {label:"Status",key:"status",width:12},
+          {label:"HubSpot Link",key:"link",width:50}
+        ],(epaRows||[]).map(r=>({
+          month:monthLabel(r.createDate),
+          id:r.id,
+          dealname:r.dealname,
+          drafter:r.drafter,
+          createDate:r.createDate?fmtDate(r.createDate):"",
+          pendingExit:r.pendingExitedDate?fmtDate(r.pendingExitedDate):"",
+          email:r.customerEmailMacmillan||"",
+          status:r.k7Status,
+          link:HS_BASE+r.id
+        })));
+
+        // R10 + R11 — shared column set for the Drafting cohort drilldowns.
+        const draftCols=[
+          {label:"Month",key:"month",width:14},
+          {label:"Deal ID",key:"id",width:14},
+          {label:"Deal Name",key:"dealname",width:32},
+          {label:"Drafter",key:"drafter",width:20},
+          {label:"Date of Appointment",key:"doa",width:18},
+          {label:"End Date",key:"endDate",width:14},
+          {label:"Working Days",key:"workingDays",width:14},
+          {label:"SLA Target (wd)",key:"target",width:14},
+          {label:"Status",key:"status",width:12},
+          {label:"SLA Breach Reason",key:"breachReason",width:24},
+          {label:"HubSpot Link",key:"link",width:50}
+        ];
+        const draftRowOf=r=>({
+          month:monthLabel(r.endDate),
+          id:r.id,
+          dealname:r.dealname,
+          drafter:r.drafter,
+          doa:r.appointment?fmtDate(r.appointment):"",
+          endDate:r.endDate?fmtDate(r.endDate):"",
+          workingDays:r.workingDays,
+          target:r.target,
+          status:r.displayMet?"Met":"Breached",
+          breachReason:r.slaBreachReason||"",
+          link:HS_BASE+r.id
+        });
+
+        // R10 — Standard draft will (20wd). Excluded omitted per user choice.
+        writeDrilldown("R10 - Draft will 20wd",draftCols,
+          rows.filter(r=>!r.isUrgent&&!r.displayExcluded).map(draftRowOf));
+
+        // R11 — Urgent draft will (72h working days).
+        writeDrilldown("R11 - Draft will urgent 72h",draftCols,
+          rows.filter(r=>r.isUrgent&&!r.displayExcluded).map(draftRowOf));
+
+        // R13 — 6-month signed-will SLA. Source = csRows (deadline-anchored).
+        const fmtCall=v=>v==="yes"?"Yes":v==="no"?"No":"";
+        writeDrilldown("R13 - Signed wills 6mo",[
+          {label:"Month (deadline)",key:"month",width:16},
+          {label:"Deal ID",key:"id",width:14},
+          {label:"Deal Name",key:"dealname",width:32},
+          {label:"Legacy Advisor",key:"advisor",width:20},
+          {label:"Date of Appointment",key:"doa",width:18},
+          {label:"SLA Deadline (DoA + 6mo)",key:"deadline",width:22},
+          {label:"Call 1",key:"c1",width:10},
+          {label:"Call 2",key:"c2",width:10},
+          {label:"Call 3",key:"c3",width:10},
+          {label:"Will Signed (legacy)",key:"legacy",width:18},
+          {label:"Status",key:"status",width:16},
+          {label:"HubSpot Link",key:"link",width:50}
+        ],(csRows||[]).map(r=>({
+          month:monthLabel(r.deadline),
+          id:r.id,
+          dealname:r.dealname,
+          advisor:r.legacyAdvisor,
+          doa:r.appointment?fmtDate(r.appointment):"",
+          deadline:r.deadline?fmtDate(r.deadline):"",
+          c1:fmtCall(r.call1),
+          c2:fmtCall(r.call2),
+          c3:fmtCall(r.call3),
+          legacy:r.willSignedLegacy||"",
+          status:r.status,
+          link:HS_BASE+r.id
+        })));
+
         const buf=await wb.xlsx.writeBuffer();
         const blob=new Blob([buf],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
         const url=URL.createObjectURL(blob);
@@ -5941,7 +6117,7 @@
         link.href=url;
         link.click();
         setTimeout(()=>URL.revokeObjectURL(url),2000);
-      },[deals,fromMonth,toMonth,rows]);
+      },[deals,fromMonth,toMonth,rows,epaRows,csRows]);
 
       // Tri-state colouring: Met = green, Excluded = muted grey (kept in
       // the table for audit trail but doesn't count toward breach total),
