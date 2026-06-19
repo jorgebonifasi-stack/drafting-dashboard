@@ -5778,22 +5778,25 @@
           // R6 K7 — Pending exit + customer email.
           const r6k7Fail=r6std.filter(d=>!d.pendingExitedDate||!d.customerEmailMacmillan).length;
 
-          // R7 standard — Draft will dispatch within 20 working days of DoA.
-          // Fail = no DWC by deadline (deadline passed) OR DWC > deadline.
-          const r7std=macDeals.filter(d=>!d.isUrgent&&d.dateOfAppointment&&d.dateOfAppointment>=mStart&&d.dateOfAppointment<=mEnd);
-          const r7stdFail=r7std.filter(d=>{
-            const deadline=addBusinessDays(d.dateOfAppointment,20);
-            if(d.firstDWC)return d.firstDWC>deadline;
-            return deadline<today;
-          }).length;
-
-          // R7 urgent — Draft will dispatch within 72h of DoA (3 calendar days).
-          const r7urg=macDeals.filter(d=>d.isUrgent&&d.dateOfAppointment&&d.dateOfAppointment>=mStart&&d.dateOfAppointment<=mEnd);
-          const r7urgFail=r7urg.filter(d=>{
-            const deadline=new Date(d.dateOfAppointment.getTime()+3*86400000);
-            if(d.firstDWC)return d.firstDWC>deadline;
-            return deadline<today;
-          }).length;
+          // R7 (standard 20wd + urgent 72h working days) — bucket the
+          // Drafting tab's classified `rows` by endDate month. Same logic
+          // as the on-screen Standard / Urgent Compliance tiles: cohort
+          // filtered by endDate ∈ month, MSO-only urgents reclassified
+          // as Standard, waiver anchor-shift for unsigned waivers,
+          // excluded deals (SLA Breach Reason = N/A) removed from the
+          // denominator. By reading from `rows` instead of `deals` we
+          // inherit all those rules without re-deriving them.
+          const r7std={total:0,fail:0};
+          const r7urg={total:0,fail:0};
+          rows.forEach(r=>{
+            if(!r.endDate)return;
+            const ed=r.endDate instanceof Date?r.endDate:new Date(r.endDate);
+            if(ed<mStart||ed>mEnd)return;
+            if(r.displayExcluded)return; // mirror tile math: excluded → no denominator hit
+            const bucket=r.isUrgent?r7urg:r7std;
+            bucket.total++;
+            if(!r.displayMet)bucket.fail++;
+          });
 
           // R9 — 6-month signed-will SLA. Cohort matches csRows.
           const r9=macDeals.filter(d=>{
@@ -5824,8 +5827,8 @@
             r6urg:{total:r6urg.length,fail:r6urgFail},
             r6k6:{total:r6std.length,fail:r6k6Fail},
             r6k7:{total:r6std.length,fail:r6k7Fail},
-            r7std:{total:r7std.length,fail:r7stdFail},
-            r7urg:{total:r7urg.length,fail:r7urgFail},
+            r7std,
+            r7urg,
             r9:{total:r9.length,fail:r9Fail}
           };
         });
@@ -5938,7 +5941,7 @@
         link.href=url;
         link.click();
         setTimeout(()=>URL.revokeObjectURL(url),2000);
-      },[deals,fromMonth,toMonth]);
+      },[deals,fromMonth,toMonth,rows]);
 
       // Tri-state colouring: Met = green, Excluded = muted grey (kept in
       // the table for audit trail but doesn't count toward breach total),
