@@ -510,13 +510,41 @@ async function fetchOwners() {
   const headers = { "Authorization": "Bearer " + HUBSPOT_TOKEN };
   const map = {};
 
+  // Transport-level retry for "Premature close" / ECONNRESET / undici
+  // keepalive drops. HubSpot occasionally cuts the connection mid-stream
+  // on this endpoint; without a retry the whole refresh crashes.
+  const fetchWithRetry = async (url) => {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(url, { headers });
+        if (res.status === 429) {
+          await sleep(Math.pow(2, attempt) * 1000);
+          continue;
+        }
+        return res;
+      } catch (e) {
+        lastErr = e;
+        console.warn(`[fetchOwners] transport error on attempt ${attempt + 1}/3: ${e.message}`);
+        await sleep(Math.pow(2, attempt) * 1000);
+      }
+    }
+    throw lastErr || new Error("fetchOwners: exhausted retries");
+  };
+
   const fetchPage = async (archived) => {
     let after = null;
     for (let page = 0; page < 20; page++) {
       const params = new URLSearchParams({ limit: "500" });
       if (archived) params.set("archived", "true");
       if (after) params.set("after", after);
-      const res = await fetch(`https://api.hubapi.com/crm/v3/owners?${params}`, { headers });
+      let res;
+      try {
+        res = await fetchWithRetry(`https://api.hubapi.com/crm/v3/owners?${params}`);
+      } catch (e) {
+        console.error(`[fetchOwners] giving up after retries (archived=${archived}): ${e.message}`);
+        return;
+      }
       if (!res.ok) return;
       const data = await res.json();
       (data.results || []).forEach(o => {
@@ -713,7 +741,10 @@ async function _fetchFreshDataImpl() {
   const [deals, ownerMap, draftingOwnerOptions, proofOwnerOptions, queryReasonOptions, urgentReasonOptions, amendmentSourceOptions, leadSourceOptions, consultantQueryReasonOptions, legacyAdvisorOptions, waiverOptions, leadSourceTier3Options, slaBreachReasonOptions, regionOptions, macmillanFollowUpOptions] =
     await Promise.all([
       fetchAllDeals(),
-      fetchOwners(),
+      fetchOwners().catch(e => {
+        console.error(`[fetchOwners] failed entirely, continuing with empty owner map: ${e.message}`);
+        return {};
+      }),
       fetchPropertyOptions("drafting_owner").catch(() => ({})),
       fetchPropertyOptions("proof_reading__owner").catch(() => ({})),
       fetchPropertyOptions("drafting_query_reason").catch(() => ({})),
