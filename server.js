@@ -1,5 +1,20 @@
+// Configure undici's global dispatcher FIRST, before any HTTP call is made.
+// Render's outbound network has been cutting idle keepalive sockets without
+// warning — every retry was hitting the same dead socket. Setting tight
+// keepalive timeouts forces undici to drop pooled sockets after 100ms and
+// never reuse one older than 1s. This affects ALL fetches in the process
+// (HubSpot, googleapis, anything else). connect/headers/body timeouts are
+// generous (30s/30s/60s) so legitimate slow responses still go through.
+const { setGlobalDispatcher, Agent } = require("undici");
+setGlobalDispatcher(new Agent({
+  keepAliveTimeout: 100,
+  keepAliveMaxTimeout: 1000,
+  connectTimeout: 30_000,
+  bodyTimeout: 60_000,
+  headersTimeout: 30_000
+}));
+
 const express = require("express");
-const fetch = require("node-fetch");
 const path = require("path");
 const session = require("express-session");
 const passport = require("passport");
