@@ -344,14 +344,20 @@ function sleep(ms) {
 
 // ─── Shared HubSpot fetch with retry ────────────────────────────
 // Combines:
-//   - 429 rate-limit backoff (HubSpot caps us at 4 req/sec on the
-//     deal-search endpoint).
+//   - 429 rate-limit backoff (HubSpot caps us at 4 req/sec).
+//   - 5xx backoff (HubSpot occasionally returns 502/503 mid-incident).
 //   - Transport-level retry for "Premature close" / ECONNRESET / undici
 //     keepalive drops. Render's egress has had repeated incidents
-//     where the connection is cut mid-stream — without this, the
-//     whole background refresh dies and the dashboard goes blank.
-// Returns the Response on success. On exhausted retries OR a 5xx that
-// keeps repeating, throws the last error so the caller can decide.
+//     cutting the connection mid-stream.
+//
+// CRITICAL: the body is drained inside the try block. The original
+// "Premature close" error fires when reading the response *body*, not
+// during connect/headers — if we just returned the bare Response, the
+// caller's later `await res.json()` would throw outside the retry
+// loop. We buffer the body here and return a Response-like object
+// with synchronous .json() / .text() helpers that operate on the
+// buffer. This is the same buffering undici does on .json() anyway —
+// it just happens where we can catch and retry.
 async function hubspotFetchWithRetry(url, init = {}, opts = {}) {
   const maxAttempts = opts.maxAttempts || 5;
   let lastErr = null;
@@ -359,18 +365,31 @@ async function hubspotFetchWithRetry(url, init = {}, opts = {}) {
     try {
       const res = await fetch(url, init);
       if (res.status === 429) {
+        // Drain and discard so the socket can be reused.
+        await res.arrayBuffer().catch(() => {});
         await sleep(Math.pow(2, attempt) * 1000);
         continue;
       }
       if (res.status >= 500 && res.status < 600) {
+        await res.arrayBuffer().catch(() => {});
         console.warn(`[hubspotFetchWithRetry] ${res.status} on attempt ${attempt + 1}/${maxAttempts} for ${url.split("?")[0]}`);
         await sleep(Math.pow(2, attempt) * 1000);
         continue;
       }
-      return res;
+      // Read the whole body now — if "Premature close" hits, it'll
+      // throw here and we'll retry. The buffer is small (HubSpot
+      // responses are ~50KB max per page), so memory cost is trivial.
+      const buf = Buffer.from(await res.arrayBuffer());
+      return {
+        ok: res.ok,
+        status: res.status,
+        statusText: res.statusText,
+        json: () => JSON.parse(buf.toString("utf8")),
+        text: () => buf.toString("utf8")
+      };
     } catch (e) {
       lastErr = e;
-      console.warn(`[hubspotFetchWithRetry] transport error on attempt ${attempt + 1}/${maxAttempts}: ${e.message}`);
+      console.warn(`[hubspotFetchWithRetry] transport error on attempt ${attempt + 1}/${maxAttempts} (${url.split("?")[0]}): ${e.message}`);
       await sleep(Math.pow(2, attempt) * 1000);
     }
   }
