@@ -29,6 +29,9 @@
   <!-- JSZip (Drafting / Metrics → Download ZIP button) -->
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
+  <!-- ExcelJS (Reporting / SLA Audit → Macmillan compliance .xlsx export) -->
+  <script crossorigin src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+
   <!-- Standalone dashboard — hosted on Railway -->
 
   <!-- Babel standalone -->
@@ -5723,6 +5726,220 @@
         downloadCSV(`sla_audit_cs_${fromMonth}_to_${toMonth}_${new Date().toISOString().slice(0,10)}.csv`,toCSV(lines));
       },[csRows,fromMonth,toMonth]);
 
+      // ─── Macmillan compliance report (.xlsx) ──────────────────
+      // Generates the Macmillan-format monthly compliance report (matches
+      // the "Archive Octopus Legacy" tab in the master Compliance Report
+      // workbook). Aggregates dashboard KPIs per month across the
+      // selected From / To range and writes a styled .xlsx with one
+      // 3-column block (Total Reg / % Pass / # Fails) per month.
+      //
+      // Privacy: aggregate counts only — no deal names, no PII. Treat
+      // as internal compliance reporting; confirm with Macmillan before
+      // sending externally.
+      const exportMacmillanXlsx=useCallback(async()=>{
+        if(typeof ExcelJS==="undefined"){alert("Excel library failed to load — refresh and try again.");return;}
+        if(!fromMonth||!toMonth){alert("Pick From / To months first.");return;}
+
+        // Enumerate months in range inclusive (e.g. 2026-01 → 2026-04 = [Jan,Feb,Mar,Apr]).
+        const enumerateMonths=(from,to)=>{
+          const out=[];
+          const[fy,fm]=from.split("-").map(Number);
+          const[ty,tm]=to.split("-").map(Number);
+          let y=fy,m=fm;
+          while(y<ty||(y===ty&&m<=tm)){
+            out.push({ym:`${y}-${String(m).padStart(2,"0")}`,year:y,month:m});
+            m++;if(m>12){m=1;y++;}
+          }
+          return out;
+        };
+        const months=enumerateMonths(fromMonth,toMonth);
+        if(months.length===0){alert("Empty month range.");return;}
+
+        const today=new Date();today.setHours(0,0,0,0);
+        const POST_DWC_STAGES=new Set(["1223620775","1223620776","1223620777","1223620778"]);
+        const macDeals=deals.filter(d=>(d.leadSources||[]).includes("Macmillan"));
+
+        // Per-month aggregates for each report row. Total = cohort size,
+        // fail = breach count, pass = total - fail. Blank when total = 0.
+        const rowsPerMonth=months.map(({ym,year,month})=>{
+          const mStart=new Date(year,month-1,1,0,0,0,0);
+          const mEnd=new Date(year,month,0,23,59,59,999);
+
+          // R6 standard — KPI 4 (initial contact 2d, threshold > 3d).
+          const r6std=macDeals.filter(d=>d.createDate&&d.createDate>=mStart&&d.createDate<=mEnd);
+          const r6stdFail=r6std.filter(d=>d.pendingMacmillanDays!=null&&d.pendingMacmillanDays>3).length;
+
+          // R6 urgent — KPI 5 (24h, threshold > 2d). Urgent flag: isUrgent OR urgentReason non-empty.
+          const r6urg=r6std.filter(d=>d.isUrgent||(Array.isArray(d.urgentReason)&&d.urgentReason.length>0));
+          const r6urgFail=r6urg.filter(d=>d.pendingMacmillanDays!=null&&d.pendingMacmillanDays>2).length;
+
+          // R6 K6 — both stage exits populated.
+          const r6k6Fail=r6std.filter(d=>!d.pendingExitedDate||!d.attemptingExitedDate).length;
+          // R6 K7 — Pending exit + customer email.
+          const r6k7Fail=r6std.filter(d=>!d.pendingExitedDate||!d.customerEmailMacmillan).length;
+
+          // R7 standard — Draft will dispatch within 20 working days of DoA.
+          // Fail = no DWC by deadline (deadline passed) OR DWC > deadline.
+          const r7std=macDeals.filter(d=>!d.isUrgent&&d.dateOfAppointment&&d.dateOfAppointment>=mStart&&d.dateOfAppointment<=mEnd);
+          const r7stdFail=r7std.filter(d=>{
+            const deadline=addBusinessDays(d.dateOfAppointment,20);
+            if(d.firstDWC)return d.firstDWC>deadline;
+            return deadline<today;
+          }).length;
+
+          // R7 urgent — Draft will dispatch within 72h of DoA (3 calendar days).
+          const r7urg=macDeals.filter(d=>d.isUrgent&&d.dateOfAppointment&&d.dateOfAppointment>=mStart&&d.dateOfAppointment<=mEnd);
+          const r7urgFail=r7urg.filter(d=>{
+            const deadline=new Date(d.dateOfAppointment.getTime()+3*86400000);
+            if(d.firstDWC)return d.firstDWC>deadline;
+            return deadline<today;
+          }).length;
+
+          // R9 — 6-month signed-will SLA. Cohort matches csRows.
+          const r9=macDeals.filter(d=>{
+            if(!d.dateOfAppointment)return false;
+            if((d.region||"").trim()==="Scotland")return false;
+            const hasDraft=d.firstDWC||d.firstRFP||POST_DWC_STAGES.has(d.dealstage);
+            if(!hasDraft)return false;
+            const doa=new Date(d.dateOfAppointment);
+            const deadline=new Date(doa.getFullYear(),doa.getMonth()+6,doa.getDate());
+            deadline.setHours(0,0,0,0);
+            if(deadline<mStart||deadline>mEnd)return false;
+            if(deadline>today)return false;
+            return true;
+          });
+          const r9Fail=r9.filter(d=>{
+            const c1=d.macmillanCall1||"";
+            const c2=d.macmillanCall2||"";
+            const c3=d.macmillanCall3||"";
+            const legacyYes=(d.macmillanFollowUpOutcome||"").trim().toLowerCase()==="yes";
+            const hasYes=legacyYes||c1==="yes"||c2==="yes"||c3==="yes";
+            const allNos=c1==="no"&&c2==="no"&&c3==="no";
+            return !(hasYes||allNos);
+          }).length;
+
+          return{
+            ym,year,month,
+            r6std:{total:r6std.length,fail:r6stdFail},
+            r6urg:{total:r6urg.length,fail:r6urgFail},
+            r6k6:{total:r6std.length,fail:r6k6Fail},
+            r6k7:{total:r6std.length,fail:r6k7Fail},
+            r7std:{total:r7std.length,fail:r7stdFail},
+            r7urg:{total:r7urg.length,fail:r7urgFail},
+            r9:{total:r9.length,fail:r9Fail}
+          };
+        });
+
+        // Row definitions. `key` ties back to the per-month aggregates;
+        // `null` means a blank template row (we don't track that metric).
+        const MONTH_NAMES=["January","February","March","April","May","June","July","August","September","October","November","December"];
+        const REPORT_ROWS=[
+          {a:"Number of inbound calls answered under 30 secs",b:"",key:null},
+          {a:"Number of abandoned calls to not exceed 5% of total number of all monthly calls",b:"",key:null},
+          {a:"Initial contact made to the supporter",b:"Provider to contact Beneficiary by phone within 2 days of referral from Macmillan to book an appointment.",key:"r6std"},
+          {a:"  ↳ Urgent wills (24h)",b:"URGENT: Provider to contact Beneficiary within 24 hours of referral.",key:"r6urg",sub:true},
+          {a:"  ↳ Two further call attempts",b:"If no answer on initial call, Provider makes two further attempts within 5 working days.",key:"r6k6",sub:true},
+          {a:"  ↳ Follow-up email",b:"If still no contact, Provider sends a follow-up email after the Pending stage exit.",key:"r6k7",sub:true},
+          {a:"Receipt of instructions and dispatch draft will sent to the supporter",b:"Following first appointment with Beneficiary and taking of will instructions, Provider will:\n● Send Terms of Business and SLA to Beneficiary within 5 working days of appointment\n● Send draft will to Beneficiary within 20 working days of date of appointment (72 hours for an urgent will) and 5 days prior to signing appointment.",key:"r7std"},
+          {a:"  ↳ Urgent wills (72h)",b:"URGENT: Send draft will to Beneficiary within 72 hours of date of appointment.",key:"r7urg",sub:true},
+          {a:"Engrossed will - dispatch and returned to the supporter",b:"",key:null},
+          {a:"Receipt of completed wills for the supporter",b:"Provider to take receipt of final signed and witnessed engrossed will from Beneficiaries within 6 months of referral.",key:"r9"},
+          {a:"Reporting and resolution of complaints",b:"Provider to notify Macmillan of any complaints within 1 working day of them being received. Where Provider is notified of complaint by Macmillan, Provider to provide update to Macmillan of actions taken within 3 working days of receipt of complaint",key:null},
+          {a:"",b:"Provider to resolve all complaints within 5 working days of them being received and to notify Macmillan of resolution and means used to achieve it",key:null},
+          {a:"Reporting of cancellation of registration",b:"Provider to notify Macmillan of any cancellations within 1 working day of them being received",key:null},
+          {a:"Number of appointments which are conducted through the Beneficiary's chosen channels",b:"",key:null}
+        ];
+
+        const wb=new ExcelJS.Workbook();
+        wb.creator="Drafting Dashboard";
+        wb.created=new Date();
+        const ws=wb.addWorksheet("Octopus Legacy");
+
+        // Column widths (mirror the Archive tab). Col A and B fixed,
+        // each month-block is (Total: 18.5, %Pass: 8.7, #Fails: 8.7).
+        const colWidths=[22.14,30.57];
+        months.forEach(()=>{colWidths.push(18.57,8.71,8.71);});
+        colWidths.forEach((w,i)=>{ws.getColumn(i+1).width=w;});
+
+        const lastColIdx=2+months.length*3;
+        const colLetter=n=>{let s="";while(n>0){const r=(n-1)%26;s=String.fromCharCode(65+r)+s;n=Math.floor((n-1)/26);}return s;};
+
+        // Row 1 — merged title "Octopus Legacy".
+        const titleRange=`C1:${colLetter(lastColIdx)}1`;
+        ws.mergeCells(titleRange);
+        const titleCell=ws.getCell("C1");
+        titleCell.value="Octopus Legacy";
+        titleCell.font={name:"Arial",bold:true,size:14};
+        titleCell.alignment={horizontal:"center",vertical:"middle"};
+
+        // Row 2 — month headers, one merged block per month.
+        months.forEach((m,i)=>{
+          const startCol=3+i*3;
+          const endCol=startCol+2;
+          const range=`${colLetter(startCol)}2:${colLetter(endCol)}2`;
+          ws.mergeCells(range);
+          const cell=ws.getCell(`${colLetter(startCol)}2`);
+          cell.value=`${MONTH_NAMES[m.month-1]} ${m.year}`;
+          cell.font={name:"Arial",bold:true};
+          cell.alignment={horizontal:"center",vertical:"middle"};
+        });
+
+        // Row 3 — sub-headers.
+        ws.getCell("A3").value="";
+        ws.getCell("B3").value="Description";
+        months.forEach((_,i)=>{
+          const start=3+i*3;
+          ws.getCell(`${colLetter(start)}3`).value="Total Registrations";
+          ws.getCell(`${colLetter(start+1)}3`).value="% Pass";
+          ws.getCell(`${colLetter(start+2)}3`).value="No. Fails";
+        });
+        ws.getRow(3).eachCell(c=>{c.font={name:"Arial",bold:true};c.alignment={horizontal:"center",vertical:"middle",wrapText:true};});
+
+        // Data rows.
+        REPORT_ROWS.forEach((rowDef,rIdx)=>{
+          const xlRow=4+rIdx;
+          const aCell=ws.getCell(`A${xlRow}`);
+          aCell.value=rowDef.a;
+          aCell.font={name:"Arial",italic:!!rowDef.sub,size:rowDef.sub?10:11};
+          aCell.alignment={vertical:"top",wrapText:true};
+          const bCell=ws.getCell(`B${xlRow}`);
+          bCell.value=rowDef.b;
+          bCell.font={name:"Arial",size:10};
+          bCell.alignment={vertical:"top",wrapText:true};
+          if(!rowDef.key)return;
+          rowsPerMonth.forEach((mData,i)=>{
+            const startCol=3+i*3;
+            const cell=mData[rowDef.key];
+            if(!cell||cell.total===0)return; // leave blank when no cohort
+            const passCount=cell.total-cell.fail;
+            ws.getCell(`${colLetter(startCol)}${xlRow}`).value=cell.total;
+            const pctCell=ws.getCell(`${colLetter(startCol+1)}${xlRow}`);
+            pctCell.value=passCount/cell.total;
+            pctCell.numFmt="0.0%";
+            ws.getCell(`${colLetter(startCol+2)}${xlRow}`).value=cell.fail;
+          });
+        });
+
+        // Row heights: bump description rows so the wrapped text shows.
+        REPORT_ROWS.forEach((rowDef,rIdx)=>{
+          const xlRow=4+rIdx;
+          if(rowDef.b)ws.getRow(xlRow).height=Math.max(30,Math.min(rowDef.b.length*0.5,90));
+        });
+        ws.getRow(1).height=24;
+        ws.getRow(2).height=22;
+        ws.getRow(3).height=30;
+
+        const buf=await wb.xlsx.writeBuffer();
+        const blob=new Blob([buf],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+        const url=URL.createObjectURL(blob);
+        const link=document.createElement("a");
+        const ts=new Date().toISOString().slice(0,10);
+        link.download=`macmillan_compliance_report_${fromMonth}_to_${toMonth}_${ts}.xlsx`;
+        link.href=url;
+        link.click();
+        setTimeout(()=>URL.revokeObjectURL(url),2000);
+      },[deals,fromMonth,toMonth]);
+
       // Tri-state colouring: Met = green, Excluded = muted grey (kept in
       // the table for audit trail but doesn't count toward breach total),
       // Breached = red.
@@ -5753,6 +5970,15 @@
                 <input type="month" value={toMonth} onChange={e=>setToMonth(e.target.value)} style={{...S.input,width:170,padding:"6px 10px",fontSize:13}}/>
                 <span style={{flex:1}}/>
                 <button style={S.btn} onClick={auditTab==="epa"?exportEpaCSV:auditTab==="cs"?exportCsCSV:exportCSV} disabled={(auditTab==="epa"?epaRows:auditTab==="cs"?csRows:rows).length===0}>{"⬇"} CSV ({(auditTab==="epa"?epaRows:auditTab==="cs"?csRows:rows).length})</button>
+                {leadFilter.has("Macmillan")&&(
+                  <button
+                    style={S.btn}
+                    onClick={exportMacmillanXlsx}
+                    disabled={!fromMonth||!toMonth}
+                    title="Download monthly compliance report (.xlsx) in the Macmillan template. Aggregate counts only — no PII. Internal use; confirm before sharing externally.">
+                    {"⬇"} Macmillan Report (.xlsx)
+                  </button>
+                )}
               </div>
               <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                 <label style={{fontSize:12,color:C.text,opacity:0.7,marginRight:4}}>Lead Source</label>
