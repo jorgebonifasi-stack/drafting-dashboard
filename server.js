@@ -462,7 +462,18 @@ async function fetchDealsWithFilters(filterGroups) {
     const body = {
       filterGroups,
       properties,
-      limit: 100
+      limit: 100,
+      // Explicit sort: most-recently-modified first. HubSpot CRM Search
+      // caps each query at 10,000 results (100 pages × 100/page). Without
+      // an explicit sort the returned order is INDETERMINATE — so when
+      // a batch has >10K matching deals, the dropped subset is essentially
+      // random per refresh. That's how Alan John Frew - Urgent (deal
+      // 61028476938) ended up missing from the cache despite matching
+      // both batch1 (RFP entered) and batch4 (EP pipeline) filters.
+      // Sorting by last-modified-desc guarantees recent deals (which
+      // the dashboard actually cares about) are always retained; the
+      // dropped tail is the oldest ones, which are unlikely to be active.
+      sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }]
     };
     if (after) body.after = after;
 
