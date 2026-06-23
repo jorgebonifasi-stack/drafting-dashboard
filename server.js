@@ -1488,6 +1488,42 @@ app.get("/api/debug/deal/:id", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// GET /api/debug/cached-deal/:id
+// Returns the specified deal's raw properties as they exist in the
+// CURRENT cache.buffer (the data /api/deals serves). Useful when
+// /api/debug/deal/:id (live HubSpot) says the deal looks fine but
+// the dashboard doesn't show it — proves whether the cache is stale.
+app.get("/api/debug/cached-deal/:id", requireAuth, requireAdmin, (req, res) => {
+  const dealId = String(req.params.id || "").replace(/[^0-9]/g, "");
+  if (!cache.buffer) return res.status(404).json({ error: "Cache empty" });
+  let cached;
+  try {
+    cached = JSON.parse(cache.buffer.toString("utf8"));
+  } catch (e) {
+    return res.status(500).json({ error: "Cache buffer corrupt: " + e.message });
+  }
+  const deal = (cached.deals || []).find(d => String(d.id) === dealId);
+  if (!deal) {
+    return res.json({
+      dealId,
+      foundInCache: false,
+      cacheSize: (cached.deals || []).length,
+      cacheTimestamp: cached._cachedAt,
+      ownerMapKeyCount: Object.keys(cached.ownerMap || {}).length,
+      ownerMapHasId: !!(cached.ownerMap && cached.ownerMap["730727192"]),
+      ownerMapValueForId: (cached.ownerMap || {})["730727192"] || null
+    });
+  }
+  res.json({
+    dealId,
+    foundInCache: true,
+    cacheTimestamp: cached._cachedAt,
+    cachedProperties: deal.properties || {},
+    ownerMapKeyCount: Object.keys(cached.ownerMap || {}).length,
+    ownerMapValueForDraftingOwner: (cached.ownerMap || {})[String(deal.properties && deal.properties.drafting_owner)] || null
+  });
+});
+
 // GET /api/debug/missing-entry-stamps
 // Lists deals that have an exit timestamp on "Appointment Outcome (Estate
 // Planning)" (hs_v2_date_exited_1223751329) but no entry timestamp
