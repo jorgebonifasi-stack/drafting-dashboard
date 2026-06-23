@@ -182,6 +182,27 @@ const DEFAULT_TARGETS = {
   proofreading: { default: 425, overrides: {} }
 };
 
+// Retry wrapper for Google Sheets / googleapis calls. Those calls go
+// through `gaxios` (Node's `https` module under the hood) — NOT
+// undici — so the global undici dispatcher we configured doesn't help
+// here. Render's outbound network keeps cutting connections on the
+// OAuth token endpoint mid-stream; without a retry every Sheets-backed
+// admin page (/admin/logins, /api/targets, etc.) fails on the first
+// transient blip. 3 attempts with exponential backoff (1s, 2s, 4s).
+async function withSheetsRetry(fn, label = "sheets") {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[${label}] attempt ${attempt + 1}/3 failed: ${e.message}`);
+      if (attempt < 2) await sleep(Math.pow(2, attempt) * 1000);
+    }
+  }
+  throw lastErr || new Error(`[${label}] exhausted retries`);
+}
+
 let sheetsClient = null;
 function getSheetsClient() {
   if (sheetsClient) return sheetsClient;
@@ -205,16 +226,16 @@ async function ensureSheetTabsExist() {
   const sheets = getSheetsClient();
   if (!sheets) return;
   try {
-    const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEETS_ID });
+    const meta = await withSheetsRetry(() => sheets.spreadsheets.get({ spreadsheetId: SHEETS_ID }), "ensureTabs meta");
     const existing = new Set((meta.data.sheets || []).map(s => s.properties.title));
     const toCreate = ["Drafting", "Proofreading", "Logins"].filter(n => !existing.has(n));
     if (toCreate.length) {
-      await sheets.spreadsheets.batchUpdate({
+      await withSheetsRetry(() => sheets.spreadsheets.batchUpdate({
         spreadsheetId: SHEETS_ID,
         requestBody: {
           requests: toCreate.map(title => ({ addSheet: { properties: { title } } }))
         }
-      });
+      }), "ensureTabs create");
       // Seed new tabs with headers + defaults
       for (const title of toCreate) {
         let rows;
@@ -229,12 +250,12 @@ async function ensureSheetTabsExist() {
             ...Object.entries(def.overrides).map(([n, v]) => [n, v])
           ];
         }
-        await sheets.spreadsheets.values.update({
+        await withSheetsRetry(() => sheets.spreadsheets.values.update({
           spreadsheetId: SHEETS_ID,
           range: `${title}!A1`,
           valueInputOption: "RAW",
           requestBody: { values: rows }
-        });
+        }), `ensureTabs seed ${title}`);
       }
       console.log(`[Sheets] Created and seeded tabs: ${toCreate.join(", ")}`);
     }
@@ -247,13 +268,13 @@ async function appendLoginToSheet({ timestamp, email, name, ip }) {
   const sheets = getSheetsClient();
   if (!sheets) return;
   try {
-    await sheets.spreadsheets.values.append({
+    await withSheetsRetry(() => sheets.spreadsheets.values.append({
       spreadsheetId: SHEETS_ID,
       range: "Logins!A:D",
       valueInputOption: "RAW",
       insertDataOption: "INSERT_ROWS",
       requestBody: { values: [[timestamp, email, name || "", ip || ""]] }
-    });
+    }), "login append");
   } catch (e) {
     console.error("[Sheets] Login log error:", e.message);
   }
@@ -324,11 +345,11 @@ async function writeTargetsToSheet(payload) {
     ...Object.entries(tab.overrides || {}).map(([k, v]) => [k, Number.isFinite(v) ? v : ""])
   ];
   // Clear data rows then write fresh
-  await sheets.spreadsheets.values.batchClear({
+  await withSheetsRetry(() => sheets.spreadsheets.values.batchClear({
     spreadsheetId: SHEETS_ID,
     requestBody: { ranges: ["Drafting!A2:B", "Proofreading!A2:B"] }
-  });
-  await sheets.spreadsheets.values.batchUpdate({
+  }), "targets clear");
+  await withSheetsRetry(() => sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SHEETS_ID,
     requestBody: {
       valueInputOption: "RAW",
@@ -337,7 +358,7 @@ async function writeTargetsToSheet(payload) {
         { range: "Proofreading!A2", values: toRows(payload.proofreading || DEFAULT_TARGETS.proofreading) }
       ]
     }
-  });
+  }), "targets write");
 }
 
 // ─── In-memory cache ─────────────────────────────────────────────
@@ -1286,10 +1307,10 @@ app.get("/api/logins", requireAuth, requireAdmin, async (req, res) => {
   try {
     const sheets = getSheetsClient();
     if (!sheets) return res.status(503).json({ error: "Google Sheets not configured" });
-    const data = await sheets.spreadsheets.values.get({
+    const data = await withSheetsRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: SHEETS_ID,
       range: "Logins!A2:D"
-    });
+    }), "logins read");
     const logins = (data.data.values || []).map(r => ({
       timestamp: r[0] || "",
       email: r[1] || "",
