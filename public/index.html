@@ -380,12 +380,21 @@
             // Completed before cutover — use exit DI date
             exitedDrafting=legacyExit;
           }else{
-            // Still in-flight after cutover — workflows are active, use DWC/RFP
-            const validDates=[origDraftsWithCustomer,origReadyForPrinting].filter(dt=>dt&&dt>=anchorEntered);
+            // Still in-flight after cutover — use the firstDWC / firstRFP
+            // estimates. `estimateFirstEntry` returns the workflow-stamped
+            // original_* when present, else falls back to (v2 native entry −
+            // cumulative time). This catches deals where the workflow stamp
+            // didn't fire (e.g. manual CRM stage advancement that skipped
+            // DWC altogether) — surfaced by Alan John Frew - Urgent who
+            // went DI → Required Proofreading → … → STC with all moves
+            // manual, leaving origDWC / origRFP both null. Without the
+            // estimate fallback, exitedDrafting was null and the deal
+            // never appeared in Chart 1's completed bar for the drafter.
+            const validDates=[firstDWC,firstRFP].filter(dt=>dt&&dt>=anchorEntered);
             exitedDrafting=validDates.length?new Date(Math.min(...validDates)):null;
           }
         }
-        else{const validDates=[origDraftsWithCustomer,origReadyForPrinting].filter(dt=>dt&&dt>=anchorEntered);const newLogic=validDates.length?new Date(Math.min(...validDates)):null;exitedDrafting=newLogic&&newLogic>=CUTOVER?newLogic:null;}
+        else{const validDates=[firstDWC,firstRFP].filter(dt=>dt&&dt>=anchorEntered);const newLogic=validDates.length?new Date(Math.min(...validDates)):null;exitedDrafting=newLogic&&newLogic>=CUTOVER?newLogic:null;}
         // Old metric: purely based on Date exited "Drafting Instructions" (for comparison chart)
         const exitedDraftingOld=anchorEntered?nativeExitedDrafting:null;
         const enteredAppointmentOutcome=parseHSDate(p.hs_v2_date_entered_1223751329);
