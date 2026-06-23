@@ -1376,11 +1376,34 @@ app.get("/api/debug/deal/:id", requireAuth, requireAdmin, async (req, res) => {
       props.hs_v2_date_entered_1223620777 || props.hs_v2_date_entered_1223751329
     );
 
+    // Resolve drafterName the same way the dashboard does, so we can
+    // see whether Chart 1's `/^\d+$/.test(drafter)` filter would reject
+    // this deal due to an unresolved numeric owner ID. Fetches the live
+    // drafting_owner enum + owner map (best-effort).
+    const rawDraftOwner = props.drafting_owner || "";
+    const [draftingOpts, ownerMap] = await Promise.all([
+      fetchPropertyOptions("drafting_owner").catch(() => ({})),
+      fetchOwners().catch(() => ({}))
+    ]);
+    const resolvedFromOptions = draftingOpts[rawDraftOwner];
+    const resolvedFromOwners = ownerMap[rawDraftOwner];
+    const drafterName = resolvedFromOptions || resolvedFromOwners || rawDraftOwner || "Unknown";
+    const wouldBeFilteredAsNumeric = !!drafterName && /^\d+$/.test(drafterName);
+
     res.json({
       id: data.id,
       inDashboardFetchFilter,
       relevant,
       dwcLikePropertyValues: dwcLike,
+      drafterResolution: {
+        rawDraftOwner,
+        resolvedFromDraftingOptions: resolvedFromOptions || null,
+        resolvedFromOwnerMap: resolvedFromOwners || null,
+        finalDrafterName: drafterName,
+        wouldBeFilteredAsNumeric,
+        draftingOptionsKeyCount: Object.keys(draftingOpts).length,
+        ownerMapKeyCount: Object.keys(ownerMap).length
+      },
       _propsRequestedCount: propsToFetch.length,
       _propsReturnedCount: Object.keys(props).length
     });
