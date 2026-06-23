@@ -1404,6 +1404,82 @@ app.get("/api/debug/deal/:id", requireAuth, requireAdmin, async (req, res) => {
         draftingOptionsKeyCount: Object.keys(draftingOpts).length,
         ownerMapKeyCount: Object.keys(ownerMap).length
       },
+      chart1Simulation: (() => {
+        // Replicate the client's processDeals + Chart 1 logic on the
+        // server, with the live raw properties, so we can see exactly
+        // what exitedDrafting / bucket evaluate to for this deal.
+        const parseHS = (v) => {
+          if (!v) return null;
+          let d = new Date(v);
+          if (isNaN(d.getTime())) {
+            const n = parseInt(v, 10);
+            if (isNaN(n)) return null;
+            d = n > 1e12 ? new Date(n) : (n > 1e9 ? new Date(n * 1000) : null);
+            if (!d) return null;
+          }
+          if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0) {
+            return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0);
+          }
+          return d;
+        };
+        const est = (orig, entered, cum) => {
+          if (orig) return orig;
+          if (entered && cum > 0) return new Date(entered.getTime() - cum);
+          return null;
+        };
+        const origDWC = parseHS(props.original_date_entered_drafts_with_customer);
+        const origRFP = parseHS(props.original_date_entered_ready_for_printing);
+        const origSTC = parseHS(props.original_date_entered_sent_to_customer);
+        const enteredDWC_v2 = parseHS(props.hs_v2_date_entered_1223620775);
+        const enteredRFP_v2 = parseHS(props.hs_v2_date_entered_1223620777);
+        const enteredSTC_v2 = parseHS(props.hs_v2_date_entered_1223620778);
+        const cumDWC = parseFloat(props.hs_v2_cumulative_time_in_1223620775) || 0;
+        const cumRFP = parseFloat(props.hs_v2_cumulative_time_in_1223620777) || 0;
+        const cumSTC = parseFloat(props.hs_v2_cumulative_time_in_1223620778) || 0;
+        const firstDWC = est(origDWC, enteredDWC_v2, cumDWC);
+        const firstRFP = est(origRFP, enteredRFP_v2, cumRFP);
+        const firstSTC = est(origSTC, enteredSTC_v2, cumSTC);
+        const origEnteredDI = parseHS(props.original_date_entered_drafting_instructions);
+        const enteredDI = parseHS(props.hs_v2_date_entered_1223620771);
+        const anchorEntered = origEnteredDI || enteredDI;
+        const CUTOVER = new Date("2026-04-12T00:00:00");
+        let exitedDrafting = null;
+        if (anchorEntered) {
+          if (anchorEntered < CUTOVER) {
+            exitedDrafting = parseHS(props.hs_v2_date_exited_1223620771);
+          } else {
+            const validDates = [firstDWC, firstRFP, firstSTC].filter(dt => dt && dt >= anchorEntered);
+            const newLogic = validDates.length ? new Date(Math.min(...validDates.map(d => d.getTime()))) : null;
+            exitedDrafting = newLogic && newLogic >= CUTOVER ? newLogic : null;
+          }
+        }
+        // Saturday-anchored WoW bucket (local TZ — note: server TZ may
+        // differ from client; close enough for diagnosis).
+        let bucketKey = null;
+        if (exitedDrafting) {
+          const local = new Date(exitedDrafting.getFullYear(), exitedDrafting.getMonth(), exitedDrafting.getDate(), 0, 0, 0, 0);
+          const dow = local.getDay();
+          local.setDate(local.getDate() - ((dow + 1) % 7));
+          bucketKey = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`;
+        }
+        return {
+          origDWC: origDWC ? origDWC.toISOString() : null,
+          origRFP: origRFP ? origRFP.toISOString() : null,
+          origSTC: origSTC ? origSTC.toISOString() : null,
+          firstDWC: firstDWC ? firstDWC.toISOString() : null,
+          firstRFP: firstRFP ? firstRFP.toISOString() : null,
+          firstSTC: firstSTC ? firstSTC.toISOString() : null,
+          anchorEntered: anchorEntered ? anchorEntered.toISOString() : null,
+          exitedDrafting: exitedDrafting ? exitedDrafting.toISOString() : null,
+          dateToBucket_WoW: bucketKey,
+          chart1Decision: !exitedDrafting
+            ? "SKIP — exitedDrafting is null"
+            : wouldBeFilteredAsNumeric
+            ? "SKIP — drafterName filtered as numeric"
+            : `INCLUDE in bucket ${bucketKey} for drafter "${drafterName}"`,
+          dealstageMatchesRP_or_AP: props.dealstage === "1223620773" || props.dealstage === "1223620774"
+        };
+      })(),
       _propsRequestedCount: propsToFetch.length,
       _propsReturnedCount: Object.keys(props).length
     });
