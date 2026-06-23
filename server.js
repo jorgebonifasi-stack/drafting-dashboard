@@ -171,15 +171,15 @@ console.log(`[Drafter exclusions] Total deals excluded when reassigned: ${Object
 const SHEETS_ID = process.env.GOOGLE_SHEETS_ID;
 const SHEETS_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON;
 const SHEETS_ENABLED = !!(SHEETS_ID && SHEETS_SERVICE_ACCOUNT_JSON);
+// Last-resort fallback when the Google Sheet read fails AND there's no
+// cached prior read in memory (e.g. cold container, never reached
+// Sheets). Bootstrap-only — the sheet is the source of truth. Stale
+// per-drafter overrides removed so a fallback can't silently overwrite
+// the dashboard with months-old targets; Ops can repopulate via the
+// Settings panel (which writes back to the sheet).
 const DEFAULT_TARGETS = {
-  drafting: {
-    default: 80,
-    overrides: { "Komal Singh": 60, "Liam Tuapola": 60, "Gurleen Sagoo": 30, "Erin James": 48 }
-  },
-  proofreading: {
-    default: 425,
-    overrides: { "Neelam Ranchhod": 425 }
-  }
+  drafting:     { default: 80,  overrides: {} },
+  proofreading: { default: 425, overrides: {} }
 };
 
 let sheetsClient = null;
@@ -259,35 +259,61 @@ async function appendLoginToSheet({ timestamp, email, name, ip }) {
   }
 }
 
+// In-memory cache of the last successful sheet read. When the Google
+// Sheets API has a transient failure (Premature close / network blip),
+// we'd otherwise drop back to DEFAULT_TARGETS — which has stale
+// per-drafter overrides hardcoded from months ago. Stale defaults
+// silently overwriting the dashboard's targets is the bug the user
+// just reported, so we cache the last known-good payload and serve it
+// when the live read fails.
+let _targetsCache = null;
+let _targetsCachedAt = 0;
+
 async function readTargetsFromSheet() {
   const sheets = getSheetsClient();
   if (!sheets) return null;
-  try {
-    const res = await sheets.spreadsheets.values.batchGet({
-      spreadsheetId: SHEETS_ID,
-      ranges: ["Drafting!A2:B", "Proofreading!A2:B"]
+
+  const parseTab = (rows, fallback) => {
+    let defaultVal = fallback.default;
+    const overrides = {};
+    (rows || []).forEach(row => {
+      const name = (row[0] || "").trim();
+      const val = parseInt(row[1], 10);
+      if (!name || isNaN(val)) return;
+      if (name === "_default") defaultVal = val;
+      else overrides[name] = val;
     });
-    const parseTab = (rows, fallback) => {
-      let defaultVal = fallback.default;
-      const overrides = {};
-      (rows || []).forEach(row => {
-        const name = (row[0] || "").trim();
-        const val = parseInt(row[1], 10);
-        if (!name || isNaN(val)) return;
-        if (name === "_default") defaultVal = val;
-        else overrides[name] = val;
+    return { default: defaultVal, overrides };
+  };
+
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId: SHEETS_ID,
+        ranges: ["Drafting!A2:B", "Proofreading!A2:B"]
       });
-      return { default: defaultVal, overrides };
-    };
-    const [dr, pr] = res.data.valueRanges || [];
-    return {
-      drafting: parseTab(dr && dr.values, DEFAULT_TARGETS.drafting),
-      proofreading: parseTab(pr && pr.values, DEFAULT_TARGETS.proofreading)
-    };
-  } catch (e) {
-    console.error("[Sheets] read error:", e.message);
-    return null;
+      const [dr, pr] = res.data.valueRanges || [];
+      const result = {
+        drafting: parseTab(dr && dr.values, DEFAULT_TARGETS.drafting),
+        proofreading: parseTab(pr && pr.values, DEFAULT_TARGETS.proofreading)
+      };
+      _targetsCache = result;
+      _targetsCachedAt = Date.now();
+      return result;
+    } catch (e) {
+      lastErr = e;
+      console.warn(`[Sheets] read attempt ${attempt + 1}/3 failed: ${e.message}`);
+      if (attempt < 2) await sleep(Math.pow(2, attempt) * 1000);
+    }
   }
+  if (_targetsCache) {
+    const ageMin = Math.round((Date.now() - _targetsCachedAt) / 60000);
+    console.warn(`[Sheets] read exhausted retries; serving cached values from ${ageMin}min ago. Last error: ${lastErr ? lastErr.message : "unknown"}`);
+    return _targetsCache;
+  }
+  console.error(`[Sheets] read error (no cache to fall back on): ${lastErr ? lastErr.message : "unknown"}`);
+  return null;
 }
 
 async function writeTargetsToSheet(payload) {

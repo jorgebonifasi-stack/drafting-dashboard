@@ -197,7 +197,11 @@
     // below: count < target × (1 − 12.5%)           → red
     const CLOSE_MARGIN = 10 / 80; // 12.5%
     function perfState(count, target){
-      if (!target || target <= 0) return "below";
+      if (target == null || isNaN(target)) return "below";
+      // Target 0 = explicit "no quota for this person" (e.g. someone on
+      // leave or onboarding). Anything ≥ 0 counts as met — we don't want
+      // a zero-quota row glowing red just because target ≤ 0.
+      if (target <= 0) return "met";
       if (count >= target) return "met";
       if (count >= target * (1 - CLOSE_MARGIN)) return "close";
       return "below";
@@ -963,7 +967,11 @@
             // like 0/80 at a glance. Full-target drafters keep the clean
             // single number — they're already measured against the global
             // reference line.
-            const isPartialTarget=overrides[name]!==undefined&&overrides[name]<standardTarget;
+            // Show "X / Y" only when the drafter has an EXPLICIT positive
+            // override below the global target. A zero override means "no
+            // quota" — surface just the count so the bar doesn't read as
+            // "5 / 0".
+            const isPartialTarget=overrides[name]!==undefined&&overrides[name]>0&&overrides[name]<standardTarget;
             const displayCount=isPartialTarget?`${total} / ${target}`:`${total}`;
             return{name,full:c.full,partial:c.partial,count:total,target,displayCount,state:perfState(total,target),isCustom:name in overrides};
           }).sort((a,b)=>b.count-a.count);
