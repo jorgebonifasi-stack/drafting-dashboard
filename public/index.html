@@ -727,7 +727,7 @@
       chart16:'Total amendments completed per drafter in the selected period, with each bar split by Amendment Type. Counts deals that exited "Amendment Requested (Estate Planning)" in the period, grouped by current Drafting Owner and stacked by amendment_source. Amendments with no source set show in grey as "Not specified".',
       chart17:'Appointment Outcome (Estate Planning) turnaround. Each dot shows the average business days for that bucket, with the breach rate inline (e.g. "3.8d · 23%" means avg 3.8 biz days, 23% of deals took longer than 1 biz day). Hover any dot for the full breakdown: total deals, met / breached split, and the average. Bucketed by exit date; deals still in stage are treated as "exited today" (running clock) so stale Outcomes inflate the current bucket. Same-day entry+exit counts as 0 biz days (SLA met). Working days exclude weekends + UK (England & Wales) bank holidays. SLA: 1 business day (red dashed line; green band below).',
       chart18:'Top 10 Estate Planning Consultants by consultant-query rate in the selected period. Cohort per EPC: their deals that exited "Appointment Outcome (Estate Planning)" in the bucket. Rate = % of those deals where a Consultant Query Reason was recorded (the drafter flagged something needing clarification from the EPC). Only EPCs with ≥5 deals in the cohort qualify, so a single 1-of-1 query doesn\'t dominate the leaderboard. Each bar is stacked by query reason (same palette as Chart 15) — segments are proportional to that reason\'s share of the EPC\'s queries, scaled so total bar length = rate %. Hover any bar for the per-reason count breakdown. Threshold reference lines at 5% (green) and 10% (amber) on the x-axis. EPC identified via the `will_consultant` HubSpot deal property.',
-      cWorkload:'Open deals per drafter, broken down by SLA status. Counts deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, Approved — Proof Reading, or Amendment Requested. SLA evaluated per deal: drafting deals use 28 calendar days from the latest of Date of Appointment / original drafting-instructions date (+14 cal days if the 14-day waiver is not signed); amendment deals use 10 business days for Client amendments or 3 business days otherwise (Internal Error / Misc). Drafters with fewer than 10 open deals are hidden to keep the chart focused on the people carrying meaningful load. Sorted by Breached count descending, then total descending.',
+      cWorkload:'Open deals per drafter, broken down by SLA status. Counts deals currently in Drafting Instructions, Drafting Query, Required — Proof Reading, Approved — Proof Reading, or Amendment Requested. SLA evaluated per deal: drafting deals use 28 calendar days from the latest of Date of Appointment / original drafting-instructions date (+14 cal days if the 14-day waiver is not signed); amendment deals use 10 business days for Client amendments, 28 calendar days for Lifetime Update / Paid Amendment, or 3 business days otherwise (Internal Error / Misc). Drafters with fewer than 10 open deals are hidden to keep the chart focused on the people carrying meaningful load. Sorted by Breached count descending, then total descending.',
       la1:'Snapshot count of deals currently in the "Replied — Drafts With Customer (Estate Planning)" stage, grouped by Legacy Advisor. Period-independent — always shows live state at last refresh.',
       la2:'Productivity per Legacy Advisor. Counts deals that exited "Replied — Drafts With Customer" in the selected period. Plain bars, no target.',
       la3:'Average business-day turnover per Legacy Advisor for deals that exited "Replied — Drafts With Customer" in the selected period. Turnover = business days from entering the stage to exiting it.',
@@ -1118,7 +1118,7 @@
     // Snapshot of deals currently in the five working stages, evaluated per-row using
     // the same SLA logic as the Standard SLA table (drafting branch: 28 cal days from
     // latest of original DI / DOA, +14d if waiver not signed; amendment branch: 10 biz
-    // days for "Client amendment", else 3 biz days). Sorted by Breached desc then total.
+    // days for "Client amendment", 28 cal days for "Lifetime Update / Paid Amendment", else 3 biz days). Sorted by Breached desc then total.
     function ChartDrafterWorkload({deals,stageLabels}){
       const data=useMemo(()=>{
         const today=new Date();today.setHours(0,0,0,0);
@@ -1138,16 +1138,26 @@
           if(isAmend){
             if(!d.enteredAmendment)return;
             const anchor=new Date(d.enteredAmendment);anchor.setHours(0,0,0,0);
-            const isClient=(d.amendmentSource||"").trim().toLowerCase()==="client amendment";
-            // 10 biz days for Client amendments, 3 biz days for everything
-            // else (Internal Error / Misc).
-            const target=isClient?10:3;
-            const deadline=addBusinessDays(anchor,target);
-            const remaining=signedBusinessDays(today,deadline);
-            if(remaining==null)state="comfortable";
-            else if(remaining<0)state="breached";
-            else if(isClient)state=remaining<=1?"close":remaining<=3?"warning":"comfortable";
-            else state=remaining===0?"close":remaining<=1?"warning":"comfortable";
+            const src=(d.amendmentSource||"").trim().toLowerCase();
+            const isClient=src==="client amendment";
+            const isPaidAmend=src==="lifetime update / paid amendment";
+            if(isPaidAmend){
+              // 28 calendar days (mirrors drafting SLA — paid amendments are
+              // substantial work, not a quick fix).
+              const deadline=new Date(anchor);deadline.setDate(deadline.getDate()+28);
+              const remaining=Math.round((deadline-today)/86400000);
+              state=remaining<0?"breached":remaining<=3?"close":remaining<=7?"warning":"comfortable";
+            }else{
+              // 10 biz days for Client amendments, 3 biz days for everything
+              // else (Internal Error / Misc).
+              const target=isClient?10:3;
+              const deadline=addBusinessDays(anchor,target);
+              const remaining=signedBusinessDays(today,deadline);
+              if(remaining==null)state="comfortable";
+              else if(remaining<0)state="breached";
+              else if(isClient)state=remaining<=1?"close":remaining<=3?"warning":"comfortable";
+              else state=remaining===0?"close":remaining<=1?"warning":"comfortable";
+            }
           }else{
             const candidates=[];
             if(d.origEnteredDrafting)candidates.push(new Date(d.origEnteredDrafting).getTime());
@@ -3253,8 +3263,11 @@
     // Drafting deals: 28 calendar days from latest of (original_date_entered_drafting_instructions,
     //   dateOfAppointment); excluded if both anchors missing; +14 cal day extension when the
     //   14-day waiver is not signed.
-    // Amendment deals (stage 1338772492): business-day SLA from enteredAmendment -- 10 biz days
-    //   when amendment_source = "Client amendment", otherwise 3 biz days. No waiver extension.
+    // Amendment deals (stage 1338772492): SLA from enteredAmendment --
+    //   10 biz days for "Client amendment", 28 CALENDAR days for
+    //   "Lifetime Update / Paid Amendment" (paid amendments are substantial
+    //   re-work, so they get the same window as a fresh draft), otherwise
+    //   3 biz days (Internal Error / Misc). No waiver extension.
     function StandardSLATable({deals,stageLabels}){
       const SLA_DAYS=28;
       const AMEND_STAGE="1338772492";
@@ -3296,18 +3309,29 @@
             if(!amendAnchor)return;
             anchor=new Date(amendAnchor);anchor.setHours(0,0,0,0);
             amendmentSource=d.amendmentSource||"";
-            const isClientAmend=amendmentSource.trim().toLowerCase()==="client amendment";
-            // 10 biz days for Client amendments, 3 biz days otherwise.
-            slaTargetDays=isClientAmend?10:3;
-            deadline=addBusinessDays(anchor,slaTargetDays);
-            daysRemaining=signedBusinessDays(today,deadline);
-            unit="biz";
-            if(daysRemaining==null)state="comfortable";
-            else if(daysRemaining<0)state="breached";
-            else if(isClientAmend){
-              state=daysRemaining<=1?"close":daysRemaining<=3?"warning":"comfortable";
+            const srcLower=amendmentSource.trim().toLowerCase();
+            const isClientAmend=srcLower==="client amendment";
+            const isPaidAmend=srcLower==="lifetime update / paid amendment";
+            if(isPaidAmend){
+              // 28 calendar days from entered-amendment (mirrors drafting SLA).
+              slaTargetDays=28;
+              deadline=new Date(anchor);deadline.setDate(deadline.getDate()+28);
+              daysRemaining=Math.round((deadline-today)/86400000);
+              unit="cal";
+              state=daysRemaining<0?"breached":daysRemaining<=3?"close":daysRemaining<=7?"warning":"comfortable";
             }else{
-              state=daysRemaining===0?"close":daysRemaining<=1?"warning":"comfortable";
+              // 10 biz days for Client amendments, 3 biz days otherwise.
+              slaTargetDays=isClientAmend?10:3;
+              deadline=addBusinessDays(anchor,slaTargetDays);
+              daysRemaining=signedBusinessDays(today,deadline);
+              unit="biz";
+              if(daysRemaining==null)state="comfortable";
+              else if(daysRemaining<0)state="breached";
+              else if(isClientAmend){
+                state=daysRemaining<=1?"close":daysRemaining<=3?"warning":"comfortable";
+              }else{
+                state=daysRemaining===0?"close":daysRemaining<=1?"warning":"comfortable";
+              }
             }
           }else{
             const candidates=[];
@@ -3435,7 +3459,7 @@
               <div>
                 <div style={{color:C.white,fontSize:16,fontWeight:700}}>Standard SLA — Deals Nearing SLA</div>
                 <div style={{fontSize:12,color:C.text,opacity:0.7,marginTop:4}}>
-                  Two streams in one table. Drafting deals: 28 calendar days from the SLA anchor. Anchor = latest of original drafting-instructions date and Date of Appointment, UNLESS the customer hasn't signed the 14-day waiver \u2014 in which case the anchor shifts forward to the waiver expiry date (or original drafting-instructions + 14 calendar days when waiver_expiry_date is missing). Anchor only shifts forward; never earlier than DI/DoA. Amendment Requested deals: 10 business days from entered-amendment when amendment_source = "Client amendment", otherwise 3 business days (Internal Error / Misc). Drafting deals are excluded if both anchor candidates are missing. Stages included: Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, Approved \u2014 Proof Reading, Amendment Requested.
+                  Two streams in one table. Drafting deals: 28 calendar days from the SLA anchor. Anchor = latest of original drafting-instructions date and Date of Appointment, UNLESS the customer hasn't signed the 14-day waiver \u2014 in which case the anchor shifts forward to the waiver expiry date (or original drafting-instructions + 14 calendar days when waiver_expiry_date is missing). Anchor only shifts forward; never earlier than DI/DoA. Amendment Requested deals: 10 business days from entered-amendment for "Client amendment", 28 calendar days for "Lifetime Update / Paid Amendment", otherwise 3 business days (Internal Error / Misc). Drafting deals are excluded if both anchor candidates are missing. Stages included: Drafting Instructions, Drafting Query, Required \u2014 Proof Reading, Approved \u2014 Proof Reading, Amendment Requested.
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
@@ -4578,16 +4602,26 @@
           if(isAmend){
             if(!d.enteredAmendment)return;
             const anchor=new Date(d.enteredAmendment);anchor.setHours(0,0,0,0);
-            const isClient=(d.amendmentSource||"").trim().toLowerCase()==="client amendment";
-            // 10 biz days for Client amendments, 3 biz days otherwise.
-            const target=isClient?10:3;
-            const deadline=addBusinessDays(anchor,target);
-            daysRemaining=signedBusinessDays(today,deadline);
-            unit="biz";
-            if(daysRemaining==null)state="comfortable";
-            else if(daysRemaining<0)state="breached";
-            else if(isClient)state=daysRemaining<=1?"close":daysRemaining<=3?"warning":"comfortable";
-            else state=daysRemaining===0?"close":daysRemaining<=1?"warning":"comfortable";
+            const srcLower=(d.amendmentSource||"").trim().toLowerCase();
+            const isClient=srcLower==="client amendment";
+            const isPaidAmend=srcLower==="lifetime update / paid amendment";
+            if(isPaidAmend){
+              // 28 calendar days (mirrors drafting SLA).
+              const deadline=new Date(anchor);deadline.setDate(deadline.getDate()+28);
+              daysRemaining=Math.round((deadline-today)/86400000);
+              unit="cal";
+              state=daysRemaining<0?"breached":daysRemaining<=3?"close":daysRemaining<=7?"warning":"comfortable";
+            }else{
+              // 10 biz days for Client amendments, 3 biz days otherwise.
+              const target=isClient?10:3;
+              const deadline=addBusinessDays(anchor,target);
+              daysRemaining=signedBusinessDays(today,deadline);
+              unit="biz";
+              if(daysRemaining==null)state="comfortable";
+              else if(daysRemaining<0)state="breached";
+              else if(isClient)state=daysRemaining<=1?"close":daysRemaining<=3?"warning":"comfortable";
+              else state=daysRemaining===0?"close":daysRemaining<=1?"warning":"comfortable";
+            }
           }else{
             const cs=[];
             if(d.origEnteredDrafting)cs.push(new Date(d.origEnteredDrafting).getTime());
