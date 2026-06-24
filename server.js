@@ -183,42 +183,65 @@ const DEFAULT_TARGETS = {
 };
 
 // Retry wrapper for Google Sheets / googleapis calls. Those calls go
-// through `gaxios` (Node's `https` module under the hood) — NOT
-// undici — so the global undici dispatcher we configured doesn't help
-// here. Render's outbound network keeps cutting connections on the
-// OAuth token endpoint mid-stream; without a retry every Sheets-backed
-// admin page (/admin/logins, /api/targets, etc.) fails on the first
-// transient blip. 3 attempts with exponential backoff (1s, 2s, 4s).
+// through `gaxios` — NOT undici — so the global undici dispatcher we
+// configured doesn't help here. Render's outbound network keeps cutting
+// connections on the OAuth token endpoint mid-stream; without a retry
+// every Sheets-backed admin page (/admin/logins, /api/targets, etc.)
+// fails on the first transient blip.
+//
+// 5 attempts with exponential backoff (1s, 2s, 4s, 8s = 15s) — bumped
+// from 3 after the user kept hitting the 3-retry ceiling. A sustained
+// network outage of >15s means there's a real Google or Render-side
+// incident, and we want to surface it rather than wait forever.
 async function withSheetsRetry(fn, label = "sheets") {
   let lastErr = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const MAX = 5;
+  for (let attempt = 0; attempt < MAX; attempt++) {
     try {
-      return await fn();
+      const result = await fn();
+      if (attempt > 0) console.log(`[${label}] succeeded on attempt ${attempt + 1}/${MAX}`);
+      return result;
     } catch (e) {
       lastErr = e;
-      console.warn(`[${label}] attempt ${attempt + 1}/3 failed: ${e.message}`);
-      if (attempt < 2) await sleep(Math.pow(2, attempt) * 1000);
+      console.warn(`[${label}] attempt ${attempt + 1}/${MAX} failed: ${e.message}`);
+      if (attempt < MAX - 1) await sleep(Math.pow(2, attempt) * 1000);
     }
   }
   throw lastErr || new Error(`[${label}] exhausted retries`);
 }
 
 let sheetsClient = null;
+let sheetsAuth = null;
 function getSheetsClient() {
   if (sheetsClient) return sheetsClient;
   if (!SHEETS_ENABLED) return null;
   try {
     const creds = JSON.parse(SHEETS_SERVICE_ACCOUNT_JSON);
-    const auth = new google.auth.JWT({
+    sheetsAuth = new google.auth.JWT({
       email: creds.client_email,
       key: creds.private_key,
       scopes: ["https://www.googleapis.com/auth/spreadsheets"]
     });
-    sheetsClient = google.sheets({ version: "v4", auth });
+    sheetsClient = google.sheets({ version: "v4", auth: sheetsAuth });
     return sheetsClient;
   } catch (e) {
     console.error("[Sheets] Failed to init client:", e.message);
     return null;
+  }
+}
+
+// Fetch & cache the OAuth access token at boot so the first user-facing
+// Sheets request doesn't pay the token-fetch cost. The token's good for
+// ~1 hour, so a successful prime here means /admin/logins, /api/targets,
+// etc. all hit pre-warmed auth until the next renewal.
+async function warmSheetsAuth() {
+  const sheets = getSheetsClient();
+  if (!sheets || !sheetsAuth) return;
+  try {
+    await withSheetsRetry(() => sheetsAuth.authorize(), "auth warm");
+    console.log("[Sheets] Auth token primed at boot");
+  } catch (e) {
+    console.error(`[Sheets] Auth warm failed (will retry on first request): ${e.message}`);
   }
 }
 
@@ -1698,6 +1721,10 @@ app.listen(PORT, () => {
   if (SHEETS_ENABLED) {
     console.log("[Sheets] Targets persistence enabled (spreadsheet: " + SHEETS_ID + ")");
     ensureSheetTabsExist();
+    // Prime the OAuth token cache so user requests don't pay the
+    // token-fetch cost (and don't hit transient Premature-close errors)
+    // on the cold path.
+    setTimeout(() => warmSheetsAuth(), 6000);
   } else {
     console.log("[Sheets] Targets persistence DISABLED — set GOOGLE_SHEETS_ID and GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON to enable");
   }
