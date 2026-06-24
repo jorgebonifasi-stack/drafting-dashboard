@@ -1326,10 +1326,17 @@ app.post("/api/targets", requireAuth, async (req, res) => {
 });
 
 // ─── Admin: Login Activity ─────────────────────────────────────
+// Logins cache: same pattern as readTargetsFromSheet — if a Sheets
+// fetch fails (transient Render → googleapis network blip), serve the
+// last successful read. Acceptable for an admin-only audit page: a
+// minute-stale list is much more useful than a 500. Already gated by
+// requireAdmin so privacy posture is unchanged.
+let _loginsCache = null;
+let _loginsCachedAt = 0;
 app.get("/api/logins", requireAuth, requireAdmin, async (req, res) => {
+  const sheets = getSheetsClient();
+  if (!sheets) return res.status(503).json({ error: "Google Sheets not configured" });
   try {
-    const sheets = getSheetsClient();
-    if (!sheets) return res.status(503).json({ error: "Google Sheets not configured" });
     const data = await withSheetsRetry(() => sheets.spreadsheets.values.get({
       spreadsheetId: SHEETS_ID,
       range: "Logins!A2:D"
@@ -1340,9 +1347,16 @@ app.get("/api/logins", requireAuth, requireAdmin, async (req, res) => {
       name: r[2] || "",
       ip: r[3] || ""
     }));
+    _loginsCache = logins;
+    _loginsCachedAt = Date.now();
     res.json({ logins });
   } catch (e) {
     console.error("/api/logins error:", e.message);
+    if (_loginsCache) {
+      const ageMin = Math.round((Date.now() - _loginsCachedAt) / 60000);
+      console.warn(`/api/logins serving cached values from ${ageMin}min ago`);
+      return res.json({ logins: _loginsCache, _stale: true, _cacheAgeMinutes: ageMin });
+    }
     res.status(500).json({ error: e.message });
   }
 });
@@ -1725,6 +1739,13 @@ app.listen(PORT, () => {
     // token-fetch cost (and don't hit transient Premature-close errors)
     // on the cold path.
     setTimeout(() => warmSheetsAuth(), 6000);
+    // Re-prime every 50 minutes. The JWT token is good for ~1 hour, so
+    // refreshing at 50 min keeps the cache permanently warm — user
+    // requests never have to fetch a token on the hot path. If a refresh
+    // attempt happens to land during a Render-side network blip and
+    // exhausts all retries, the existing token's still valid for ~10
+    // min and the next interval will catch the next opportunity.
+    setInterval(() => warmSheetsAuth(), 50 * 60 * 1000);
   } else {
     console.log("[Sheets] Targets persistence DISABLED — set GOOGLE_SHEETS_ID and GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON to enable");
   }
