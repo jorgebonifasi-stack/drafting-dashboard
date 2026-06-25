@@ -234,14 +234,28 @@ function getSheetsClient() {
 // Sheets request doesn't pay the token-fetch cost. The token's good for
 // ~1 hour, so a successful prime here means /admin/logins, /api/targets,
 // etc. all hit pre-warmed auth until the next renewal.
+//
+// Also re-fetches the targets cache so dashboard loads always see the
+// latest sheet contents — without this, a user editing the sheet
+// directly might not see their change reflected until the next time a
+// /api/targets call happens to land outside a Render network blip.
 async function warmSheetsAuth() {
   const sheets = getSheetsClient();
   if (!sheets || !sheetsAuth) return;
   try {
     await withSheetsRetry(() => sheetsAuth.authorize(), "auth warm");
-    console.log("[Sheets] Auth token primed at boot");
+    console.log("[Sheets] Auth token primed");
   } catch (e) {
     console.error(`[Sheets] Auth warm failed (will retry on first request): ${e.message}`);
+  }
+  // Refresh the targets cache too, so edits made directly to the sheet
+  // propagate to the dashboard within the warm interval (50 min) even
+  // if no user happens to load the page during that window.
+  try {
+    await readTargetsFromSheet();
+    console.log("[Sheets] Targets cache refreshed");
+  } catch (e) {
+    console.warn(`[Sheets] Targets cache refresh failed: ${e.message}`);
   }
 }
 
@@ -330,8 +344,11 @@ async function readTargetsFromSheet() {
     return { default: defaultVal, overrides };
   };
 
+  // 5 attempts matches withSheetsRetry on the other Sheets-backed
+  // endpoints. Previous 3-attempt loop was getting exhausted by Render's
+  // transient outbound issues, leaving the cache stale.
   let lastErr = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const res = await sheets.spreadsheets.values.batchGet({
         spreadsheetId: SHEETS_ID,
@@ -344,11 +361,12 @@ async function readTargetsFromSheet() {
       };
       _targetsCache = result;
       _targetsCachedAt = Date.now();
+      if (attempt > 0) console.log(`[Sheets] targets read succeeded on attempt ${attempt + 1}/5`);
       return result;
     } catch (e) {
       lastErr = e;
-      console.warn(`[Sheets] read attempt ${attempt + 1}/3 failed: ${e.message}`);
-      if (attempt < 2) await sleep(Math.pow(2, attempt) * 1000);
+      console.warn(`[Sheets] targets read attempt ${attempt + 1}/5 failed: ${e.message}`);
+      if (attempt < 4) await sleep(Math.pow(2, attempt) * 1000);
     }
   }
   if (_targetsCache) {
@@ -1296,12 +1314,22 @@ app.get("/api/activity", requireAuth, async (req, res) => {
 
 // ─── Targets (persisted overrides via Google Sheets) ──────────
 app.get("/api/targets", requireAuth, async (req, res) => {
+  // No-cache: the dashboard expects targets to reflect the latest sheet
+  // contents on every page load. Without explicit headers, browsers
+  // sometimes heuristically cache JSON responses for several minutes,
+  // showing stale targets after a sheet edit.
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+  res.set("Pragma", "no-cache");
   try {
+    // Snapshot the cache-update timestamp so we can detect whether the
+    // call below produced a fresh read or fell back to memory cache.
+    const beforeCachedAt = _targetsCachedAt;
     const data = await readTargetsFromSheet();
     if (!data) {
       return res.json({ ...DEFAULT_TARGETS, _source: SHEETS_ENABLED ? "error_fallback" : "code_defaults" });
     }
-    res.json({ ...data, _source: "sheet" });
+    const source = _targetsCachedAt > beforeCachedAt ? "sheet" : "sheet_cache_fallback";
+    res.json({ ...data, _source: source, _cachedAt: _targetsCachedAt });
   } catch (e) {
     console.error("/api/targets GET error:", e.message);
     res.status(500).json({ error: e.message });
@@ -1318,11 +1346,27 @@ app.post("/api/targets", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Request body must include drafting and proofreading objects" });
     }
     await writeTargetsToSheet(body);
+    // Update the in-memory cache to match what we just wrote. Without
+    // this, the next GET could fail its live read AND fall back to the
+    // pre-write cache, silently undoing the user's save.
+    _targetsCache = {
+      drafting: body.drafting,
+      proofreading: body.proofreading
+    };
+    _targetsCachedAt = Date.now();
     res.json({ ok: true });
   } catch (e) {
     console.error("/api/targets POST error:", e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// Manual cache-bust for when the user has edited the sheet directly
+// and wants to force the dashboard to re-fetch on next /api/targets.
+app.post("/api/targets/invalidate", requireAuth, requireAdmin, (req, res) => {
+  _targetsCache = null;
+  _targetsCachedAt = 0;
+  res.json({ ok: true, message: "Targets cache cleared — next /api/targets call will re-fetch from sheet" });
 });
 
 // ─── Admin: Login Activity ─────────────────────────────────────
