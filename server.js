@@ -1637,6 +1637,59 @@ app.get("/api/debug/cached-deal/:id", requireAuth, requireAdmin, (req, res) => {
   });
 });
 
+// GET /api/admin/capture-exclusions?name=<drafter>
+// Lists every deal in the current cache where the drafting_owner
+// resolves to <drafter>. Output is a JSON snippet matching the
+// drafter-exclusions.json schema so we can paste it directly into
+// the file when a drafter is about to be reallocated (e.g. someone
+// going on leave or leaving the team — their existing query history
+// shouldn't drag down the new owner's metrics).
+//
+// Reads from the live cache (same data the dashboard sees). Admin-only.
+app.get("/api/admin/capture-exclusions", requireAuth, requireAdmin, (req, res) => {
+  if (!cache.buffer) return res.status(503).json({ error: "Cache empty" });
+  const name = String(req.query.name || "").trim();
+  if (!name) return res.status(400).json({ error: "Provide ?name=<drafter>" });
+  let cached;
+  try { cached = JSON.parse(cache.buffer.toString("utf8")); }
+  catch (e) { return res.status(500).json({ error: "Cache buffer corrupt: " + e.message }); }
+  const ownerMap = cached.ownerMap || {};
+  const draftingOpts = cached.draftingOwnerOptions || {};
+  const resolveName = (id) => {
+    if (!id) return "";
+    return draftingOpts[id] || ownerMap[id] || String(id);
+  };
+  const targetLower = name.toLowerCase();
+  // Find all owner IDs whose resolved name matches the requested drafter
+  // (case-insensitive, exact match on the resolved label). Usually one
+  // ID per person, but support multiple in case of duplicates.
+  const matchingOwnerIds = new Set();
+  Object.keys(ownerMap).forEach(id => { if (String(ownerMap[id] || "").trim().toLowerCase() === targetLower) matchingOwnerIds.add(String(id)); });
+  Object.keys(draftingOpts).forEach(id => { if (String(draftingOpts[id] || "").trim().toLowerCase() === targetLower) matchingOwnerIds.add(String(id)); });
+  if (matchingOwnerIds.size === 0) {
+    return res.status(404).json({ error: `No owner ID resolves to "${name}". Check spelling vs the dashboard's drafter labels.` });
+  }
+  const matches = (cached.deals || []).filter(d => {
+    const owner = (d.properties || {}).drafting_owner;
+    return owner && matchingOwnerIds.has(String(owner));
+  });
+  const dealIds = matches.map(d => String(d.id));
+  // Schema-matching snippet — ready to paste into drafter-exclusions.json
+  // under the "drafters" array (or to replace an existing entry's "deals").
+  const snippet = {
+    name,
+    deals: dealIds.map(id => ({ recordId: id }))
+  };
+  res.json({
+    drafterName: name,
+    matchingOwnerIds: Array.from(matchingOwnerIds),
+    cacheTimestamp: cached._cachedAt,
+    dealCount: dealIds.length,
+    sampleDealNames: matches.slice(0, 10).map(d => ({ id: d.id, name: (d.properties || {}).dealname, stage: (d.properties || {}).dealstage })),
+    snippet
+  });
+});
+
 // GET /api/debug/missing-entry-stamps
 // Lists deals that have an exit timestamp on "Appointment Outcome (Estate
 // Planning)" (hs_v2_date_exited_1223751329) but no entry timestamp
